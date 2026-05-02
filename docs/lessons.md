@@ -217,6 +217,54 @@ moves to a real ENUM, every state-add needs `ALTER TYPE ... ADD VALUE`.
 
 ---
 
+## Security tooling
+
+### 2026-05-02 — Bandit nosec needs the **two-hash** form
+`# nosec B101 - reason` silently parses every word of the reason as a
+test ID and floods stderr with `WARNING Test in comment: <word> is not
+a test name or id, ignoring`. The actual suppression still works (the
+B101 token is recognised) but the reason text is lost. Correct form
+is `# nosec B101  # reason` — the second `#` re-opens a comment so
+bandit ignores everything after it. General rule for nosec: one
+space, the test ID(s), two spaces, second `#`, then prose. Anything
+else and bandit treats your justification as more test IDs.
+*(PR #21 — see `saga/coordinator.py`, `clients/sru.py`, `config.py`.)*
+
+### 2026-05-02 — `detect-secrets` baseline is hash-based; commit it from day one
+First-run flow is `detect-secrets scan > .secrets.baseline` followed
+by `git add .secrets.baseline`. Without a baseline, every key-shaped
+literal in the repo (dev defaults like `agora:agora@localhost`, AWS
+example keys in docs) flags on every CI run. With a baseline,
+`detect-secrets-hook` only fails on findings whose hash is not
+already accepted — so credential rotation produces a NEW hash and is
+correctly caught. The corollary: the baseline is not "noise the gate
+ignores forever," it's a hash-pinned allowlist that breaks on any
+real change.
+*(PR #21 — see `.secrets.baseline`, `Makefile::audit`, `.github/workflows/audit.yml`.)*
+
+### 2026-05-02 — Per-line `# nosec` beats global `[tool.bandit]` skips
+Tempting to add `skips = ["B101"]` to `pyproject.toml` and move on —
+4 findings, 1 line of config. Don't. The "why was this OK?" lives
+at the call site (mypy narrowing in `sru.py`, post-condition
+assertion in `coordinator.py`, dev-default bind in `config.py`); a
+global skip drops it on the floor and makes future drive-by edits
+unreviewable. Per-line `# nosec` with prose costs 4 lines and keeps
+each justification glued to the code. Reserve global skips for
+findings whose rationale is *the same everywhere they appear* (we
+don't have any of those today).
+*(PR #21 — `pyproject.toml::[tool.bandit]` keeps only `exclude_dirs`.)*
+
+### 2026-05-02 — `git ls-files | xargs` is space-fragile; use `-z | xargs -0`
+Both Makefile and CI workflow originally piped `git ls-files | xargs
+detect-secrets-hook`. Today the agora tree has no filenames with
+spaces so it works — but the standard hardening is one character:
+`-z` on the producer, `-0` on xargs. Same applies to `$(shell git
+ls-files)` in make recipes (whitespace-splits). Cheap insurance;
+do it the first time.
+*(PR #21 — see `Makefile::audit`, `.github/workflows/audit.yml`.)*
+
+---
+
 ## Convention reminders (collected here so they don't drift out of CLAUDE.md)
 
 - All datetimes are timezone-aware UTC (`datetime.now(UTC)`). When
