@@ -12,6 +12,19 @@ worker projection that writes the supplier ack as an OBSERVATION
 event. Net result: ``approve_forward`` is a ledger write + an outbox
 row, no synchronous wire call.
 
+SHIP and RETURN forward emit *two* intents each: one ``target="reshare"``
+to the consortium peer (confirm_shipment / confirm_return) and one
+``target="ncip"`` against the borrower's local ILS (check_out /
+check_in). NCIP dispatch is fire-and-forget — its outcome does not
+gate saga state — so no projection callback is registered for
+``target="ncip"``; failure surfaces as a stuck outbox row for staff
+review. Compensator-side NCIP rollback is intentionally *not* wired:
+SHIP-step rollback is ambiguous (item may already be in transit and
+the patron may never have physically received it), so a real recall
+flow needs a RECEIVED state and borrower-receipt confirmation before
+we can know whether to issue a compensating ``check_in``. Tracked
+under the prototype known-gaps section in CLAUDE.md.
+
 The factory ``register_default_flows`` wires the global registry;
 tests can call ``build_registry`` to get an isolated registry instead.
 
@@ -204,6 +217,23 @@ def _wire(reg: StepRegistry, tx: TransactionAgent) -> None:
     )
 
     # ----- SHIP ----------------------------------------------------
+    # Emits two outbox intents: (1) ReShare ``confirm_shipment`` for the
+    # consortium peer, (2) NCIP ``check_out`` against the borrower's
+    # local ILS so the loan shows up against the patron's record.
+    #
+    # Prototype approximations (documented per ADR-0011 / known-gap):
+    #   * ``item_id = reshare_id`` — IllRequest does not carry a real
+    #     barcode today; the consortium-scoped reshare_id is the only
+    #     stable handle. A future RECEIVED state + borrower-receipt
+    #     confirmation flow should resolve this to a real ILS item id.
+    #   * Canonical NCIP trigger for ``check_out`` is borrower physical
+    #     receipt; we fire on supplier-shipped because there is no
+    #     RECEIVED state yet. Net effect for the prototype: the patron
+    #     record reflects an outstanding loan from the moment the
+    #     supplier marks shipped, not the moment the item arrives.
+    #   * The two intents share ``ctx.idempotency_key`` as a base; the
+    #     NCIP row is suffixed ``:ncip`` because outbox.idempotency_key
+    #     is UNIQUE across all targets (see ``saga/db.py``).
     async def ship_forward(ctx: SagaContext) -> StepResult:
         reshare_id = ctx.extras.get("reshare_id")
         if not reshare_id:
@@ -223,8 +253,8 @@ def _wire(reg: StepRegistry, tx: TransactionAgent) -> None:
             },
             rationale=(
                 f"Saga moved to Shipped; due {due_at.date().isoformat()}; "
-                "supplier mark-shipped enqueued for asynchronous delivery "
-                "via outbox worker."
+                "supplier mark-shipped + borrower-side NCIP check-out "
+                "enqueued for asynchronous delivery via outbox worker."
             ),
             outbox=[
                 OutboxIntent(
@@ -234,7 +264,18 @@ def _wire(reg: StepRegistry, tx: TransactionAgent) -> None:
                         "action": "confirm_shipment",
                         "args": {"reshare_id": reshare_id},
                     },
-                )
+                ),
+                OutboxIntent(
+                    target="ncip",
+                    idempotency_key=f"{ctx.idempotency_key}:ncip",
+                    payload={
+                        "action": "check_out",
+                        "args": {
+                            "item_id": reshare_id,
+                            "patron_id": ctx.request.patron.patron_id,
+                        },
+                    },
+                ),
             ],
         )
 
@@ -276,6 +317,11 @@ def _wire(reg: StepRegistry, tx: TransactionAgent) -> None:
     )
 
     # ----- RETURN --------------------------------------------------
+    # Emits two outbox intents: (1) ReShare ``confirm_return`` for the
+    # consortium peer, (2) NCIP ``check_in`` against the borrower's
+    # local ILS so the loan clears off the patron's record. Same
+    # ``item_id = reshare_id`` and ``:ncip`` idempotency-key suffix
+    # approximations as SHIP — see SHIP comment block above.
     async def return_forward(ctx: SagaContext) -> StepResult:
         reshare_id = ctx.extras.get("reshare_id")
         if not reshare_id:
@@ -284,8 +330,9 @@ def _wire(reg: StepRegistry, tx: TransactionAgent) -> None:
             state_after=LifecycleState.RETURNED,
             payload={"reshare_id": reshare_id},
             rationale=(
-                "Saga moved to Returned; borrower-returned message enqueued "
-                "for asynchronous delivery via outbox worker."
+                "Saga moved to Returned; borrower-returned message + "
+                "borrower-side NCIP check-in enqueued for asynchronous "
+                "delivery via outbox worker."
             ),
             outbox=[
                 OutboxIntent(
@@ -295,7 +342,15 @@ def _wire(reg: StepRegistry, tx: TransactionAgent) -> None:
                         "action": "confirm_return",
                         "args": {"reshare_id": reshare_id},
                     },
-                )
+                ),
+                OutboxIntent(
+                    target="ncip",
+                    idempotency_key=f"{ctx.idempotency_key}:ncip",
+                    payload={
+                        "action": "check_in",
+                        "args": {"item_id": reshare_id},
+                    },
+                ),
             ],
         )
 

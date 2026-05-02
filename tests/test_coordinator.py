@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agora.agents.transaction import TransactionAgent
+from agora.clients.ncip import MockNcipClient, NcipClient
 from agora.clients.reshare import MockReShareClient, ReShareClient
 from agora.models.events import NewSagaEvent, SagaEvent
 from agora.models.lifecycle import (
@@ -35,6 +36,7 @@ from agora.saga.idempotency import new_idempotency_key
 from agora.saga.ledger import SagaLedger
 from agora.saga.outbox import (
     OutboxWorker,
+    make_ncip_handler,
     make_reshare_handler,
     make_reshare_on_success,
 )
@@ -89,6 +91,7 @@ async def test_happy_path_full_lifecycle(session: AsyncSession) -> None:
     saga_id = uuid4()
     request = _build_request()
     reshare = MockReShareClient()
+    ncip = MockNcipClient()
     registry = build_registry(TransactionAgent(reshare))
 
     async with session.begin():
@@ -127,7 +130,7 @@ async def test_happy_path_full_lifecycle(session: AsyncSession) -> None:
     assert approve_forward.state_after == LifecycleState.APPROVING
     assert "reshare_id" not in approve_forward.payload
 
-    await _drain_with_projection(session, reshare)
+    await _drain_with_projection(session, reshare, ncip)
 
     # Pull reshare_id off the projected OBSERVATION; downstream SHIP
     # / RETURN need it. Mirrors what ``api._derive_extras`` would do.
@@ -138,19 +141,67 @@ async def test_happy_path_full_lifecycle(session: AsyncSession) -> None:
         if e.kind == EventKind.OBSERVATION and e.step == StepName.APPROVE
     )
     extras["reshare_id"] = approve_obs.payload["reshare_id"]
+    item_id = extras["reshare_id"]  # NCIP item_id approximation per flows.py
 
-    # SHIP
+    # SHIP — forward fans out to two intents (reshare confirm_shipment +
+    # ncip check_out). Drain so both land on their respective clients.
     await _gate_and_run(session, registry, saga_id, request, StepName.SHIP, extras)
+    await _drain_with_projection(session, reshare, ncip)
 
-    # RETURN
+    # RETURN — same fan-out (confirm_return + check_in).
     await _gate_and_run(
         session, registry, saga_id, request, StepName.RETURN_ITEM, extras
     )
+    await _drain_with_projection(session, reshare, ncip)
 
     async with session.begin():
         ledger = SagaLedger(session)
         saga = await ledger.get_saga(saga_id)
     assert saga.current_state == LifecycleState.RETURNED.value
+
+    # All saga outbox rows ended up delivered, no stuck pending rows.
+    async with session.begin():
+        outbox_rows = (
+            (
+                await session.execute(
+                    select(OutboxRow)
+                    .where(OutboxRow.saga_id == saga_id)
+                    .order_by(OutboxRow.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert all(r.status == "delivered" for r in outbox_rows), (
+        "every saga outbox row must be delivered after final drain; "
+        f"statuses={[r.status for r in outbox_rows]}"
+    )
+    targets = sorted(r.target for r in outbox_rows)
+    # APPROVE: 1 reshare. SHIP: 1 reshare + 1 ncip. RETURN: 1 reshare + 1 ncip.
+    assert targets == ["ncip", "ncip", "reshare", "reshare", "reshare"], (
+        f"expected 3 reshare + 2 ncip rows, got {targets}"
+    )
+
+    # NCIP fan-out: replay each ncip row's *actual* idempotency key
+    # against the mock to confirm the worker's call landed. The mock
+    # dedups on the key and returns the prior NcipResult — a hit
+    # proves the original dispatch ran.
+    ncip_rows = [r for r in outbox_rows if r.target == "ncip"]
+    co_row = next(r for r in ncip_rows if r.payload["action"] == "check_out")
+    ci_row = next(r for r in ncip_rows if r.payload["action"] == "check_in")
+    assert co_row.payload["args"]["item_id"] == item_id
+    assert ci_row.payload["args"]["item_id"] == item_id
+
+    co_replay = await ncip.check_out(
+        idempotency_key=co_row.idempotency_key,
+        item_id=item_id,
+        patron_id=request.patron.patron_id,
+    )
+    assert co_replay.state == "checked_out"
+    ci_replay = await ncip.check_in(
+        idempotency_key=ci_row.idempotency_key, item_id=item_id
+    )
+    assert ci_replay.state == "checked_in"
 
 
 @pytest.mark.asyncio
@@ -223,19 +274,27 @@ async def test_compensator_on_approve_cancels_at_supplier(session: AsyncSession)
 async def _drain_with_projection(
     session: AsyncSession,
     reshare: ReShareClient,
+    ncip: NcipClient | None = None,
 ) -> None:
     """Drain the outbox once with the production projection wired in.
 
     Mirrors the lifespan wiring (``api.app._build_outbox_worker``) so a
     test driving APPROVE forward can let the worker land its
     OBSERVATION (advancing APPROVING -> APPROVED) before continuing.
-    Uses the same engine as the test's ``session`` fixture; aiosqlite
-    in-memory shares state across connections in this test setup.
+    Also wires the NCIP handler (defaulting to ``MockNcipClient``) so
+    SHIP / RETURN forwards — which fan out a second ``target='ncip'``
+    intent for borrower-side circulation — drain cleanly. Uses the
+    same engine as the test's ``session`` fixture; aiosqlite in-memory
+    shares state across connections in this test setup.
     """
     sessionmaker = async_sessionmaker(bind=session.bind, expire_on_commit=False)
+    ncip_client = ncip if ncip is not None else MockNcipClient()
     worker = OutboxWorker(
         sessionmaker,
-        handlers={"reshare": make_reshare_handler(reshare)},
+        handlers={
+            "reshare": make_reshare_handler(reshare),
+            "ncip": make_ncip_handler(ncip_client),
+        },
         on_success={"reshare": make_reshare_on_success()},
     )
     await worker.drain_until_empty()
@@ -505,27 +564,40 @@ async def test_ship_forward_enqueues_outbox_row(session: AsyncSession) -> None:
         from_state=LifecycleState.APPROVED,
     )
 
-    # An outbox row tagged target=reshare with action=confirm_shipment must
-    # exist for this saga; the worker has not run, so the mock client
-    # has not yet received the call.
+    # SHIP forward emits two intents: ReShare confirm_shipment for the
+    # consortium peer, and NCIP check_out against the borrower's local
+    # ILS. Both rows pending; the worker has not run, so neither client
+    # has received the call.
     async with session.begin():
         rows = (
             (
                 await session.execute(
-                    select(OutboxRow).where(OutboxRow.saga_id == saga_id)
+                    select(OutboxRow)
+                    .where(OutboxRow.saga_id == saga_id)
+                    .order_by(OutboxRow.id)
                 )
             )
             .scalars()
             .all()
         )
-    assert len(rows) == 1
-    row = rows[0]
-    assert row.target == "reshare"
-    assert row.status == "pending"
-    assert row.payload == {
+    assert len(rows) == 2
+    by_target = {r.target: r for r in rows}
+    assert set(by_target) == {"reshare", "ncip"}
+    assert all(r.status == "pending" for r in rows)
+    assert by_target["reshare"].payload == {
         "action": "confirm_shipment",
         "args": {"reshare_id": "rs-test-1"},
     }
+    assert by_target["ncip"].payload == {
+        "action": "check_out",
+        "args": {"item_id": "rs-test-1", "patron_id": request.patron.patron_id},
+    }
+    # idempotency keys must differ across targets (UNIQUE constraint).
+    assert (
+        by_target["reshare"].idempotency_key
+        != by_target["ncip"].idempotency_key
+    )
+    assert by_target["ncip"].idempotency_key.endswith(":ncip")
 
 
 @pytest.mark.asyncio
@@ -591,4 +663,6 @@ async def test_replayed_forward_does_not_double_enqueue(session: AsyncSession) -
             .scalars()
             .all()
         )
-    assert len(rows) == 1, "replayed forward must not enqueue a duplicate outbox row"
+    # SHIP emits two intents (reshare + ncip); replay must not double either.
+    assert len(rows) == 2, "replayed forward must not enqueue duplicate outbox rows"
+    assert {r.target for r in rows} == {"reshare", "ncip"}

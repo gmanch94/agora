@@ -159,24 +159,42 @@ async def test_full_lifecycle_via_approve_endpoints(
     assert approve_obs["payload"]["reshare_id"]
 
     # SHIP — reshare_id derived from APPROVE OBSERVATION via _derive_extras.
+    # SHIP forward fans out to two outbox intents: reshare confirm_shipment
+    # + ncip check_out. Drive the worker so both land on their clients.
     r = await client.post(
         f"/sagas/{saga_id}/approve",
         json={"step": "ship", "actor": "staff:test", "rationale": "demo ship"},
     )
     assert r.status_code == 200, r.text
     assert r.json()["state_after"] == "shipped"
+    await _drive_outbox_worker(app)
 
-    # RETURN
+    # RETURN — same fan-out (confirm_return + check_in).
     r = await client.post(
         f"/sagas/{saga_id}/approve",
         json={"step": "return", "actor": "staff:test", "rationale": "demo return"},
     )
     assert r.status_code == 200, r.text
     assert r.json()["state_after"] == "returned"
+    await _drive_outbox_worker(app)
 
     # Final saga state matches the last forward.
     detail = (await client.get(f"/sagas/{saga_id}")).json()
     assert detail["saga"]["current_state"] == "returned"
+
+    # Borrower-side NCIP: the mock client's private dedup map (_idem)
+    # is populated when the worker dispatches each call. Two entries
+    # (one check_out for SHIP, one check_in for RETURN) with the same
+    # item_id == reshare_id proves the saga's NCIP fan-out landed.
+    # Accessing the private attribute mirrors the same pattern used in
+    # tests/test_coordinator.py for ReShareClient verification.
+    reshare_id = approve_obs["payload"]["reshare_id"]
+    ncip_state = app.state.ncip._idem
+    states = sorted(r.state for r in ncip_state.values())
+    assert states == ["checked_in", "checked_out"], (
+        f"expected NCIP fan-out to record check_out + check_in, got {states}"
+    )
+    assert all(r.item_id == reshare_id for r in ncip_state.values())
 
 
 async def test_approve_route_without_chosen_supplier_returns_400(

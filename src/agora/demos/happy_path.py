@@ -22,6 +22,7 @@ from agora.agents.discovery import DiscoveryAgent
 from agora.agents.policy import PolicyAgent
 from agora.agents.routing import RoutingAgent
 from agora.agents.transaction import TransactionAgent
+from agora.clients.ncip import MockNcipClient
 from agora.clients.openurl import parse_openurl
 from agora.clients.reshare import MockReShareClient
 from agora.clients.sru import MockSruClient, SruRecord
@@ -41,6 +42,7 @@ from agora.saga.idempotency import new_idempotency_key
 from agora.saga.ledger import SagaLedger
 from agora.saga.outbox import (
     OutboxWorker,
+    make_ncip_handler,
     make_reshare_handler,
     make_reshare_on_success,
 )
@@ -73,6 +75,7 @@ async def main() -> None:
         ]
     )
     reshare = MockReShareClient()
+    ncip = MockNcipClient()
     discovery = DiscoveryAgent(sru, consortium_members={"MEMBER1"})
     routing = RoutingAgent()
     policy = PolicyAgent()
@@ -142,7 +145,10 @@ async def main() -> None:
     # (ADR-0011 + ADR-0012).
     worker = OutboxWorker(
         sessionmaker,
-        handlers={"reshare": make_reshare_handler(reshare)},
+        handlers={
+            "reshare": make_reshare_handler(reshare),
+            "ncip": make_ncip_handler(ncip),
+        },
         on_success={"reshare": make_reshare_on_success()},
     )
 
