@@ -224,3 +224,10 @@ ISO 18626 message types — see table in `clients/reshare.py`.
   that produces ISO 18626 XML must validate against the published XSD
   before we go live with real peers. Today we delegate this to ReShare
   — keep it that way unless an ADR says otherwise.
+- **Track lessons learned in `docs/lessons.md`.** When a PR finishes,
+  ask: *did anything bite me that wasn't obvious from the spec?* If
+  yes, append a dated paragraph to the relevant section, citing the
+  PR/commit. Lessons are not ADRs — no decision is being made. They
+  are concrete gotchas tied to a code location so the next session
+  doesn't relearn them. See `docs/lessons.md` for format and existing
+  entries.
