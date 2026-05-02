@@ -71,4 +71,4 @@ class MockNcipClient:
 def get_client() -> NcipClient:
     """Factory: returns mock for prototype; real client TBD."""
     log.info("ncip.client.using_mock")
-    return MockNcipClient()  # type: ignore[return-value]
+    return MockNcipClient()

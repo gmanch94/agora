@@ -44,6 +44,12 @@ class Settings(BaseSettings):
 
     saga_stall_timeout_secs: int = Field(default=600, alias="SAGA_STALL_TIMEOUT_SECS")
     outbox_retry_max_attempts: int = Field(default=10, alias="OUTBOX_RETRY_MAX_ATTEMPTS")
+    outbox_worker_enabled: bool = Field(
+        default=True, alias="AGORA_OUTBOX_WORKER_ENABLED"
+    )
+    outbox_poll_interval_secs: float = Field(
+        default=1.0, alias="AGORA_OUTBOX_POLL_INTERVAL_SECS"
+    )
 
     @property
     def reshare_enabled(self) -> bool:

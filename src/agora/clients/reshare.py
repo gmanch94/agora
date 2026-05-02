@@ -175,7 +175,8 @@ class HttpReShareClient:
             raise RemoteUnavailableError(f"{path}: {resp.status_code}")
         if resp.status_code >= 400:
             raise ClientError(f"{path}: {resp.status_code} {resp.text}")
-        return resp.json()
+        data: dict[str, Any] = resp.json()
+        return data
 
     async def _perform_action(
         self,
@@ -436,6 +437,6 @@ def get_client() -> ReShareClient:
     """Factory: real client if URL configured, else mock."""
     s = get_settings()
     if s.reshare_enabled:
-        return HttpReShareClient(s)  # type: ignore[return-value]
+        return HttpReShareClient(s)
     log.info("reshare.client.using_mock")
-    return MockReShareClient()  # type: ignore[return-value]
+    return MockReShareClient()

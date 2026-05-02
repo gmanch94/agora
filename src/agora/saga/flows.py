@@ -16,6 +16,7 @@ tests can call ``build_registry`` to get an isolated registry instead.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from agora.agents.transaction import TransactionAgent
 from agora.models.lifecycle import LifecycleState, StepName
@@ -57,7 +58,7 @@ def _wire(reg: StepRegistry, tx: TransactionAgent) -> None:
             rationale="Patron-submitted ILL request entered the saga.",
         )
 
-    async def submit_compensator(ctx: SagaContext, fwd_payload: dict) -> StepResult:
+    async def submit_compensator(ctx: SagaContext, fwd_payload: dict[str, Any]) -> StepResult:
         return StepResult(
             state_after=LifecycleState.CANCELLED,
             payload={"cancelled_at": "submit"},
@@ -82,7 +83,7 @@ def _wire(reg: StepRegistry, tx: TransactionAgent) -> None:
             rationale=f"Routed to {chosen} per ranking.",
         )
 
-    async def route_compensator(ctx: SagaContext, fwd_payload: dict) -> StepResult:
+    async def route_compensator(ctx: SagaContext, fwd_payload: dict[str, Any]) -> StepResult:
         return StepResult(
             state_after=LifecycleState.SUBMITTED,
             payload={"reroute_from": fwd_payload.get("supplier_symbol")},
@@ -122,7 +123,7 @@ def _wire(reg: StepRegistry, tx: TransactionAgent) -> None:
             rationale=f"Approved; ReShare id {result.reshare_id} at supplier {supplier}.",
         )
 
-    async def approve_compensator(ctx: SagaContext, fwd_payload: dict) -> StepResult:
+    async def approve_compensator(ctx: SagaContext, fwd_payload: dict[str, Any]) -> StepResult:
         reshare_id = fwd_payload.get("reshare_id")
         if not reshare_id:
             raise ValueError("approve compensator missing reshare_id from forward payload")
@@ -189,7 +190,7 @@ def _wire(reg: StepRegistry, tx: TransactionAgent) -> None:
             ],
         )
 
-    async def ship_compensator(ctx: SagaContext, fwd_payload: dict) -> StepResult:
+    async def ship_compensator(ctx: SagaContext, fwd_payload: dict[str, Any]) -> StepResult:
         reshare_id = fwd_payload.get("reshare_id")
         if not reshare_id:
             raise ValueError("ship compensator missing reshare_id from forward payload")
@@ -250,7 +251,7 @@ def _wire(reg: StepRegistry, tx: TransactionAgent) -> None:
             ],
         )
 
-    async def return_compensator(ctx: SagaContext, fwd_payload: dict) -> StepResult:
+    async def return_compensator(ctx: SagaContext, fwd_payload: dict[str, Any]) -> StepResult:
         return StepResult(
             state_after=LifecycleState.DISPUTED,
             payload={"reshare_id": fwd_payload.get("reshare_id")},

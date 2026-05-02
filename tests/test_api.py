@@ -10,6 +10,7 @@ the module-level engine before the API picks it up via
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
@@ -231,6 +232,41 @@ async def test_compensate_unknown_step_returns_400(client: AsyncClient) -> None:
         json={"step": "not-a-real-step", "actor": "staff:test", "rationale": "nope"},
     )
     assert r.status_code == 400
+
+
+async def test_outbox_worker_starts_and_stops_with_lifespan(engine) -> None:
+    """``create_app`` lifespan spawns the outbox worker task and cancels it."""
+    app = create_app()
+    # Before lifespan runs, attribute exists but no task.
+    assert app.state.outbox_worker_task is None
+
+    async with app.router.lifespan_context(app):
+        task = app.state.outbox_worker_task
+        assert task is not None, "lifespan must create the worker task"
+        assert not task.done(), "worker task must be running inside lifespan"
+        # Yield briefly so the worker reaches its first await.
+        await asyncio.sleep(0)
+        assert app.state.outbox_worker is not None
+
+    # After lifespan exits, task is cancelled.
+    task_after = app.state.outbox_worker_task
+    assert task_after is not None
+    assert task_after.cancelled() or task_after.done()
+
+
+async def test_outbox_worker_disabled_via_settings(engine, monkeypatch) -> None:
+    """``AGORA_OUTBOX_WORKER_ENABLED=0`` skips spawning the worker."""
+    from agora.config import get_settings
+
+    monkeypatch.setenv("AGORA_OUTBOX_WORKER_ENABLED", "0")
+    get_settings.cache_clear()
+    try:
+        app = create_app()
+        async with app.router.lifespan_context(app):
+            assert app.state.outbox_worker is None
+            assert app.state.outbox_worker_task is None
+    finally:
+        get_settings.cache_clear()
 
 
 async def test_reject_records_failed_gate(client: AsyncClient) -> None:
