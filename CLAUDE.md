@@ -138,7 +138,8 @@ ISO 18626 message types — see table in `clients/reshare.py`.
   onto its forward-event payload; downstream SHIP/RETURN read it back
   via `_derive_extras`. Full migration requires either an
   `APPROVING` intermediate state or teaching `_derive_extras` to read
-  a worker-written observation event — future ADR. The API process
+  a worker-written observation event — design captured in ADR-0012
+  (Option A: `APPROVING` state); implementation pending. The API process
   spawns `OutboxWorker.run_forever` as an `asyncio.Task` from the
   FastAPI lifespan (`create_app`), polling at
   `AGORA_OUTBOX_POLL_INTERVAL_SECS` (default 1.0s) and cancelled on
