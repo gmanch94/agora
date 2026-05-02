@@ -109,7 +109,12 @@ ISO 18626 message types — see table in `clients/reshare.py`.
   ReShare before driving real traffic.
 - TrackingAgent is a stub (no overdue-detection cron yet).
 - NCIP client is mock-only.
-- Outbox worker not implemented (table exists; nothing drains it).
+- Outbox **worker** is implemented (`saga/outbox.py`: `OutboxWorker`,
+  `make_reshare_handler`) but is **not yet wired into saga flows** —
+  forward steps still call ReShare inline via `TransactionAgent`.
+  Migration to "commit ledger then enqueue" is its own ADR / change.
+  Worker assumes a single drainer; multi-worker safety needs
+  `SELECT ... FOR UPDATE SKIP LOCKED` (Postgres-only).
 - `POST /sagas/{id}/approve` and `POST /sagas/{id}/compensate` are
   wired end-to-end (commit gate + run forward / run compensator in
   one transaction). Step inputs (`chosen_supplier`, `reshare_id`) are
