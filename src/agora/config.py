@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     env: str = Field(default="dev", alias="AGORA_ENV")
     log_level: str = Field(default="INFO", alias="AGORA_LOG_LEVEL")
 
-    api_host: str = Field(default="0.0.0.0", alias="AGORA_API_HOST")
+    api_host: str = Field(default="0.0.0.0", alias="AGORA_API_HOST")  # nosec B104  # dev default; production sets AGORA_API_HOST
     api_port: int = Field(default=8000, alias="AGORA_API_PORT")
 
     db_url: str = Field(

@@ -1,0 +1,43 @@
+name: audit
+
+# Security scan gate. Runs bandit (static analysis), pip-audit
+# (installed-env CVE check), and detect-secrets (against baseline).
+# Triple gate (pytest/ruff/mypy) is intentionally not wired here yet —
+# that's a separate decision tracked in the backlog.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install dev extras
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: bandit
+        run: bandit -r src/agora/ -q
+
+      - name: pip-audit
+        run: pip-audit
+
+      - name: detect-secrets
+        run: |
+          # Audit every tracked file against the committed baseline.
+          # Fails on any new finding not already accepted in the baseline.
+          # NUL-delimited so filenames with spaces survive xargs splitting.
+          git ls-files -z | xargs -0 detect-secrets-hook --baseline .secrets.baseline
