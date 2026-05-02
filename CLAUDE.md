@@ -117,12 +117,25 @@ ISO 18626 message types — see table in `clients/reshare.py`.
   uses HTTP Basic (dev path); production needs Okapi token flow.
   mod-rs does not honour `Idempotency-Key` — replay-safety lives in
   the saga ledger's UNIQUE constraint, not the wire.
-- The outbox handler `make_ncip_handler` is
-  wired into the lifespan alongside the ReShare handler so flows can
-  begin writing `target="ncip"` rows before the real HTTP/SOAP client
-  lands. No flow currently dispatches via NCIP — a future change will
-  enqueue `check_out` on SHIP and `check_in` on RETURN once the saga
-  design names the right hook points.
+- NCIP fan-out is wired on SHIP and RETURN forwards (fire-and-forget,
+  borrower-side ILS): `ship_forward` emits a second `target="ncip"`
+  intent for `check_out`, `return_forward` emits one for `check_in`.
+  NCIP outcomes do **not** gate saga state — failure surfaces as a
+  stuck outbox row for staff review, the saga continues. The two
+  intents per step share a base `ctx.idempotency_key`; the NCIP row
+  is suffixed `:ncip` because `outbox.idempotency_key` is UNIQUE
+  across all targets (see `saga/db.py`). Approximations documented
+  in `saga/flows.py` SHIP comment block: (a) `item_id = reshare_id`
+  because IllRequest has no real ILS barcode today; (b) `check_out`
+  fires on supplier-shipped because there is no RECEIVED state — a
+  future borrower-receipt confirmation flow should re-anchor it.
+  Compensator-side NCIP rollback is **not** wired: SHIP-step rollback
+  is ambiguous (item may still be in transit; patron may never have
+  received it) so a real recall flow needs RECEIVED + receipt
+  confirmation before deciding whether to issue a compensating
+  `check_in`. The NCIP HTTP/SOAP client itself remains a mock —
+  `MockNcipClient` for prototype/tests; real `mod-ncip` integration
+  is still future work.
 - TrackingAgent: `OverdueScanner.run_forever` now runs as a background
   task spawned from the FastAPI lifespan (`agora.tracking.scanner`),
   polling at `AGORA_TRACKING_SCAN_INTERVAL_SECS` (default 300s). Each

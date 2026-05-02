@@ -132,6 +132,10 @@ class _StepSpec:
     forward_has_outbox: bool
     comp_has_outbox: bool
     extras_seed: tuple[tuple[str, str], ...]  # immutable for @given safety
+    # Number of outbox intents emitted by a single forward run. Default 1
+    # for legacy single-target steps (APPROVE → reshare); SHIP and RETURN
+    # emit 2 (reshare + ncip per the NCIP-flow integration).
+    forward_outbox_count: int = 1
 
 
 _SPECS: dict[StepName, _StepSpec] = {
@@ -171,6 +175,7 @@ _SPECS: dict[StepName, _StepSpec] = {
         forward_has_outbox=True,
         comp_has_outbox=True,
         extras_seed=(("reshare_id", "rs-prop-1"),),
+        forward_outbox_count=2,  # reshare confirm_shipment + ncip check_out
     ),
     StepName.RETURN_ITEM: _StepSpec(
         step=StepName.RETURN_ITEM,
@@ -180,6 +185,7 @@ _SPECS: dict[StepName, _StepSpec] = {
         forward_has_outbox=True,
         comp_has_outbox=False,
         extras_seed=(("reshare_id", "rs-prop-1"),),
+        forward_outbox_count=2,  # reshare confirm_return + ncip check_in
     ),
 }
 
@@ -488,8 +494,9 @@ async def test_forward_replay_outbox_count_invariant(
                 )
             ).scalars().all()
         )
-    assert len(rows) == 1, (
-        "replayed forward must not double-enqueue the same outbox intent"
+    assert len(rows) == spec.forward_outbox_count, (
+        "replayed forward must not double-enqueue any outbox intent; "
+        f"expected {spec.forward_outbox_count} row(s), got {len(rows)}"
     )
 
 
