@@ -1,0 +1,27 @@
+# Agora local dev stack.
+#
+# For the prototype we ship Postgres only. ReShare's full FOLIO stack
+# is heavy and is brought up on demand via the upstream
+# `reshare-docker` recipe (see ADR-0009). Until then, all ReShare
+# traffic uses the in-process MockReShareClient.
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: agora-postgres
+    environment:
+      POSTGRES_USER: agora
+      POSTGRES_PASSWORD: agora
+      POSTGRES_DB: agora
+    ports:
+      - "5433:5432"
+    volumes:
+      - agora_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agora"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  agora_pg_data:

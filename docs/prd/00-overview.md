@@ -1,0 +1,62 @@
+# PRD 00 — Agora Overview
+
+## Problem
+
+Inter-Library Loan (ILL) workflows in academic and research libraries
+are manual-step heavy. NCIP adoption alone reduces borrow-side staff
+steps ~50% and lend-side ~42% (NISO benchmarks), but humans still
+manually do discovery, supplier ranking, copyright clearance,
+status chasing, recall coordination, and reconciliation.
+
+ILL involves long-running, multi-party transactions across heterogeneous
+library systems. Failures are common (item not available, supplier
+declines, lost in transit). Real money and legal compliance (CONTU,
+copyright) raise the bar for correctness.
+
+## Hypothesis
+
+A multi-agent orchestrator over standards-compliant ILL infrastructure
+(FOLIO/ReShare) can:
+
+- Compress the human-touch surface further by automating discovery,
+  routing, policy checks, and tracking.
+- Improve correctness via explicit saga + compensator semantics.
+- Maintain legal/policy safety by keeping humans in the loop on every
+  state transition (advisory agents, human commits).
+
+This prototype tests that hypothesis without taking on production /
+compliance burden.
+
+## Users
+
+| Persona | Role | Primary needs |
+|---|---|---|
+| ILL Borrowing Staff | Approves outbound requests at consortium | Quickly review agent recommendations, click approve/reject, see reasoning |
+| ILL Lending Staff | Fulfills inbound from peers | See queued requests, confirm shipment, manage returns |
+| Patron | Library user wanting an item | Submit request via OpenURL or manual form (out of scope for prototype UI) |
+| Consortium Admin | Sets routing policy across member libraries | Configure SLA tiers, copyright thresholds |
+
+## Goals
+
+1. Demonstrate end-to-end lifecycle (Submit → Return) running through
+   real ReShare sandbox with two simulated tenants.
+2. Show saga compensation actually rolls back correctly under chaos.
+3. Show idempotency: replay any message N times, observable effect once.
+4. Show agent reasoning traces drive faster human approvals.
+
+## Non-goals
+
+- Production deployment
+- FedRAMP authorization
+- Real money / billing
+- Patron-facing UI
+- Multi-region / HA topology
+
+## Success criteria (prototype demo)
+
+- `make demo` boots ReShare + Agora, runs scripted lifecycle, shows
+  state transitions in ledger, ends with `LoanCompleted`.
+- `make chaos` injects failure at a random state, runs compensator,
+  asserts ledger is consistent.
+- `pytest` passes with property-based saga + idempotency tests.
+- Architecture & decisions documented under `docs/`.
