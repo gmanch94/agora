@@ -264,42 +264,42 @@ sequenceDiagram
     participant Worker as OutboxWorker
     participant ReShare as MockReShareClient
 
-    Patron->>API: POST /requests {ill payload}
+    Patron->>API: POST /requests with ILL payload
     API->>Coord: create_saga + append SUBMIT forward
     Coord->>Ledger: append (savepoint)
     Ledger->>DB: INSERT saga, saga_event
     DB-->>API: saga_id
-    API-->>Patron: 201 {saga_id}
+    API-->>Patron: 201 saga_id
 
-    Note over API: --- staff clicks "approve route" ---
-    Patron->>API: POST /sagas/{id}/approve {step:"route", extras:{chosen_supplier:"MEMBER1"}}
+    Note over API: staff clicks approve route
+    Patron->>API: POST /sagas/id/approve step route, supplier MEMBER1
     API->>Coord: commit_gate + run_forward
-    Coord->>Ledger: append GATE(committed) + FORWARD(routed)
-    Ledger->>DB: 2x INSERT saga_event; UPDATE saga.current_state="routed"
-    API-->>Patron: 200 {state_after:"routed"}
+    Coord->>Ledger: append GATE committed and FORWARD routed
+    Ledger->>DB: 2x INSERT saga_event and UPDATE saga.current_state to routed
+    API-->>Patron: 200 state_after routed
 
-    Note over API: --- staff clicks "approve approve" ---
-    Patron->>API: POST /sagas/{id}/approve {step:"approve"}
-    Coord->>ReShare: submit_to_supplier(idem_key, payload, supplier)
-    ReShare-->>Coord: ReShareSubmitResult{reshare_id, ...}
-    Coord->>Ledger: append GATE + FORWARD(approved){reshare_id}
-    Ledger->>DB: INSERT saga_event; UPDATE saga.current_state="approved"
-    API-->>Patron: 200 {state_after:"approved", payload:{reshare_id}}
+    Note over API: staff clicks approve approve
+    Patron->>API: POST /sagas/id/approve step approve
+    Coord->>ReShare: submit_to_supplier idem_key, payload, supplier
+    ReShare-->>Coord: ReShareSubmitResult with reshare_id
+    Coord->>Ledger: append GATE and FORWARD approved with reshare_id
+    Ledger->>DB: INSERT saga_event and UPDATE saga.current_state to approved
+    API-->>Patron: 200 state_after approved, payload carries reshare_id
 
-    Note over API: --- staff clicks "approve ship" ---
-    Patron->>API: POST /sagas/{id}/approve {step:"ship"}
-    Coord->>Ledger: append GATE + FORWARD(shipped) + outbox(confirm_shipment)
-    Ledger->>DB: INSERT saga_event + INSERT outbox row (one tx)
-    API-->>Patron: 200 {state_after:"shipped"}
+    Note over API: staff clicks approve ship
+    Patron->>API: POST /sagas/id/approve step ship
+    Coord->>Ledger: append GATE and FORWARD shipped and outbox confirm_shipment
+    Ledger->>DB: INSERT saga_event and INSERT outbox row (one tx)
+    API-->>Patron: 200 state_after shipped
     Worker->>DB: SELECT outbox WHERE pending
-    Worker->>ReShare: confirm_shipment(idem_key, reshare_id)
-    Worker->>DB: UPDATE outbox SET status=delivered
+    Worker->>ReShare: confirm_shipment idem_key, reshare_id
+    Worker->>DB: UPDATE outbox SET status delivered
 
-    Note over API: --- staff clicks "approve return" ---
-    Patron->>API: POST /sagas/{id}/approve {step:"return"}
-    Coord->>Ledger: append GATE + FORWARD(returned) + outbox(confirm_return)
-    Ledger->>DB: ledger row + outbox row
-    Worker->>ReShare: confirm_return(idem_key, reshare_id)
+    Note over API: staff clicks approve return
+    Patron->>API: POST /sagas/id/approve step return
+    Coord->>Ledger: append GATE and FORWARD returned and outbox confirm_return
+    Ledger->>DB: ledger row and outbox row
+    Worker->>ReShare: confirm_return idem_key, reshare_id
 ```
 
 ### 5.2 Compensator path
