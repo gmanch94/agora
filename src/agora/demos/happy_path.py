@@ -39,7 +39,11 @@ from agora.saga.db import Base, override_engine
 from agora.saga.flows import build_registry
 from agora.saga.idempotency import new_idempotency_key
 from agora.saga.ledger import SagaLedger
-from agora.saga.outbox import OutboxWorker, make_reshare_handler
+from agora.saga.outbox import (
+    OutboxWorker,
+    make_reshare_handler,
+    make_reshare_on_success,
+)
 
 SAMPLE_OPENURL = (
     "ctx_ver=Z39.88-2004&rft.genre=book&rft.btitle=Brave+New+World"
@@ -132,8 +136,15 @@ async def main() -> None:
         )
 
     # Outbox worker dispatches the migrated steps' OutboxIntents onto
-    # the MockReShareClient between lifecycle steps. See ADR-0011.
-    worker = OutboxWorker(sessionmaker, {"reshare": make_reshare_handler(reshare)})
+    # the MockReShareClient between lifecycle steps. APPROVE forward
+    # also relies on the worker for its supplier round-trip + the
+    # OBSERVATION projection that advances APPROVING -> APPROVED
+    # (ADR-0011 + ADR-0012).
+    worker = OutboxWorker(
+        sessionmaker,
+        handlers={"reshare": make_reshare_handler(reshare)},
+        on_success={"reshare": make_reshare_on_success()},
+    )
 
     # --- drive lifecycle through gates --------------------------------
     extras: dict[str, Any] = {"chosen_supplier": chosen_supplier}
@@ -162,16 +173,30 @@ async def main() -> None:
                 actor="agent:transaction",
                 extras=dict(extras),
             )
-            ev = await coord.run_forward(ctx=ctx, step=step)
+            await coord.run_forward(ctx=ctx, step=step)
 
-        # Capture reshare_id from APPROVE forward result for later steps.
-        if step == StepName.APPROVE and ev is not None:
-            extras["reshare_id"] = ev.payload["reshare_id"]
-
-        # Drain outbox so the mock client sees any enqueued ReShare calls
-        # before the next gate runs. In production this is a separate
-        # long-running worker.
+        # Drain outbox so the mock client sees any enqueued ReShare
+        # calls before the next gate runs. APPROVE additionally
+        # depends on the projection callback to advance APPROVING ->
+        # APPROVED via the OBSERVATION that carries reshare_id. In
+        # production this is a separate long-running worker.
         await worker.drain_until_empty()
+
+        # Re-derive ``reshare_id`` from the ledger after each drain.
+        # APPROVE writes it onto an OBSERVATION the worker projects
+        # post-supplier-ack; later steps consume it from extras
+        # exactly as the API's ``_derive_extras`` helper does.
+        if step == StepName.APPROVE:
+            async with sessionmaker() as session, session.begin():
+                events = await SagaLedger(session).events_for(saga_id)
+            for e in events:
+                if (
+                    e.step == StepName.APPROVE
+                    and e.kind == EventKind.OBSERVATION
+                    and (rid := (e.payload or {}).get("reshare_id"))
+                ):
+                    extras["reshare_id"] = rid
+                    break
 
     # --- print final ledger ------------------------------------------
     async with sessionmaker() as session, session.begin():

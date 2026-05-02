@@ -132,20 +132,29 @@ ISO 18626 message types — see table in `clients/reshare.py`.
   drainer assumed (same caveat as outbox worker). Recall escalation
   on prolonged overdue is still future work — staff console surfaces
   the observation badge today.
-- Outbox is wired into flows for every ReShare-touching step **except
-  APPROVE forward** (ADR-0011). APPROVE still calls ReShare inline
-  because the saga ledger needs the returned `reshare_id` stamped
-  onto its forward-event payload; downstream SHIP/RETURN read it back
-  via `_derive_extras`. Full migration requires either an
-  `APPROVING` intermediate state or teaching `_derive_extras` to read
-  a worker-written observation event — design captured in ADR-0012
-  (Option A: `APPROVING` state); implementation pending. The API process
-  spawns `OutboxWorker.run_forever` as an `asyncio.Task` from the
-  FastAPI lifespan (`create_app`), polling at
+- Outbox is wired into flows for every ReShare-touching step
+  including APPROVE forward (ADR-0011 + ADR-0012). APPROVE forward
+  is now pure: it returns an `OutboxIntent` for `send_request` and
+  advances the saga to `LifecycleState.APPROVING`; the outbox
+  worker drains the row, calls the supplier, and the projection
+  callback (`make_reshare_on_success`) writes an OBSERVATION
+  carrying `reshare_id` that advances the saga to `APPROVED`.
+  Downstream SHIP/RETURN consume `reshare_id` via `_derive_extras`,
+  which now reads APPROVE OBSERVATION events as well as FORWARD
+  events. The compensator-during-APPROVING window (staff hits
+  `/compensate` while the supplier ack is still pending) is
+  rejected with a 400 — there is no `reshare_id` to cancel against.
+  The projection runs **inside the same session** as
+  `outbox_mark_delivered`, so the OBSERVATION write and the
+  delivered flag commit atomically; a failed projection re-queues
+  the row for retry without leaving the saga half-advanced. The
+  API process spawns `OutboxWorker.run_forever` as an
+  `asyncio.Task` from the FastAPI lifespan (`create_app`) via
+  `_build_outbox_worker`, polling at
   `AGORA_OUTBOX_POLL_INTERVAL_SECS` (default 1.0s) and cancelled on
-  shutdown. Disable with `AGORA_OUTBOX_WORKER_ENABLED=0`. The worker
-  still assumes a single drainer per DB; multi-worker safety needs
-  `SELECT ... FOR UPDATE SKIP LOCKED` (Postgres-only).
+  shutdown. Disable with `AGORA_OUTBOX_WORKER_ENABLED=0`. The
+  worker still assumes a single drainer per DB; multi-worker
+  safety needs `SELECT ... FOR UPDATE SKIP LOCKED` (Postgres-only).
 - `POST /sagas/{id}/approve` and `POST /sagas/{id}/compensate` are
   wired end-to-end (commit gate + run forward / run compensator in
   one transaction). Step inputs (`chosen_supplier`, `reshare_id`) are

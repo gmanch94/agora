@@ -1,16 +1,26 @@
 """Saga step flows: forward + compensator pairs registered with the registry.
 
-APPROVE forward keeps an inline call to ``TransactionAgent.submit_to_supplier``
-because the saga ledger needs the returned ``reshare_id`` stamped onto
-its forward-event payload (downstream SHIP/RETURN read it back via
-``_derive_extras``). Every other ReShare-touching step has been
-migrated to the outbox pattern: the step returns an ``OutboxIntent``
-on its ``StepResult`` and the coordinator enqueues it in the same
-transaction as the ledger event. The outbox worker drains the row
-onto the wire asynchronously. See ADR-0011.
+Every ReShare-touching forward step is now pure with respect to
+external systems: the step returns an ``OutboxIntent`` on its
+``StepResult`` and the coordinator enqueues it in the same transaction
+as the ledger event. The outbox worker drains the row onto the wire
+asynchronously. APPROVE forward used to call ``submit_to_supplier``
+inline so the saga ledger could stamp the supplier-assigned
+``reshare_id`` onto its forward-event payload; ADR-0012 migrated this
+to a dedicated ``LifecycleState.APPROVING`` intermediate state plus a
+worker projection that writes the supplier ack as an OBSERVATION
+event. Net result: ``approve_forward`` is a ledger write + an outbox
+row, no synchronous wire call.
 
 The factory ``register_default_flows`` wires the global registry;
 tests can call ``build_registry`` to get an isolated registry instead.
+
+The ``transaction`` argument to ``build_registry`` /
+``register_default_flows`` is currently unused — no flow calls
+``TransactionAgent`` inline. It is retained as a parameter so future
+flows that need an inline call (e.g. fast-path local checks) can
+reach for it without re-threading dependencies through callers. See
+ADR-0011 + ADR-0012.
 """
 
 from __future__ import annotations
@@ -49,6 +59,11 @@ def register_default_flows(transaction: TransactionAgent) -> StepRegistry:
 
 
 def _wire(reg: StepRegistry, tx: TransactionAgent) -> None:
+    # ``tx`` is retained for forward compatibility but no current flow
+    # invokes it (every wire call now goes through the outbox). See
+    # the module docstring.
+    _ = tx
+
     # ----- SUBMIT --------------------------------------------------
     async def submit_forward(ctx: SagaContext) -> StepResult:
         # Submission is a pure ledger write — no external call yet.
@@ -97,36 +112,69 @@ def _wire(reg: StepRegistry, tx: TransactionAgent) -> None:
     )
 
     # ----- APPROVE -------------------------------------------------
+    # Per ADR-0012: the forward step is pure (state → APPROVING + one
+    # OutboxIntent). The worker drains the row, calls
+    # ``ReShareClient.send_request``, and the projection callback
+    # writes the supplier-assigned ``reshare_id`` back as an
+    # OBSERVATION event that advances the saga to APPROVED.
+    # Downstream SHIP/RETURN read ``reshare_id`` via
+    # ``_derive_extras`` from that OBSERVATION.
     async def approve_forward(ctx: SagaContext) -> StepResult:
         supplier = ctx.extras.get("chosen_supplier")
         if not supplier:
             raise ValueError("ctx.extras['chosen_supplier'] is required for approve step")
-        result = await tx.submit_to_supplier(
-            idempotency_key=ctx.idempotency_key,
-            request_payload={
-                "request_id": str(ctx.request.request_id),
-                "item": ctx.request.item.model_dump(),
-                "patron": ctx.request.patron.model_dump(),
-                "requesting_library": ctx.request.requesting_library.model_dump(),
-                "type": ctx.request.request_type.value,
-            },
-            supplier_symbol=supplier,
-        )
         return StepResult(
-            state_after=LifecycleState.APPROVED,
-            payload={
-                "reshare_id": result.reshare_id,
-                "supplier_symbol": result.supplier_symbol,
-                "iso_state": result.state,
-            },
-            iso_message_id=result.iso_message_id,
-            rationale=f"Approved; ReShare id {result.reshare_id} at supplier {supplier}.",
+            state_after=LifecycleState.APPROVING,
+            payload={"supplier_symbol": supplier},
+            rationale=(
+                f"Saga moved to Approving; submit-to-supplier enqueued "
+                f"for asynchronous delivery via outbox worker "
+                f"(supplier={supplier})."
+            ),
+            outbox=[
+                OutboxIntent(
+                    target="reshare",
+                    idempotency_key=ctx.idempotency_key,
+                    payload={
+                        "action": "send_request",
+                        "args": {
+                            "request_payload": {
+                                "request_id": str(ctx.request.request_id),
+                                "item": ctx.request.item.model_dump(),
+                                "patron": ctx.request.patron.model_dump(),
+                                "requesting_library":
+                                    ctx.request.requesting_library.model_dump(),
+                                "type": ctx.request.request_type.value,
+                            },
+                            "supplier_symbol": supplier,
+                        },
+                    },
+                )
+            ],
         )
 
     async def approve_compensator(ctx: SagaContext, fwd_payload: dict[str, Any]) -> StepResult:
-        reshare_id = fwd_payload.get("reshare_id")
+        # The supplier-assigned reshare_id no longer rides on the
+        # APPROVE forward payload (ADR-0012 moved it to the
+        # OBSERVATION projected by the outbox worker). The API and
+        # tests surface it via ``ctx.extras['reshare_id']`` —
+        # ``api._derive_extras`` walks both FORWARD and OBSERVATION
+        # events when assembling extras for the compensator.
+        # ``fwd_payload`` is checked first for backwards-compat with
+        # any historical sagas where the inline forward did stamp it.
+        reshare_id = fwd_payload.get("reshare_id") or ctx.extras.get("reshare_id")
         if not reshare_id:
-            raise ValueError("approve compensator missing reshare_id from forward payload")
+            # No reshare_id means the supplier ack hasn't landed yet
+            # (saga still APPROVING, outbox row pending or failing) —
+            # there is nothing concrete at the supplier to cancel.
+            # Surface a specific error so the API turns it into a 409
+            # the staff console can explain.
+            raise ValueError(
+                "approve compensator cannot run while supplier ack pending: "
+                "no reshare_id on prior forward payload or context extras "
+                "(saga is likely still APPROVING and the outbox row has "
+                "not been delivered)"
+            )
         return StepResult(
             state_after=LifecycleState.CANCELLED,
             payload={"reshare_id": reshare_id},
