@@ -1,22 +1,24 @@
 # PRD 01 — Lifecycle & State Machine
 
+> Last reviewed against code: 2026-05-02.
+
 ## Lifecycle
 
 Five user-facing states map onto the ISO 18626 supplier-side state machine:
 
 ```
-        ┌──────────────────────────────────────────────────┐
-        │                                                  ▼
    ┌─────────┐    ┌────────┐    ┌──────────┐    ┌────────┐    ┌──────────┐
    │Submitted│───▶│Routed  │───▶│Approved  │───▶│Shipped │───▶│Returned  │
    └─────────┘    └────────┘    └──────────┘    └────────┘    └──────────┘
         │              │             │              │              │
         ▼              ▼             ▼              ▼              ▼
-     Cancel         Reroute       Decline         Recall         Disputed
-                                                                    │
-                                                                    ▼
-                                                              Reconciled
+   Cancelled       Submitted     Cancelled       Disputed       Disputed
+   (terminal)      (re-rank)     (terminal)      (recall)       (manual)
 ```
+
+`LifecycleState` enum (in `src/agora/models/lifecycle.py`):
+`SUBMITTED, ROUTED, APPROVED, SHIPPED, RETURNED, CANCELLED, UNFILLED, DISPUTED`.
+`TERMINAL_STATES = {RETURNED, CANCELLED, UNFILLED, DISPUTED}`.
 
 ## Forward transitions
 
@@ -30,13 +32,13 @@ Five user-facing states map onto the ISO 18626 supplier-side state machine:
 
 ## Compensators (per step)
 
-| Forward | Compensator | Real-world action |
-|---------|-------------|---------------------|
-| Submit | CancelRequest | Mark withdrawn before any peer contacted |
-| Route | Reroute / Withdraw | Pick next-ranked supplier or terminate |
-| Approve | Revoke | Send `RequestingAgencyMessage Cancel` to supplier |
-| Ship | Recall | Send recall request; if item already in transit, intercept |
-| Return | Re-loan / Dispute | Re-ship to next requester or open dispute saga |
+| Forward | Compensator state_after | Real-world action (in `saga/flows.py`) |
+|---------|-------------------------|----------------------------------------|
+| Submit  | `Cancelled`             | Mark withdrawn before any peer contacted (ledger-only). |
+| Route   | `Submitted`             | Revert routing; saga returns to Submitted for re-rank (ledger-only). |
+| Approve | `Cancelled` (terminal)  | Enqueue `cancel_request` outbox intent → mod-rs cancel. |
+| Ship    | `Disputed`              | Enqueue `recall_request` outbox intent. NB: `HttpReShareClient.recall_request` raises today (mod-rs has no first-class recall); surfaces as a `dead_letter` row for staff. |
+| Return  | `Disputed`              | Open manual reconciliation case (ledger-only). |
 
 **Compensators are not symmetric inverses.** They model real-world
 recovery, not DB rollback. The saga ledger tracks both forward outcome
@@ -47,15 +49,16 @@ and compensator outcome; both are auditable.
 The supplier-side state machine has more states than the user-facing
 lifecycle. Map these to user lifecycle as follows:
 
-| ISO 18626 state | User-visible status |
-|------------------|---------------------|
-| Requested | Submitted (peer contacted) |
-| ExpectToSupply / WillSupply | Approved |
-| Loaned / Overdue / Recalled | Shipped |
-| LoanCompleted | Returned |
-| Unfilled / Cancelled | Routed → triggers Reroute saga |
-| RetryPossible | Routed → loop back to Routing with annotation |
-| CopyCompleted | Returned (for copy requests, no physical return) |
+| ISO 18626 state             | User-visible status                                            |
+|-----------------------------|----------------------------------------------------------------|
+| Requested                   | Submitted (peer contacted)                                     |
+| ExpectToSupply / WillSupply | Approved                                                       |
+| Loaned / Overdue / Recalled | Shipped                                                        |
+| LoanCompleted               | Returned                                                       |
+| Unfilled                    | Unfilled (terminal)                                            |
+| Cancelled                   | Cancelled (terminal — APPROVE compensator end state)           |
+| RetryPossible               | Routed → loop back to Routing with annotation (planned)        |
+| CopyCompleted               | Returned (for copy requests, no physical return)               |
 
 ## State invariants
 
@@ -69,6 +72,9 @@ lifecycle. Map these to user lifecycle as follows:
 
 ## Terminal states
 
-`Returned` (success), `Cancelled` (pre-approval), `Unfilled` (no supplier
-fulfilled), `Disputed` (manual escalation). Saga marks these and stops
-scheduling forward steps; reconciliation can still run cleanup.
+`Returned` (success), `Cancelled` (pre-approval **or** post-approval
+revoke — see compensator table above), `Unfilled` (no supplier
+fulfilled), `Disputed` (manual escalation). The ledger refuses any
+further state-changing event once a saga reaches a terminal state
+(`SagaLedger.append` raises `TerminalStateError`); benign
+OBSERVATION events are still allowed.

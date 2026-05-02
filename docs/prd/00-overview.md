@@ -1,5 +1,7 @@
 # PRD 00 — Agora Overview
 
+> Last reviewed against code: 2026-05-02.
+
 ## Problem
 
 Inter-Library Loan (ILL) workflows in academic and research libraries
@@ -54,9 +56,15 @@ compliance burden.
 
 ## Success criteria (prototype demo)
 
-- `make demo` boots ReShare + Agora, runs scripted lifecycle, shows
-  state transitions in ledger, ends with `LoanCompleted`.
-- `make chaos` injects failure at a random state, runs compensator,
-  asserts ledger is consistent.
-- `pytest` passes with property-based saga + idempotency tests.
-- Architecture & decisions documented under `docs/`.
+- `make demo` runs the scripted happy path against `MockReShareClient`
+  (in-memory SQLite + outbox drain), shows every state transition in
+  the ledger, and ends with `Returned`. **Implemented**
+  (`src/agora/demos/happy_path.py`).
+- `pytest` passes with property-based saga + idempotency tests
+  (`tests/test_property_saga.py`, Hypothesis). **Implemented** —
+  53 tests green at time of review.
+- Architecture & decisions documented under `docs/` — PRDs, ADRs
+  (11), runbook, and SDD. **Implemented**.
+- Chaos test (`make chaos`): **planned, not yet wired** — no
+  `agora.demos.chaos` module today; the property tests cover
+  compensator symmetry but not random-injection chaos.
