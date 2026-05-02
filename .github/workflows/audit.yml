@@ -39,4 +39,5 @@ jobs:
         run: |
           # Audit every tracked file against the committed baseline.
           # Fails on any new finding not already accepted in the baseline.
-          git ls-files | xargs detect-secrets-hook --baseline .secrets.baseline
+          # NUL-delimited so filenames with spaces survive xargs splitting.
+          git ls-files -z | xargs -0 detect-secrets-hook --baseline .secrets.baseline

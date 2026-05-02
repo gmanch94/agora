@@ -51,7 +51,8 @@ audit:
 	pip-audit
 	# Scan for new secrets vs the committed baseline. Update baseline with:
 	#   detect-secrets scan --baseline .secrets.baseline
-	detect-secrets-hook --baseline .secrets.baseline $(shell git ls-files)
+	# NUL-delimited so filenames with spaces survive xargs splitting.
+	git ls-files -z | xargs -0 detect-secrets-hook --baseline .secrets.baseline
 
 up:
 	docker compose up -d
