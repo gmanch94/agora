@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agora.logging import get_logger
@@ -26,9 +27,9 @@ from agora.models.lifecycle import (
     StepOutcome,
 )
 from agora.saga.context import SagaContext
-from agora.saga.idempotency import new_idempotency_key
+from agora.saga.idempotency import new_idempotency_key, outbox_enqueue
 from agora.saga.ledger import SagaLedger
-from agora.saga.steps import StepRegistry, get_global_registry
+from agora.saga.steps import StepRegistry, StepResult, get_global_registry
 
 log = get_logger(__name__)
 
@@ -157,11 +158,19 @@ class Coordinator:
                 rationale=result.rationale,
             )
             persisted = await self._ledger.append(event)
+            # Enqueue outbox intents in the same transaction. Skip on
+            # replay (append returned None for an idempotency-key
+            # collision) — the outbox row was written on the original
+            # pass, and re-enqueueing with the same key would trip the
+            # outbox UNIQUE constraint. See ADR-0011.
+            if persisted is not None:
+                await self._enqueue_outbox(ctx.saga_id, result)
             log.info(
                 "saga.forward.committed",
                 saga_id=str(ctx.saga_id),
                 step=step.value,
                 state_after=result.state_after.value,
+                outbox_intents=len(result.outbox),
             )
             assert persisted is not None  # ledger.append never returns None in practice
             return persisted
@@ -230,14 +239,50 @@ class Coordinator:
             rationale=result.rationale,
         )
         persisted = await self._ledger.append(event)
+        # Enqueue outbox intents atomically with the compensator event.
+        # Skip on replay; see run_forward for the rationale.
+        if persisted is not None:
+            await self._enqueue_outbox(ctx.saga_id, result)
         log.info(
             "saga.compensator.committed",
             saga_id=str(ctx.saga_id),
             step=step.value,
             state_after=result.state_after.value,
+            outbox_intents=len(result.outbox),
         )
         assert persisted is not None
         return persisted
+
+    async def _enqueue_outbox(self, saga_id: UUID, result: StepResult) -> None:
+        """Write each ``OutboxIntent`` from ``result`` as an outbox row.
+
+        Runs inside the caller's session/transaction so the rows commit
+        atomically with the ledger event that produced them. The outbox
+        worker (``saga/outbox.py``) drains them onto the wire later.
+
+        Each enqueue runs inside a savepoint and a UNIQUE-constraint
+        collision on ``idempotency_key`` is swallowed as a benign
+        replay (the row was written on the original pass; re-running
+        the same step with the same key must not double-enqueue and
+        must not roll back the outer transaction). See ADR-0011.
+        """
+        for intent in result.outbox:
+            try:
+                async with self._session.begin_nested():
+                    await outbox_enqueue(
+                        self._session,
+                        saga_id=saga_id,
+                        target=intent.target,
+                        idempotency_key=intent.idempotency_key,
+                        payload=intent.payload,
+                    )
+            except IntegrityError:
+                log.info(
+                    "saga.outbox.replay_skipped",
+                    saga_id=str(saga_id),
+                    target=intent.target,
+                    idempotency_key=intent.idempotency_key,
+                )
 
     async def record_observation(
         self,

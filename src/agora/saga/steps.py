@@ -13,11 +13,37 @@ forward effect.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from agora.models.lifecycle import LifecycleState, StepName
 from agora.saga.context import SagaContext
+
+
+@dataclass(slots=True)
+class OutboxIntent:
+    """Side-effect a step wants enqueued atomically with its ledger event.
+
+    The coordinator writes one ``OutboxRow`` per intent inside the same
+    DB transaction that appends the ledger event, so the saga ledger
+    and the "intent to call ReShare" can never disagree.
+
+    Convention for ``target="reshare"`` (matches ``make_reshare_handler``
+    in ``saga/outbox.py``)::
+
+        OutboxIntent(
+            target="reshare",
+            idempotency_key=<ulid>,
+            payload={"action": "confirm_shipment",
+                     "args": {"reshare_id": "rs-..."}},
+        )
+
+    See ADR-0011 for the full rationale.
+    """
+
+    target: str
+    idempotency_key: str
+    payload: dict[str, Any]
 
 
 @dataclass(slots=True)
@@ -28,6 +54,7 @@ class StepResult:
     payload: dict[str, Any]
     iso_message_id: str | None = None
     rationale: str | None = None
+    outbox: list[OutboxIntent] = field(default_factory=list)
 
 
 ForwardFn = Callable[[SagaContext], Awaitable[StepResult]]

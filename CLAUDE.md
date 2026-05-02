@@ -119,12 +119,17 @@ ISO 18626 message types — see table in `clients/reshare.py`.
   the saga ledger's UNIQUE constraint, not the wire.
 - TrackingAgent is a stub (no overdue-detection cron yet).
 - NCIP client is mock-only.
-- Outbox **worker** is implemented (`saga/outbox.py`: `OutboxWorker`,
-  `make_reshare_handler`) but is **not yet wired into saga flows** —
-  forward steps still call ReShare inline via `TransactionAgent`.
-  Migration to "commit ledger then enqueue" is its own ADR / change.
-  Worker assumes a single drainer; multi-worker safety needs
-  `SELECT ... FOR UPDATE SKIP LOCKED` (Postgres-only).
+- Outbox is wired into flows for every ReShare-touching step **except
+  APPROVE forward** (ADR-0011). APPROVE still calls ReShare inline
+  because the saga ledger needs the returned `reshare_id` stamped
+  onto its forward-event payload; downstream SHIP/RETURN read it back
+  via `_derive_extras`. Full migration requires either an
+  `APPROVING` intermediate state or teaching `_derive_extras` to read
+  a worker-written observation event — future ADR. The API process
+  does not yet spawn a worker — `happy_path` demo drains inline;
+  production needs `OutboxWorker.run_forever` as a background task
+  on app startup. Worker still assumes a single drainer; multi-worker
+  safety needs `SELECT ... FOR UPDATE SKIP LOCKED` (Postgres-only).
 - `POST /sagas/{id}/approve` and `POST /sagas/{id}/compensate` are
   wired end-to-end (commit gate + run forward / run compensator in
   one transaction). Step inputs (`chosen_supplier`, `reshare_id`) are

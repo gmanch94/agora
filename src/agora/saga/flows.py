@@ -1,8 +1,16 @@
 """Saga step flows: forward + compensator pairs registered with the registry.
 
-Each step closes over a ``TransactionAgent`` so it can call ReShare.
-The factory ``register_default_flows`` wires the global registry; tests
-can call ``build_registry`` to get an isolated registry instead.
+APPROVE forward keeps an inline call to ``TransactionAgent.submit_to_supplier``
+because the saga ledger needs the returned ``reshare_id`` stamped onto
+its forward-event payload (downstream SHIP/RETURN read it back via
+``_derive_extras``). Every other ReShare-touching step has been
+migrated to the outbox pattern: the step returns an ``OutboxIntent``
+on its ``StepResult`` and the coordinator enqueues it in the same
+transaction as the ledger event. The outbox worker drains the row
+onto the wire asynchronously. See ADR-0011.
+
+The factory ``register_default_flows`` wires the global registry;
+tests can call ``build_registry`` to get an isolated registry instead.
 """
 
 from __future__ import annotations
@@ -10,7 +18,12 @@ from __future__ import annotations
 from agora.agents.transaction import TransactionAgent
 from agora.models.lifecycle import LifecycleState, StepName
 from agora.saga.context import SagaContext
-from agora.saga.steps import StepRegistry, StepResult, get_global_registry
+from agora.saga.steps import (
+    OutboxIntent,
+    StepRegistry,
+    StepResult,
+    get_global_registry,
+)
 
 
 def build_registry(transaction: TransactionAgent) -> StepRegistry:
@@ -109,16 +122,26 @@ def _wire(reg: StepRegistry, tx: TransactionAgent) -> None:
         reshare_id = fwd_payload.get("reshare_id")
         if not reshare_id:
             raise ValueError("approve compensator missing reshare_id from forward payload")
-        result = await tx.cancel_at_supplier(
-            idempotency_key=ctx.idempotency_key,
-            reshare_id=reshare_id,
-            reason="approval revoked",
-        )
         return StepResult(
             state_after=LifecycleState.CANCELLED,
-            payload={"reshare_id": reshare_id, "iso_state": result.state},
-            iso_message_id=result.iso_message_id,
-            rationale="Sent RequestingAgencyMessage Cancel; saga terminal Cancelled.",
+            payload={"reshare_id": reshare_id},
+            rationale=(
+                "Saga terminal Cancelled. Cancel-at-supplier enqueued for "
+                "asynchronous delivery via outbox worker."
+            ),
+            outbox=[
+                OutboxIntent(
+                    target="reshare",
+                    idempotency_key=ctx.idempotency_key,
+                    payload={
+                        "action": "cancel_request",
+                        "args": {
+                            "reshare_id": reshare_id,
+                            "reason": "approval revoked",
+                        },
+                    },
+                )
+            ],
         )
 
     reg.register(
@@ -132,33 +155,54 @@ def _wire(reg: StepRegistry, tx: TransactionAgent) -> None:
         reshare_id = ctx.extras.get("reshare_id")
         if not reshare_id:
             raise ValueError("ctx.extras['reshare_id'] is required for ship step")
-        result = await tx.mark_shipped(
-            idempotency_key=ctx.idempotency_key, reshare_id=reshare_id
-        )
         return StepResult(
             state_after=LifecycleState.SHIPPED,
-            payload={"reshare_id": reshare_id, "iso_state": result.state},
-            iso_message_id=result.iso_message_id,
-            rationale="Supplier marked Loaned; saga moved to Shipped.",
+            payload={"reshare_id": reshare_id},
+            rationale=(
+                "Saga moved to Shipped; supplier mark-shipped enqueued for "
+                "asynchronous delivery via outbox worker."
+            ),
+            outbox=[
+                OutboxIntent(
+                    target="reshare",
+                    idempotency_key=ctx.idempotency_key,
+                    payload={
+                        "action": "confirm_shipment",
+                        "args": {"reshare_id": reshare_id},
+                    },
+                )
+            ],
         )
 
     async def ship_compensator(ctx: SagaContext, fwd_payload: dict) -> StepResult:
         reshare_id = fwd_payload.get("reshare_id")
         if not reshare_id:
             raise ValueError("ship compensator missing reshare_id from forward payload")
-        result = await tx.recall(
-            idempotency_key=ctx.idempotency_key,
-            reshare_id=reshare_id,
-            reason="ship-step compensator: recall",
-        )
+        # NB: HttpReShareClient.recall_request currently raises (mod-rs has
+        # no first-class recall action). Under the outbox pattern that
+        # surfaces as a dead-letter row for staff review — exactly the
+        # signal we want until the recall mapping is verified. The mock
+        # client succeeds, which keeps the demo + tests green. See ADR-0011.
         return StepResult(
             state_after=LifecycleState.DISPUTED,
-            payload={"reshare_id": reshare_id, "iso_state": result.state},
-            iso_message_id=result.iso_message_id,
+            payload={"reshare_id": reshare_id},
             rationale=(
-                "Recall sent; physical item may already be in transit. "
+                "Recall enqueued; physical item may already be in transit. "
                 "Saga marked Disputed for staff intervention."
             ),
+            outbox=[
+                OutboxIntent(
+                    target="reshare",
+                    idempotency_key=ctx.idempotency_key,
+                    payload={
+                        "action": "recall_request",
+                        "args": {
+                            "reshare_id": reshare_id,
+                            "reason": "ship-step compensator: recall",
+                        },
+                    },
+                )
+            ],
         )
 
     reg.register(
@@ -172,14 +216,23 @@ def _wire(reg: StepRegistry, tx: TransactionAgent) -> None:
         reshare_id = ctx.extras.get("reshare_id")
         if not reshare_id:
             raise ValueError("ctx.extras['reshare_id'] is required for return step")
-        result = await tx.mark_returned(
-            idempotency_key=ctx.idempotency_key, reshare_id=reshare_id
-        )
         return StepResult(
             state_after=LifecycleState.RETURNED,
-            payload={"reshare_id": reshare_id, "iso_state": result.state},
-            iso_message_id=result.iso_message_id,
-            rationale="Borrower returned; supplier confirmed LoanCompleted.",
+            payload={"reshare_id": reshare_id},
+            rationale=(
+                "Saga moved to Returned; borrower-returned message enqueued "
+                "for asynchronous delivery via outbox worker."
+            ),
+            outbox=[
+                OutboxIntent(
+                    target="reshare",
+                    idempotency_key=ctx.idempotency_key,
+                    payload={
+                        "action": "confirm_return",
+                        "args": {"reshare_id": reshare_id},
+                    },
+                )
+            ],
         )
 
     async def return_compensator(ctx: SagaContext, fwd_payload: dict) -> StepResult:

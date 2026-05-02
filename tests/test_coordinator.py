@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import select
 
 from agora.agents.transaction import TransactionAgent
 from agora.clients.reshare import MockReShareClient
@@ -26,6 +27,7 @@ from agora.models.request import (
 )
 from agora.saga.context import SagaContext
 from agora.saga.coordinator import Coordinator, GateRequiredError
+from agora.saga.db import OutboxRow
 from agora.saga.flows import build_registry
 from agora.saga.idempotency import new_idempotency_key
 from agora.saga.ledger import SagaLedger
@@ -206,3 +208,120 @@ async def _gate_and_run(
             extras=dict(extras),
         )
         return await coord.run_forward(ctx=ctx, step=step)
+
+
+@pytest.mark.asyncio
+async def test_ship_forward_enqueues_outbox_row(session) -> None:
+    """SHIP forward returns an OutboxIntent; coordinator must enqueue it."""
+    saga_id = uuid4()
+    request = _build_request()
+    reshare = MockReShareClient()
+    registry = build_registry(TransactionAgent(reshare))  # type: ignore[arg-type]
+
+    async with session.begin():
+        ledger = SagaLedger(session)
+        await ledger.create_saga(
+            saga_id=saga_id,
+            request_id=request.request_id,
+            request_payload=request.model_dump(mode="json"),
+            initial_state=LifecycleState.APPROVED,
+        )
+
+    extras = {"reshare_id": "rs-test-1"}
+    await _gate_and_run(
+        session,
+        registry,
+        saga_id,
+        request,
+        StepName.SHIP,
+        extras,
+        from_state=LifecycleState.APPROVED,
+    )
+
+    # An outbox row tagged target=reshare with action=confirm_shipment must
+    # exist for this saga; the worker has not run, so the mock client
+    # has not yet received the call.
+    async with session.begin():
+        rows = (
+            (
+                await session.execute(
+                    select(OutboxRow).where(OutboxRow.saga_id == saga_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.target == "reshare"
+    assert row.status == "pending"
+    assert row.payload == {
+        "action": "confirm_shipment",
+        "args": {"reshare_id": "rs-test-1"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_replayed_forward_does_not_double_enqueue(session) -> None:
+    """Re-running a forward with the same idempotency_key skips outbox enqueue."""
+    saga_id = uuid4()
+    request = _build_request()
+    reshare = MockReShareClient()
+    registry = build_registry(TransactionAgent(reshare))  # type: ignore[arg-type]
+
+    async with session.begin():
+        ledger = SagaLedger(session)
+        await ledger.create_saga(
+            saga_id=saga_id,
+            request_id=request.request_id,
+            request_payload=request.model_dump(mode="json"),
+            initial_state=LifecycleState.APPROVED,
+        )
+
+    # First run: gate + forward with a known idempotency key.
+    fixed_key = new_idempotency_key(prefix="ship-replay")
+
+    async with session.begin():
+        coord = Coordinator(session=session, registry=registry)
+        await coord.open_gate(saga_id=saga_id, step=StepName.SHIP, actor="staff:t")
+        await coord.commit_gate(
+            saga_id=saga_id, step=StepName.SHIP, actor="staff:t", rationale="ok"
+        )
+
+    async with session.begin():
+        coord = Coordinator(session=session, registry=registry)
+        ctx = SagaContext(
+            saga_id=saga_id,
+            request=request,
+            current_state=LifecycleState.APPROVED,
+            idempotency_key=fixed_key,
+            actor="agent:transaction",
+            extras={"reshare_id": "rs-replay-1"},
+        )
+        await coord.run_forward(ctx=ctx, step=StepName.SHIP)
+
+    # Replay: same idempotency_key. Ledger.append returns None → coordinator
+    # must skip enqueue. Result: still exactly one outbox row.
+    async with session.begin():
+        coord = Coordinator(session=session, registry=registry)
+        ctx = SagaContext(
+            saga_id=saga_id,
+            request=request,
+            current_state=LifecycleState.SHIPPED,
+            idempotency_key=fixed_key,
+            actor="agent:transaction",
+            extras={"reshare_id": "rs-replay-1"},
+        )
+        await coord.run_forward(ctx=ctx, step=StepName.SHIP, require_gate=False)
+
+    async with session.begin():
+        rows = (
+            (
+                await session.execute(
+                    select(OutboxRow).where(OutboxRow.saga_id == saga_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(rows) == 1, "replayed forward must not enqueue a duplicate outbox row"

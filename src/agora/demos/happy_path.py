@@ -38,6 +38,7 @@ from agora.saga.db import Base, override_engine
 from agora.saga.flows import build_registry
 from agora.saga.idempotency import new_idempotency_key
 from agora.saga.ledger import SagaLedger
+from agora.saga.outbox import OutboxWorker, make_reshare_handler
 
 SAMPLE_OPENURL = (
     "ctx_ver=Z39.88-2004&rft.genre=book&rft.btitle=Brave+New+World"
@@ -129,6 +130,10 @@ async def main() -> None:
             )
         )
 
+    # Outbox worker dispatches the migrated steps' OutboxIntents onto
+    # the MockReShareClient between lifecycle steps. See ADR-0011.
+    worker = OutboxWorker(sessionmaker, {"reshare": make_reshare_handler(reshare)})
+
     # --- drive lifecycle through gates --------------------------------
     extras: dict = {"chosen_supplier": chosen_supplier}
     for step in (StepName.ROUTE, StepName.APPROVE, StepName.SHIP, StepName.RETURN_ITEM):
@@ -161,6 +166,11 @@ async def main() -> None:
         # Capture reshare_id from APPROVE forward result for later steps.
         if step == StepName.APPROVE and ev is not None:
             extras["reshare_id"] = ev.payload["reshare_id"]
+
+        # Drain outbox so the mock client sees any enqueued ReShare calls
+        # before the next gate runs. In production this is a separate
+        # long-running worker.
+        await worker.drain_until_empty()
 
     # --- print final ledger ------------------------------------------
     async with sessionmaker() as session, session.begin():
