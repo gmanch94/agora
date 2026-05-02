@@ -1,5 +1,7 @@
 # Agora — Architecture (hand-drawn)
 
+> Last reviewed against code: 2026-05-02.
+
 The diagrams below use Mermaid's hand-drawn (`look: handDrawn`) theme so
 they read like a whiteboard sketch. GitHub renders them inline.
 
@@ -83,14 +85,20 @@ stateDiagram-v2
     Shipped --> Returned: borrower confirms<br/>RequesterMarkReturned
     Returned --> [*]
 
-    Submitted --> Cancelled: patron / staff cancel
-    Routed --> Cancelled: re-route exhausted
-    Approved --> Unfilled: supplier RetryPossible
-    Shipped --> Recalled: lender recall
+    Submitted --> Cancelled: submit compensator<br/>(patron withdraw)
+    Routed --> Submitted: route compensator<br/>(re-rank suppliers)
+    Approved --> Cancelled: approve compensator<br/>(cancel at supplier)
+    Shipped --> Disputed: ship compensator<br/>(recall enqueued — manual)
+    Returned --> Disputed: return compensator<br/>(reconciliation case)
     Cancelled --> [*]
     Unfilled --> [*]
-    Recalled --> Returned: physical return
+    Disputed --> [*]
 ```
+
+States and compensator targets reflect `LifecycleState` and
+`saga/flows.py` (no `Recalled` state in the enum — the SHIP
+compensator transitions to `Disputed` and enqueues a recall outbox
+intent for staff intervention).
 
 ## Saga step anatomy (forward + compensator pair)
 
@@ -132,8 +140,14 @@ flowchart TB
     LEDG -->|fresh| OK["commit"]
 
     OUT["Outbound delivery<br/>(to ReShare / peer)"] --> OBOX[("outbox<br/>pending → delivered<br/>or → dead-letter")]
-    OBOX --> RS["ReShare<br/>dedups on<br/>Idempotency-Key header"]
+    OBOX -->|UNIQUE idempotency_key<br/>= worker-replay safe| RS["ReShare mod-rs<br/>(ignores Idempotency-Key;<br/>replay-safety lives in<br/>saga + outbox UNIQUEs)"]
 ```
+
+**Replay-safety lives entirely in our two `UNIQUE` constraints**
+(`saga_event.idempotency_key` and `outbox.idempotency_key`). mod-rs
+predates the `Idempotency-Key` header convention and ignores it; the
+`HttpReShareClient` still passes the header for handlers that do
+honour it, but we do not depend on the external side for dedup.
 
 ## Where standards live
 
