@@ -15,6 +15,8 @@ tests can call ``build_registry`` to get an isolated registry instead.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 from agora.agents.transaction import TransactionAgent
 from agora.models.lifecycle import LifecycleState, StepName
 from agora.saga.context import SagaContext
@@ -24,6 +26,8 @@ from agora.saga.steps import (
     StepResult,
     get_global_registry,
 )
+
+DEFAULT_LOAN_PERIOD_DAYS = 28
 
 
 def build_registry(transaction: TransactionAgent) -> StepRegistry:
@@ -155,12 +159,23 @@ def _wire(reg: StepRegistry, tx: TransactionAgent) -> None:
         reshare_id = ctx.extras.get("reshare_id")
         if not reshare_id:
             raise ValueError("ctx.extras['reshare_id'] is required for ship step")
+        loan_days = int(
+            ctx.extras.get("loan_period_days") or DEFAULT_LOAN_PERIOD_DAYS
+        )
+        shipped_at = datetime.now(UTC)
+        due_at = shipped_at + timedelta(days=loan_days)
         return StepResult(
             state_after=LifecycleState.SHIPPED,
-            payload={"reshare_id": reshare_id},
+            payload={
+                "reshare_id": reshare_id,
+                "shipped_at": shipped_at.isoformat(),
+                "due_at": due_at.isoformat(),
+                "loan_period_days": loan_days,
+            },
             rationale=(
-                "Saga moved to Shipped; supplier mark-shipped enqueued for "
-                "asynchronous delivery via outbox worker."
+                f"Saga moved to Shipped; due {due_at.date().isoformat()}; "
+                "supplier mark-shipped enqueued for asynchronous delivery "
+                "via outbox worker."
             ),
             outbox=[
                 OutboxIntent(
