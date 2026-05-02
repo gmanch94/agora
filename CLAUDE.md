@@ -104,9 +104,19 @@ ISO 18626 message types — see table in `clients/reshare.py`.
 
 ## Known gaps (do not silently fix — flag to user)
 
-- `HttpReShareClient` endpoint paths/payloads are educated guesses
-  — see comment in `clients/reshare.py`. Verify against running
-  ReShare before driving real traffic.
+- `HttpReShareClient` paths and action vocabulary verified against
+  mod-rs master (UrlMappings.groovy, PatronRequestController.groovy,
+  Actions.groovy, ModuleDescriptor-template.json — see module
+  docstring). Remaining unverified surface: (a) the create-request
+  body shape (binds to the `PatronRequest` Grails domain class —
+  caller's `request_payload` is passed through verbatim with the
+  supplier merged under `supplyingInstitutionSymbol`), (b) response
+  field names beyond `id`/`hrid`/`state`, (c) the recall-request
+  mapping — mod-rs has no first-class action so `recall_request`
+  raises `ClientError` until confirmed against a live tenant. Auth
+  uses HTTP Basic (dev path); production needs Okapi token flow.
+  mod-rs does not honour `Idempotency-Key` — replay-safety lives in
+  the saga ledger's UNIQUE constraint, not the wire.
 - TrackingAgent is a stub (no overdue-detection cron yet).
 - NCIP client is mock-only.
 - Outbox **worker** is implemented (`saga/outbox.py`: `OutboxWorker`,

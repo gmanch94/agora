@@ -9,13 +9,36 @@ in-memory mock (``MockReShareClient``) used for tests and when no
 Method names mirror the user-facing lifecycle, but each method maps to
 specific ISO 18626 messages internally:
 
-| Method | ISO 18626 effect |
-|---|---|
-| send_request | Request message to chosen supplier |
-| cancel_request | RequestingAgencyMessage Cancel |
-| confirm_shipment | (lender side) SupplyingAgencyMessage Loaned |
-| confirm_return | RequestingAgencyMessage Returned |
-| recall_request | RequestingAgencyMessage Recall |
+| Method | ISO 18626 effect | mod-rs action |
+|---|---|---|
+| send_request | Request message to chosen supplier | (POST /rs/patronrequests create) |
+| cancel_request | RequestingAgencyMessage Cancel | ``requesterCancel`` |
+| confirm_shipment | (lender side) SupplyingAgencyMessage Loaned | ``supplierMarkShipped`` |
+| confirm_return | RequestingAgencyMessage Returned | ``patronReturnedItem`` (borrower side) |
+| recall_request | RequestingAgencyMessage Recall | *(no first-class action — see method)* |
+
+**API verification (2026-05-02).** Endpoint paths, action vocabulary,
+request/response shapes verified against mod-rs master:
+
+- ``service/grails-app/controllers/mod/rs/UrlMappings.groovy``
+- ``service/grails-app/controllers/mod/rs/PatronRequestController.groovy``
+- ``service/src/main/groovy/org/olf/rs/statemodel/Actions.groovy``
+- ``service/src/main/okapi/ModuleDescriptor-template.json``
+
+Notes from that probe:
+
+1. mod-rs does **not** honour an ``Idempotency-Key`` header. We send it
+   anyway (Okapi forwards unknown headers harmlessly); replay-safety
+   comes from the saga ledger's ``saga_event.idempotency_key`` UNIQUE
+   constraint, not the wire.
+2. ``performAction`` body is ``{action, actionParams}`` (camelCase
+   action), **not** ``{action, reason}``. Reasons go inside
+   ``actionParams``.
+3. mod-rs does not declare ``/admin/health``; we probe with a cheap
+   ``GET /rs/patronrequests?perPage=0`` instead.
+4. Auth in production is the Okapi token flow (``X-Okapi-Token`` from
+   ``POST /authn/login``). HTTP Basic against the module's direct port
+   works only when permissions are disabled — kept here as a dev path.
 """
 
 from __future__ import annotations
@@ -81,13 +104,26 @@ class ReShareClient(Protocol):
 class HttpReShareClient:
     """Real HTTP client for FOLIO mod-rs.
 
-    Endpoints below follow the public mod-rs API shape. They are
-    *placeholders* for the prototype — verified URLs/payloads should
-    be confirmed against the running ReShare instance before we drive
-    real traffic. The HTTP shape, idempotency header, and error
-    mapping are correct; only the exact paths/payload keys may need
-    tweaking.
+    Paths and action strings verified against mod-rs master (see module
+    docstring for source files). The remaining unverified surface is
+    the **create-request body shape** — mod-rs binds the POST body
+    directly onto its ``PatronRequest`` Grails domain object, so the
+    exact field names depend on that class. We pass the caller's
+    ``request_payload`` through as the top-level body and merge the
+    chosen supplier under ``supplyingInstitutionSymbol``; if the
+    domain class uses different keys, callers must shape
+    ``request_payload`` accordingly.
+
+    Auth: HTTP Basic is dev-only (works when hitting the module's
+    direct port with permissions disabled). Real deployments use the
+    Okapi token flow — wire that here once we have a live tenant.
     """
+
+    # Action strings honoured by mod-rs's PatronRequestController.
+    # Source: service/src/main/groovy/org/olf/rs/statemodel/Actions.groovy
+    _ACTION_REQUESTER_CANCEL = "requesterCancel"
+    _ACTION_SUPPLIER_MARK_SHIPPED = "supplierMarkShipped"
+    _ACTION_PATRON_RETURNED_ITEM = "patronReturnedItem"
 
     def __init__(self, settings: Settings | None = None):
         s = settings or get_settings()
@@ -105,6 +141,17 @@ class HttpReShareClient:
     async def aclose(self) -> None:
         await self._client.aclose()
 
+    def _headers(self, *, idempotency_key: str | None = None) -> dict[str, str]:
+        h = {
+            "X-Okapi-Tenant": self._tenant,
+            "Accept": "application/json",
+        }
+        if idempotency_key is not None:
+            # mod-rs ignores this header — kept for upstream proxies and
+            # log-correlation. Real dedup lives in the saga ledger.
+            h["Idempotency-Key"] = idempotency_key
+        return h
+
     @retry(
         retry=retry_if_exception_type(RemoteUnavailableError),
         stop=stop_after_attempt(3),
@@ -117,13 +164,7 @@ class HttpReShareClient:
         url = f"{self._base_url}{path}"
         try:
             resp = await self._client.post(
-                url,
-                json=json,
-                headers={
-                    "X-Okapi-Tenant": self._tenant,
-                    "Idempotency-Key": idempotency_key,
-                    "Accept": "application/json",
-                },
+                url, json=json, headers=self._headers(idempotency_key=idempotency_key)
             )
         except httpx.RequestError as exc:
             raise RemoteUnavailableError(str(exc)) from exc
@@ -136,6 +177,26 @@ class HttpReShareClient:
             raise ClientError(f"{path}: {resp.status_code} {resp.text}")
         return resp.json()
 
+    async def _perform_action(
+        self,
+        *,
+        reshare_id: str,
+        idempotency_key: str,
+        action: str,
+        action_params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """POST /rs/patronrequests/{id}/performAction with verified body shape.
+
+        Body is ``{"action": <camelCase>, "actionParams": {...}}`` per
+        ``PatronRequestController.performAction`` — *not* a flat
+        ``{action, reason}`` envelope.
+        """
+        return await self._post(
+            f"/rs/patronrequests/{reshare_id}/performAction",
+            idempotency_key=idempotency_key,
+            json={"action": action, "actionParams": action_params or {}},
+        )
+
     async def send_request(
         self,
         *,
@@ -143,7 +204,12 @@ class HttpReShareClient:
         request_payload: dict[str, Any],
         supplier_symbol: str,
     ) -> ReShareSendResult:
-        body = {"supplier": supplier_symbol, "request": request_payload}
+        # mod-rs deserialises this body straight onto its PatronRequest
+        # domain object. Top-level fields (title, author, patronIdentifier,
+        # requestingInstitutionSymbol, supplyingInstitutionSymbol, ...)
+        # must match the domain class — caller's request_payload is
+        # passed through verbatim, with the chosen supplier merged in.
+        body = {**request_payload, "supplyingInstitutionSymbol": supplier_symbol}
         data = await self._post(
             "/rs/patronrequests", idempotency_key=idempotency_key, json=body
         )
@@ -152,60 +218,85 @@ class HttpReShareClient:
     async def cancel_request(
         self, *, idempotency_key: str, reshare_id: str, reason: str
     ) -> ReShareSendResult:
-        data = await self._post(
-            f"/rs/patronrequests/{reshare_id}/performAction",
+        data = await self._perform_action(
+            reshare_id=reshare_id,
             idempotency_key=idempotency_key,
-            json={"action": "RequesterCancel", "reason": reason},
+            action=self._ACTION_REQUESTER_CANCEL,
+            action_params={"reason": reason},
         )
         return _parse(data)
 
     async def confirm_shipment(
         self, *, idempotency_key: str, reshare_id: str
     ) -> ReShareSendResult:
-        data = await self._post(
-            f"/rs/patronrequests/{reshare_id}/performAction",
+        data = await self._perform_action(
+            reshare_id=reshare_id,
             idempotency_key=idempotency_key,
-            json={"action": "SupplierMarkShipped"},
+            action=self._ACTION_SUPPLIER_MARK_SHIPPED,
         )
         return _parse(data)
 
     async def confirm_return(
         self, *, idempotency_key: str, reshare_id: str
     ) -> ReShareSendResult:
-        data = await self._post(
-            f"/rs/patronrequests/{reshare_id}/performAction",
+        # Borrower-side: the requester confirms the patron handed the
+        # item back. Lender-side equivalent (``itemReturned``) belongs
+        # in a separate code path if/when we drive supplier flows.
+        data = await self._perform_action(
+            reshare_id=reshare_id,
             idempotency_key=idempotency_key,
-            json={"action": "RequesterMarkReturned"},
+            action=self._ACTION_PATRON_RETURNED_ITEM,
         )
         return _parse(data)
 
     async def recall_request(
         self, *, idempotency_key: str, reshare_id: str, reason: str
     ) -> ReShareSendResult:
-        data = await self._post(
-            f"/rs/patronrequests/{reshare_id}/performAction",
-            idempotency_key=idempotency_key,
-            json={"action": "SupplierRecall", "reason": reason},
+        # mod-rs's Actions.groovy has no first-class "recall" action.
+        # ISO 18626 recall is a RequestingAgencyMessage; the right
+        # mod-rs mapping (probably ``message`` with a recall reason
+        # body, or a state-specific action we haven't found) needs
+        # confirmation against a live ReShare instance before we drive
+        # real traffic. Fail loudly rather than silently 4xx.
+        raise ClientError(
+            "recall_request: mod-rs action mapping unverified — "
+            "needs confirmation against running ReShare. "
+            f"reshare_id={reshare_id} reason={reason!r}"
         )
-        return _parse(data)
 
     async def health(self) -> bool:
+        # mod-rs does not declare /admin/health. Use a cheap
+        # collection probe instead — declared in ModuleDescriptor with
+        # permission ``rs.patronrequests.collection.get``.
         try:
             resp = await self._client.get(
-                f"{self._base_url}/admin/health",
-                headers={"X-Okapi-Tenant": self._tenant},
+                f"{self._base_url}/rs/patronrequests?perPage=0",
+                headers=self._headers(),
             )
         except httpx.RequestError:
             return False
-        return resp.status_code < 500
+        return resp.status_code in (200, 204)
 
 
 def _parse(data: dict[str, Any], *, supplier_default: str = "") -> ReShareSendResult:
+    """Best-effort ReShare response parse.
+
+    mod-rs returns Grails-marshalled JSON. ``state`` is a refdata
+    association (``{"code": "...", "label": "..."}``) — we flatten to
+    its ``code``. ``isoMessageId`` / ``supplyingAgencyId`` are not
+    standard top-level fields on the create response; until we have
+    sample payloads from a live tenant they may come back empty.
+    """
+    state = data.get("state")
+    if isinstance(state, dict):
+        state_str = str(state.get("code") or state.get("label") or "Requested")
+    else:
+        state_str = str(state or "Requested")
     return ReShareSendResult(
         reshare_id=str(data.get("id") or data.get("hrid") or ""),
         iso_message_id=str(data.get("isoMessageId") or data.get("messageId") or ""),
         supplier_symbol=str(data.get("supplyingAgencyId") or supplier_default),
-        state=str(data.get("state") or "Requested"),
+        state=state_str,
     )
 
 
