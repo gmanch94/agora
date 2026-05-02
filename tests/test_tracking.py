@@ -11,6 +11,7 @@ Verify two things:
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -291,3 +292,63 @@ async def test_overdue_scanner_ignores_non_shipped_sagas(engine) -> None:
     scanner = OverdueScanner(sm, now_fn=lambda: now)
     records = await scanner.scan()
     assert records == []
+
+
+@pytest.mark.asyncio
+async def test_overdue_scanner_run_forever_loops_until_cancelled(engine) -> None:
+    """run_forever invokes scan() repeatedly until cancellation.
+
+    Stubs ``scanner.scan`` to avoid racing real DB sessions against the
+    background loop on shared in-memory SQLite (causes intermittent
+    'database is locked' under aiosqlite). The pure call-counting form
+    is sufficient to exercise the loop + cancel contract.
+    """
+    sm = async_sessionmaker(bind=engine, expire_on_commit=False)
+    scanner = OverdueScanner(sm)
+    calls = {"n": 0}
+
+    async def counting_scan() -> list:
+        calls["n"] += 1
+        return []
+
+    scanner.scan = counting_scan  # type: ignore[method-assign]
+    task = asyncio.create_task(scanner.run_forever(poll_interval=0.01))
+    for _ in range(50):
+        await asyncio.sleep(0.01)
+        if calls["n"] >= 3:
+            break
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert calls["n"] >= 3, "run_forever must call scan repeatedly"
+
+
+@pytest.mark.asyncio
+async def test_overdue_scanner_run_forever_swallows_pass_errors(engine) -> None:
+    """A scan-pass exception is logged + absorbed; loop keeps running."""
+    sm = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    scanner = OverdueScanner(sm)
+    calls = {"n": 0}
+
+    async def flaky_scan() -> list:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("transient db blip")
+        return []
+
+    scanner.scan = flaky_scan  # type: ignore[method-assign]
+    task = asyncio.create_task(scanner.run_forever(poll_interval=0.01))
+    # Wait until at least 2 calls happened (one failure, one success).
+    for _ in range(50):
+        await asyncio.sleep(0.01)
+        if calls["n"] >= 2:
+            break
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert calls["n"] >= 2, "loop must continue past a single scan failure"
