@@ -51,4 +51,4 @@ async def session(engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
 
 @pytest.fixture
 def reshare() -> ReShareClient:
-    return MockReShareClient()  # type: ignore[return-value]
+    return MockReShareClient()

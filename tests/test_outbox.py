@@ -18,7 +18,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from agora.clients.reshare import MockReShareClient
 from agora.saga.db import OutboxRow
@@ -32,12 +32,12 @@ from agora.saga.outbox import (
 
 
 @pytest.fixture
-def sm(engine: AsyncEngine) -> async_sessionmaker:
+def sm(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
     return async_sessionmaker(bind=engine, expire_on_commit=False)
 
 
 async def _enqueue(
-    sm: async_sessionmaker,
+    sm: async_sessionmaker[AsyncSession],
     *,
     target: str,
     payload: dict[str, Any],
@@ -58,14 +58,14 @@ async def _enqueue(
         return row.id
 
 
-async def _row(sm: async_sessionmaker, row_id: int) -> OutboxRow:
+async def _row(sm: async_sessionmaker[AsyncSession], row_id: int) -> OutboxRow:
     async with sm() as s:
         result = await s.execute(select(OutboxRow).where(OutboxRow.id == row_id))
         row = result.scalar_one()
         return row
 
 
-async def test_drain_marks_delivered(sm: async_sessionmaker) -> None:
+async def test_drain_marks_delivered(sm: async_sessionmaker[AsyncSession]) -> None:
     seen: list[tuple[dict[str, Any], str]] = []
 
     async def ok_handler(payload: dict[str, Any], idem: str) -> None:
@@ -91,7 +91,7 @@ async def test_drain_marks_delivered(sm: async_sessionmaker) -> None:
 
 
 async def test_handler_failure_marks_pending_with_backoff(
-    sm: async_sessionmaker,
+    sm: async_sessionmaker[AsyncSession],
 ) -> None:
     async def boom(payload: dict[str, Any], idem: str) -> None:
         raise RuntimeError("dispatch broke")
@@ -116,7 +116,7 @@ async def test_handler_failure_marks_pending_with_backoff(
     assert sched >= before + timedelta(seconds=29)
 
 
-async def test_max_attempts_marks_dead_letter(sm: async_sessionmaker) -> None:
+async def test_max_attempts_marks_dead_letter(sm: async_sessionmaker[AsyncSession]) -> None:
     async def always_fail(payload: dict[str, Any], idem: str) -> None:
         raise RuntimeError("nope")
 
@@ -136,7 +136,7 @@ async def test_max_attempts_marks_dead_letter(sm: async_sessionmaker) -> None:
     assert row.attempts == 3
 
 
-async def test_duplicate_idempotency_key_raises(sm: async_sessionmaker) -> None:
+async def test_duplicate_idempotency_key_raises(sm: async_sessionmaker[AsyncSession]) -> None:
     """Two enqueues with the same idem key must hit the UNIQUE constraint."""
     key = f"idem-dup-{uuid4()}"
     await _enqueue(sm, target="t1", payload={}, idempotency_key=key)
@@ -145,7 +145,7 @@ async def test_duplicate_idempotency_key_raises(sm: async_sessionmaker) -> None:
         await _enqueue(sm, target="t1", payload={}, idempotency_key=key)
 
 
-async def test_scheduled_for_future_is_skipped(sm: async_sessionmaker) -> None:
+async def test_scheduled_for_future_is_skipped(sm: async_sessionmaker[AsyncSession]) -> None:
     seen: list[str] = []
 
     async def handler(payload: dict[str, Any], idem: str) -> None:
@@ -169,7 +169,7 @@ async def test_scheduled_for_future_is_skipped(sm: async_sessionmaker) -> None:
     assert row.status == "pending"
 
 
-async def test_unknown_target_skipped_not_failed(sm: async_sessionmaker) -> None:
+async def test_unknown_target_skipped_not_failed(sm: async_sessionmaker[AsyncSession]) -> None:
     row_id = await _enqueue(sm, target="nobody", payload={})
 
     worker = OutboxWorker(sm, handlers={})
@@ -181,7 +181,7 @@ async def test_unknown_target_skipped_not_failed(sm: async_sessionmaker) -> None
     assert row.attempts == 0  # we never even tried
 
 
-async def test_reshare_handler_dispatches_to_client(sm: async_sessionmaker) -> None:
+async def test_reshare_handler_dispatches_to_client(sm: async_sessionmaker[AsyncSession]) -> None:
     """make_reshare_handler routes payload['action'] to the right client method."""
     client = MockReShareClient()
     handler: Handler = make_reshare_handler(client)
@@ -235,7 +235,7 @@ async def test_reshare_handler_dispatches_to_client(sm: async_sessionmaker) -> N
     assert cancelled.state == "Cancelled"
 
 
-async def test_reshare_handler_rejects_unknown_action(sm: async_sessionmaker) -> None:
+async def test_reshare_handler_rejects_unknown_action(sm: async_sessionmaker[AsyncSession]) -> None:
     client = MockReShareClient()
     handler = make_reshare_handler(client)
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from agora.saga.idempotency import (
     inbox_record,
@@ -29,7 +30,7 @@ def test_new_idempotency_key_with_prefix_starts_with_prefix() -> None:
 
 
 @pytest.mark.asyncio
-async def test_inbox_dedupes_same_message_id(session) -> None:
+async def test_inbox_dedupes_same_message_id(session: AsyncSession) -> None:
     async with session.begin():
         first = await inbox_record(
             session, message_id="m-1", source="reshare", response={"ok": True}
@@ -52,7 +53,7 @@ async def test_inbox_dedupes_same_message_id(session) -> None:
 
 
 @pytest.mark.asyncio
-async def test_outbox_pending_then_delivered(session) -> None:
+async def test_outbox_pending_then_delivered(session: AsyncSession) -> None:
     saga_id = uuid4()
     async with session.begin():
         row = await outbox_enqueue(
@@ -77,7 +78,7 @@ async def test_outbox_pending_then_delivered(session) -> None:
 
 
 @pytest.mark.asyncio
-async def test_outbox_mark_failed_dead_letters_after_max_attempts(session) -> None:
+async def test_outbox_mark_failed_dead_letters_after_max_attempts(session: AsyncSession) -> None:
     saga_id = uuid4()
     async with session.begin():
         row = await outbox_enqueue(

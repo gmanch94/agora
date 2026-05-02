@@ -19,16 +19,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from uuid import uuid4
+from typing import Any
+from uuid import UUID, uuid4
 
 import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from agora.agents.transaction import TransactionAgent
 from agora.clients.reshare import MockReShareClient
-from agora.models.events import NewSagaEvent
+from agora.models.events import NewSagaEvent, SagaEvent
 from agora.models.lifecycle import (
     EventKind,
     LifecycleState,
@@ -49,6 +51,7 @@ from agora.saga.db import OutboxRow
 from agora.saga.flows import build_registry
 from agora.saga.idempotency import new_idempotency_key
 from agora.saga.ledger import SagaLedger, TerminalStateError
+from agora.saga.steps import StepRegistry
 
 _NON_TERMINAL = [
     LifecycleState.SUBMITTED,
@@ -68,7 +71,9 @@ _NON_TERMINAL = [
     n=st.integers(min_value=1, max_value=10),
     replay_each=st.integers(min_value=1, max_value=4),
 )
-async def test_replay_idempotency_under_concurrency(session, n, replay_each) -> None:
+async def test_replay_idempotency_under_concurrency(
+    session: AsyncSession, n: int, replay_each: int
+) -> None:
     """Append N events, replay each ``replay_each`` times → exactly N rows."""
     saga_id = uuid4()
     async with session.begin():
@@ -192,7 +197,13 @@ def _seed_to_dict(seed: tuple[tuple[str, str], ...]) -> dict[str, str]:
     return {k: v for k, v in seed}
 
 
-async def _create_saga(session, *, saga_id, request, initial_state) -> None:
+async def _create_saga(
+    session: AsyncSession,
+    *,
+    saga_id: UUID,
+    request: IllRequest,
+    initial_state: LifecycleState,
+) -> None:
     async with session.begin():
         ledger = SagaLedger(session)
         await ledger.create_saga(
@@ -203,7 +214,12 @@ async def _create_saga(session, *, saga_id, request, initial_state) -> None:
         )
 
 
-async def _gate(session, registry, saga_id, step) -> None:
+async def _gate(
+    session: AsyncSession,
+    registry: StepRegistry,
+    saga_id: UUID,
+    step: StepName,
+) -> None:
     async with session.begin():
         coord = Coordinator(session=session, registry=registry)
         await coord.open_gate(saga_id=saga_id, step=step, actor="staff:t")
@@ -213,9 +229,17 @@ async def _gate(session, registry, saga_id, step) -> None:
 
 
 async def _forward(
-    session, registry, saga_id, request, step, extras, from_state, key, *,
+    session: AsyncSession,
+    registry: StepRegistry,
+    saga_id: UUID,
+    request: IllRequest,
+    step: StepName,
+    extras: dict[str, Any],
+    from_state: LifecycleState,
+    key: str,
+    *,
     require_gate: bool = True,
-):
+) -> SagaEvent | None:
     async with session.begin():
         coord = Coordinator(session=session, registry=registry)
         ctx = SagaContext(
@@ -229,7 +253,16 @@ async def _forward(
         return await coord.run_forward(ctx=ctx, step=step, require_gate=require_gate)
 
 
-async def _comp(session, registry, saga_id, request, step, extras, current_state, key):
+async def _comp(
+    session: AsyncSession,
+    registry: StepRegistry,
+    saga_id: UUID,
+    request: IllRequest,
+    step: StepName,
+    extras: dict[str, Any],
+    current_state: LifecycleState,
+    key: str,
+) -> SagaEvent | None:
     async with session.begin():
         coord = Coordinator(session=session, registry=registry)
         ctx = SagaContext(
@@ -250,13 +283,13 @@ async def _comp(session, registry, saga_id, request, step, extras, current_state
     suppress_health_check=[HealthCheck.function_scoped_fixture],
 )
 @given(step=st.sampled_from(_COMP_RUNNABLE))
-async def test_compensator_lands_in_documented_state(session, step) -> None:
+async def test_compensator_lands_in_documented_state(session: AsyncSession, step: StepName) -> None:
     """For every runnable (forward, compensator) pair, comp lands in
     its documented ``comp_state``."""
     spec = _SPECS[step]
     saga_id = uuid4()
     request = _build_request()
-    registry = build_registry(TransactionAgent(MockReShareClient()))  # type: ignore[arg-type]
+    registry = build_registry(TransactionAgent(MockReShareClient()))
 
     await _create_saga(
         session, saga_id=saga_id, request=request, initial_state=spec.pre_state
@@ -298,12 +331,12 @@ async def test_compensator_lands_in_documented_state(session, step) -> None:
     suppress_health_check=[HealthCheck.function_scoped_fixture],
 )
 @given(step=st.sampled_from(_ALL_STEPS))
-async def test_compensator_without_committed_forward_raises(session, step) -> None:
+async def test_compensator_without_committed_forward_raises(session: AsyncSession, step: StepName) -> None:
     """``run_compensator`` must refuse if no committed forward exists."""
     spec = _SPECS[step]
     saga_id = uuid4()
     request = _build_request()
-    registry = build_registry(TransactionAgent(MockReShareClient()))  # type: ignore[arg-type]
+    registry = build_registry(TransactionAgent(MockReShareClient()))
 
     await _create_saga(
         session, saga_id=saga_id, request=request, initial_state=spec.pre_state
@@ -328,13 +361,15 @@ async def test_compensator_without_committed_forward_raises(session, step) -> No
     step=st.sampled_from(_COMP_RUNNABLE),
     replays=st.integers(min_value=2, max_value=4),
 )
-async def test_compensator_replay_is_idempotent(session, step, replays) -> None:
+async def test_compensator_replay_is_idempotent(
+    session: AsyncSession, step: StepName, replays: int
+) -> None:
     """N comp runs with the same idempotency_key → 1 ledger event +
     (at most) 1 outbox row for the comp's intent."""
     spec = _SPECS[step]
     saga_id = uuid4()
     request = _build_request()
-    registry = build_registry(TransactionAgent(MockReShareClient()))  # type: ignore[arg-type]
+    registry = build_registry(TransactionAgent(MockReShareClient()))
 
     await _create_saga(
         session, saga_id=saga_id, request=request, initial_state=spec.pre_state
@@ -412,14 +447,14 @@ async def test_compensator_replay_is_idempotent(session, step, replays) -> None:
     replays=st.integers(min_value=2, max_value=5),
 )
 async def test_forward_replay_outbox_count_invariant(
-    session, step, replays
+    session: AsyncSession, step: StepName, replays: int
 ) -> None:
     """Replaying a forward with the same idempotency_key must enqueue
     exactly one outbox row."""
     spec = _SPECS[step]
     saga_id = uuid4()
     request = _build_request()
-    registry = build_registry(TransactionAgent(MockReShareClient()))  # type: ignore[arg-type]
+    registry = build_registry(TransactionAgent(MockReShareClient()))
 
     await _create_saga(
         session, saga_id=saga_id, request=request, initial_state=spec.pre_state
@@ -451,12 +486,12 @@ async def test_forward_replay_outbox_count_invariant(
 
 
 @pytest.mark.asyncio
-async def test_terminal_forward_blocks_compensator(session) -> None:
+async def test_terminal_forward_blocks_compensator(session: AsyncSession) -> None:
     """RETURN_ITEM forward → RETURNED is terminal; the ledger must
     refuse the paired compensator."""
     saga_id = uuid4()
     request = _build_request()
-    registry = build_registry(TransactionAgent(MockReShareClient()))  # type: ignore[arg-type]
+    registry = build_registry(TransactionAgent(MockReShareClient()))
     spec = _SPECS[StepName.RETURN_ITEM]
 
     await _create_saga(
