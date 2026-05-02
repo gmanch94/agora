@@ -19,6 +19,7 @@ the demo and tests can drive directly.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -179,6 +180,40 @@ class OverdueScanner:
             newly=sum(1 for r in results if r.newly_recorded),
         )
         return results
+
+    async def run_forever(self, *, poll_interval: float = 300.0) -> None:
+        """Production loop: scan, sleep, repeat. Cancellation-aware.
+
+        Mirror of :meth:`OutboxWorker.run_forever`. Caller is expected to
+        wrap this in :func:`asyncio.create_task` and ``task.cancel()`` on
+        shutdown. We catch :class:`asyncio.CancelledError` to log a clean
+        exit message and re-raise.
+
+        Per-pass exceptions are logged + swallowed so a transient DB
+        glitch doesn't kill the loop. The scanner is naturally
+        idempotent (deterministic ``overdue-{saga_id}`` key absorbed by
+        the ledger UNIQUE constraint), so re-scanning after a partial
+        pass is safe.
+
+        ``poll_interval`` defaults to 300s (5 min) — overdue detection
+        is not time-critical, and a long interval keeps log volume low.
+        Set via ``AGORA_TRACKING_SCAN_INTERVAL_SECS`` in production.
+        """
+        log.info("tracking.scanner.start", poll_interval=poll_interval)
+        try:
+            while True:
+                try:
+                    await self.scan()
+                except Exception as exc:
+                    # Don't let a scanner-level bug kill the loop;
+                    # log and back off for the normal poll interval.
+                    log.exception(
+                        "tracking.scanner.unexpected_error", error=str(exc)
+                    )
+                await asyncio.sleep(poll_interval)
+        except asyncio.CancelledError:
+            log.info("tracking.scanner.cancelled")
+            raise
 
 
 def _parse_iso(value: str) -> datetime | None:

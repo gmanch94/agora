@@ -26,6 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agora import __version__
+from agora.agents.tracking import OverdueScanner
 from agora.agents.transaction import TransactionAgent
 from agora.api.schemas import (
     ApprovalBody,
@@ -184,12 +185,16 @@ def create_app() -> FastAPI:
     without rebuilding closures on every call (which would otherwise
     trip ``StepRegistry.register``'s same-name-different-callable check).
 
-    Startup spawns a single :class:`OutboxWorker` task that polls the
-    ``outbox`` table and dispatches pending rows. Disable via
-    ``AGORA_OUTBOX_WORKER_ENABLED=0`` (e.g. when running migrations).
+    Startup spawns two background tasks:
+    - :class:`OutboxWorker` — polls the ``outbox`` table and dispatches
+      pending rows. Disable via ``AGORA_OUTBOX_WORKER_ENABLED=0``.
+    - :class:`OverdueScanner` — periodically scans shipped sagas for
+      overdue items and writes idempotent OBSERVATION events. Disable
+      via ``AGORA_TRACKING_SCANNER_ENABLED=0``.
+
     Tests using ``httpx.ASGITransport`` do not trigger the lifespan, so
-    no worker spawns there; tests that explicitly need the worker can
-    enter the lifespan context manually.
+    no background tasks spawn there; tests that explicitly need them
+    can enter the lifespan context manually.
     """
     configure_logging()
     settings = get_settings()
@@ -202,8 +207,19 @@ def create_app() -> FastAPI:
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        """Spawn the outbox worker on startup; cancel it on shutdown."""
+        """Spawn outbox worker + tracking scanner on startup; cancel on shutdown.
+
+        Two background tasks share this lifespan:
+        - ``OutboxWorker`` drains ``outbox`` rows via target handlers.
+        - ``OverdueScanner`` periodically observes overdue shipped sagas.
+
+        Both honour their own ``*_ENABLED`` env flag so they can be
+        disabled independently (e.g. when running migrations or in
+        tests that don't enter the lifespan).
+        """
         worker_task: asyncio.Task[None] | None = None
+        scanner_task: asyncio.Task[None] | None = None
+
         if settings.outbox_worker_enabled:
             worker = OutboxWorker(
                 get_sessionmaker(),
@@ -226,6 +242,26 @@ def create_app() -> FastAPI:
             app.state.outbox_worker = None
             app.state.outbox_worker_task = None
             log.info("api.outbox_worker.disabled")
+
+        if settings.tracking_scanner_enabled:
+            scanner = OverdueScanner(get_sessionmaker())
+            scanner_task = asyncio.create_task(
+                scanner.run_forever(
+                    poll_interval=settings.tracking_scan_interval_secs
+                ),
+                name="agora.tracking.scanner",
+            )
+            app.state.tracking_scanner = scanner
+            app.state.tracking_scanner_task = scanner_task
+            log.info(
+                "api.tracking_scanner.started",
+                poll_interval=settings.tracking_scan_interval_secs,
+            )
+        else:
+            app.state.tracking_scanner = None
+            app.state.tracking_scanner_task = None
+            log.info("api.tracking_scanner.disabled")
+
         try:
             yield
         finally:
@@ -234,6 +270,11 @@ def create_app() -> FastAPI:
                 with contextlib.suppress(asyncio.CancelledError):
                     await worker_task
                 log.info("api.outbox_worker.stopped")
+            if scanner_task is not None:
+                scanner_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await scanner_task
+                log.info("api.tracking_scanner.stopped")
 
     app = FastAPI(
         title="Agora ILL",
@@ -248,6 +289,8 @@ def create_app() -> FastAPI:
     # when the lifespan never runs (e.g. ASGI transports that skip it).
     app.state.outbox_worker = None
     app.state.outbox_worker_task = None
+    app.state.tracking_scanner = None
+    app.state.tracking_scanner_task = None
 
     @app.get("/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
