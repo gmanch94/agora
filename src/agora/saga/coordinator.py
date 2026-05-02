@@ -292,11 +292,20 @@ class Coordinator:
         actor: str,
         payload: dict[str, Any],
         rationale: str | None = None,
-    ) -> None:
-        """Append a non-state-changing observation (e.g. agent rationale)."""
+        idempotency_key: str | None = None,
+    ) -> SagaEvent | None:
+        """Append a non-state-changing observation (e.g. agent rationale).
+
+        If ``idempotency_key`` is omitted, a fresh ULID is generated and
+        the observation is always appended. Pass a deterministic key
+        (e.g. the overdue scanner uses ``f"overdue-{saga_id}"``) to make
+        repeat appends idempotent — the second insert hits the saga
+        ledger's UNIQUE constraint and ``ledger.append`` returns the
+        existing row instead of writing a duplicate.
+        """
         saga = await self._ledger.get_saga(saga_id)
         current = LifecycleState(saga.current_state)
-        await self._ledger.append(
+        return await self._ledger.append(
             NewSagaEvent(
                 saga_id=saga_id,
                 kind=EventKind.OBSERVATION,
@@ -304,7 +313,8 @@ class Coordinator:
                 state_before=current,
                 state_after=current,
                 actor=actor,
-                idempotency_key=new_idempotency_key(prefix=f"obs-{step.value}"),
+                idempotency_key=idempotency_key
+                or new_idempotency_key(prefix=f"obs-{step.value}"),
                 payload=payload,
                 outcome=StepOutcome.COMMITTED,
                 rationale=rationale,
