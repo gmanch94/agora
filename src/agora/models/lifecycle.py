@@ -11,10 +11,20 @@ from enum import Enum
 
 
 class LifecycleState(str, Enum):
-    """User-facing lifecycle visible in the staff console."""
+    """User-facing lifecycle visible in the staff console.
+
+    ``APPROVING`` is an in-flight intermediate between ``ROUTED`` and
+    ``APPROVED``: the saga has committed the intent to ask a supplier
+    (the APPROVE forward enqueued an outbox row) but the worker has
+    not yet observed the supplier ack. See ADR-0012. The current
+    APPROVE flow still transitions directly to ``APPROVED``; the new
+    state is wired into the enum first so downstream PRs can adopt it
+    without an enum-domain migration.
+    """
 
     SUBMITTED = "submitted"
     ROUTED = "routed"
+    APPROVING = "approving"
     APPROVED = "approved"
     SHIPPED = "shipped"
     RETURNED = "returned"
