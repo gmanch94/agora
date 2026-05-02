@@ -172,7 +172,7 @@ class Coordinator:
                 state_after=result.state_after.value,
                 outbox_intents=len(result.outbox),
             )
-            assert persisted is not None  # ledger.append never returns None in practice
+            assert persisted is not None  # nosec B101  # ledger.append never returns None in practice
             return persisted
         except Exception as exc:
             failed = NewSagaEvent(
@@ -250,7 +250,7 @@ class Coordinator:
             state_after=result.state_after.value,
             outbox_intents=len(result.outbox),
         )
-        assert persisted is not None
+        assert persisted is not None  # nosec B101  # ledger.append never returns None in practice
         return persisted
 
     async def _enqueue_outbox(self, saga_id: UUID, result: StepResult) -> None:

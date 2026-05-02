@@ -145,7 +145,7 @@ def _subfield(rec: object, tag: str, code: str, ns: dict[str, str]) -> str | Non
     """Helper: pull subfield text or None."""
     from lxml import etree as _etree
 
-    assert isinstance(rec, _etree._Element)
+    assert isinstance(rec, _etree._Element)  # nosec B101  # mypy narrowing for caller-provided node
     found = rec.find(
         f"./marc:datafield[@tag='{tag}']/marc:subfield[@code='{code}']", ns
     )

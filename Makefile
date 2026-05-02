@@ -1,6 +1,6 @@
 # Agora — common dev commands
 
-.PHONY: help install fmt lint type test test-fast cov up down logs db-reset migrate api demo chaos clean
+.PHONY: help install fmt lint type test test-fast cov audit up down logs db-reset migrate api demo chaos clean
 
 help:
 	@echo "Common targets:"
@@ -11,6 +11,7 @@ help:
 	@echo "  test        pytest (all)"
 	@echo "  test-fast   pytest -m 'not slow and not integration'"
 	@echo "  cov         pytest with coverage"
+	@echo "  audit       security scan (bandit + pip-audit + detect-secrets)"
 	@echo "  up          docker compose up -d"
 	@echo "  down        docker compose down"
 	@echo "  logs        docker compose logs -f"
@@ -41,6 +42,16 @@ test-fast:
 
 cov:
 	pytest --cov=src/agora --cov-report=term-missing --cov-report=html
+
+audit:
+	# Static analysis of source tree. Tests dir excluded via [tool.bandit]
+	# in pyproject.toml.
+	bandit -r src/agora/ -q
+	# Audit installed env for known CVEs. Network-bound (PyPI advisory DB).
+	pip-audit
+	# Scan for new secrets vs the committed baseline. Update baseline with:
+	#   detect-secrets scan --baseline .secrets.baseline
+	detect-secrets-hook --baseline .secrets.baseline $(shell git ls-files)
 
 up:
 	docker compose up -d

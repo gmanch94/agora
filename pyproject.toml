@@ -35,6 +35,9 @@ dev = [
     "mypy>=1.10",
     "respx>=0.20",
     "freezegun>=1.5",
+    "bandit>=1.7",
+    "pip-audit>=2.7",
+    "detect-secrets>=1.5",
 ]
 
 [project.scripts]
@@ -82,6 +85,13 @@ plugins = ["pydantic.mypy"]
 [[tool.mypy.overrides]]
 module = ["lxml.*"]
 ignore_missing_imports = true
+
+[tool.bandit]
+# Skip the test directory: pytest fixtures use bare asserts and mock
+# credentials by design (and bandit can't tell them from production
+# code). Source-tree findings are gated per-line via `# nosec BXXX
+# # reason` comments — see saga/coordinator.py and config.py.
+exclude_dirs = ["tests", ".venv", ".claude"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
