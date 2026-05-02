@@ -18,7 +18,7 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agora.logging import get_logger
-from agora.models.events import NewSagaEvent
+from agora.models.events import NewSagaEvent, SagaEvent
 from agora.models.lifecycle import (
     EventKind,
     LifecycleState,
@@ -115,12 +115,16 @@ class Coordinator:
         ctx: SagaContext,
         step: StepName,
         require_gate: bool = True,
-    ) -> NewSagaEvent:
+    ) -> SagaEvent:
         """Execute a forward step.
 
         If ``require_gate`` is true (default), the most recent ``GATE``
         event for this step must be ``COMMITTED``; otherwise raises
         ``GateRequiredError``.
+
+        Returns the persisted ``SagaEvent`` (with ``seq`` and ``ts``
+        populated). On forward failure, a ``FAILED`` event is recorded
+        and the original exception re-raised.
         """
         if require_gate and not await self._gate_is_committed(ctx.saga_id, step):
             raise GateRequiredError(
@@ -152,14 +156,15 @@ class Coordinator:
                 outcome=outcome,
                 rationale=result.rationale,
             )
-            await self._ledger.append(event)
+            persisted = await self._ledger.append(event)
             log.info(
                 "saga.forward.committed",
                 saga_id=str(ctx.saga_id),
                 step=step.value,
                 state_after=result.state_after.value,
             )
-            return event
+            assert persisted is not None  # ledger.append never returns None in practice
+            return persisted
         except Exception as exc:
             failed = NewSagaEvent(
                 saga_id=ctx.saga_id,
@@ -187,8 +192,12 @@ class Coordinator:
         *,
         ctx: SagaContext,
         step: StepName,
-    ) -> NewSagaEvent:
-        """Run the compensator paired with the most recent committed forward."""
+    ) -> SagaEvent:
+        """Run the compensator paired with the most recent committed forward.
+
+        Returns the persisted ``SagaEvent`` (with ``seq`` and ``ts``
+        populated).
+        """
         forward_event = await self._ledger.find_committed_forward(ctx.saga_id, step.value)
         if forward_event is None:
             raise CoordinatorError(
@@ -220,14 +229,15 @@ class Coordinator:
             outcome=StepOutcome.COMMITTED,
             rationale=result.rationale,
         )
-        await self._ledger.append(event)
+        persisted = await self._ledger.append(event)
         log.info(
             "saga.compensator.committed",
             saga_id=str(ctx.saga_id),
             step=step.value,
             state_after=result.state_after.value,
         )
-        return event
+        assert persisted is not None
+        return persisted
 
     async def record_observation(
         self,

@@ -59,9 +59,25 @@ class SagaDetail(BaseModel):
 
 
 class ApprovalBody(BaseModel):
+    """Staff approval payload.
+
+    The endpoint commits the gate AND runs the forward step in a single
+    transaction. ``extras`` lets the caller supply step-specific inputs
+    (``chosen_supplier`` for ROUTE, ``reshare_id`` for SHIP/RETURN_ITEM)
+    when they cannot be derived from prior committed forward events.
+    """
+
     step: str = Field(description="Saga step the approval applies to")
     actor: str = Field(description="Staff identifier (e.g. 'staff:alice@org')")
     rationale: str
+    extras: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Step-specific inputs. Merged on top of values derived from prior "
+            "committed forward events. Use this for the first ROUTE call to "
+            "supply ``chosen_supplier``."
+        ),
+    )
 
 
 class RejectionBody(BaseModel):
@@ -71,6 +87,20 @@ class RejectionBody(BaseModel):
 
 
 class CompensateBody(BaseModel):
+    """Staff-initiated compensator invocation."""
+
     step: str
     actor: str
     rationale: str
+    extras: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional override for derived extras (rare).",
+    )
+
+
+class StepRunResponse(SagaEventOut):
+    """Response shape for endpoints that execute a saga step.
+
+    Identical to ``SagaEventOut``; named distinctly so OpenAPI surfaces
+    a clear "this is the event we just appended" return type.
+    """

@@ -110,9 +110,11 @@ ISO 18626 message types — see table in `clients/reshare.py`.
 - TrackingAgent is a stub (no overdue-detection cron yet).
 - NCIP client is mock-only.
 - Outbox worker not implemented (table exists; nothing drains it).
-- `POST /sagas/{id}/compensate` returns 501.
-- `POST /sagas/{id}/approve` commits the gate but does not run the
-  forward step. The demo runs forwards directly via `Coordinator`.
+- `POST /sagas/{id}/approve` and `POST /sagas/{id}/compensate` are
+  wired end-to-end (commit gate + run forward / run compensator in
+  one transaction). Step inputs (`chosen_supplier`, `reshare_id`) are
+  derived from prior committed forwards; the request body's `extras`
+  field overrides where derivation is impossible (e.g. first ROUTE).
 - Alembic migration never tested against real Postgres — only SQLite
   via `Base.metadata.create_all()`.
 - mypy installed but not run end-to-end (Protocol covariance issues
