@@ -15,7 +15,7 @@ they explicitly override with a reason that's persisted in the ledger.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 
 from agora.models.request import IllRequest, RequestType
 
@@ -127,7 +127,7 @@ class PolicyAgent:
     def _violates_contu(self, request: IllRequest) -> bool:
         if not request.item.issn or not request.item.year:
             return False
-        current_year = datetime.now().year
+        current_year = datetime.now(UTC).year
         recent_cutoff = current_year - self._window_years
         if request.item.year < recent_cutoff:
             return False  # older than recent window — no CONTU constraint
