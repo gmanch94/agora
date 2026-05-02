@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     tracking_scan_interval_secs: float = Field(
         default=300.0, alias="AGORA_TRACKING_SCAN_INTERVAL_SECS"
     )
+    tracking_recall_after_days: int = Field(
+        default=14, alias="AGORA_TRACKING_RECALL_AFTER_DAYS"
+    )
 
     @property
     def reshare_enabled(self) -> bool:

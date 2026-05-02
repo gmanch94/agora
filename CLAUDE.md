@@ -137,14 +137,24 @@ ISO 18626 message types — see table in `clients/reshare.py`.
   `MockNcipClient` for prototype/tests; real `mod-ncip` integration
   is still future work.
 - TrackingAgent: `OverdueScanner.run_forever` now runs as a background
-  task spawned from the FastAPI lifespan (`agora.tracking.scanner`),
+  task spawned from the FastAPI lifespan (asyncio task name
+  `agora.tracking.scanner`; module is `agora.agents.tracking`),
   polling at `AGORA_TRACKING_SCAN_INTERVAL_SECS` (default 300s). Each
-  pass scans shipped sagas past `due_at` and writes a deterministic
-  `overdue-{saga_id}` OBSERVATION event — UNIQUE constraint absorbs
-  replay. Disable via `AGORA_TRACKING_SCANNER_ENABLED=0`. Single
-  drainer assumed (same caveat as outbox worker). Recall escalation
-  on prolonged overdue is still future work — staff console surfaces
-  the observation badge today.
+  pass scans shipped sagas past `due_at` and writes deterministic
+  OBSERVATION events — UNIQUE constraint absorbs replay. Two-tier
+  emission, both advisory only (no outbox, no state change, no
+  auto-compensator dispatch — ADR-0005): tier-1 `overdue-{saga_id}`
+  fires on the first scan past `due_at`; tier-2
+  `recall-proposed-{saga_id}` fires on the first scan where
+  `days_overdue >= AGORA_TRACKING_RECALL_AFTER_DAYS` (default 14)
+  and carries `suggested_action: "compensate_ship"` plus the
+  `reshare_id` for the staff console to render as a CTA pointing at
+  `POST /sagas/{id}/compensate`. Recorded `days_overdue` is a
+  point-in-time snapshot — UI computes "currently N days" from
+  `due_at` + render clock. Auto-recall and a dedicated RECALLING
+  lifecycle state are explicit non-goals; staff still clicks.
+  Disable via `AGORA_TRACKING_SCANNER_ENABLED=0`. Single drainer
+  assumed (same caveat as outbox worker).
 - Outbox is wired into flows for every ReShare-touching step
   including APPROVE forward (ADR-0011 + ADR-0012). APPROVE forward
   is now pure: it returns an `OutboxIntent` for `send_request` and

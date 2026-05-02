@@ -7,10 +7,24 @@ Two pieces:
 
 - :class:`OverdueScanner` — a periodic sweep that finds sagas in
   ``shipped`` whose ``due_at`` (stamped onto the SHIP forward payload)
-  has passed and records a single deterministic OBSERVATION event per
-  saga. Re-running the scan is idempotent: the observation
-  idempotency key is ``f"overdue-{saga_id}"`` so the saga ledger's
-  UNIQUE constraint absorbs duplicates.
+  has passed and records deterministic OBSERVATION events per saga.
+
+  Two-tier emission, both advisory (no outbox, no state change, no
+  auto-compensator dispatch — see ADR-0005):
+
+    1. ``overdue-{saga_id}`` — written on the first scan past
+       ``due_at``. Surfaces a "X day(s) overdue" badge to staff.
+
+    2. ``recall-proposed-{saga_id}`` — written on the first scan past
+       ``due_at + recall_after_days`` (default 14). Carries
+       ``suggested_action: "compensate_ship"`` so the staff console can
+       render a "recommend recall" CTA. Staff still clicks
+       ``/sagas/{id}/compensate`` — the scanner never auto-recalls.
+
+  Re-running the scan is idempotent: both keys collide on the saga
+  ledger's UNIQUE constraint and the existing rows are returned. The
+  recorded ``days_overdue`` snapshot is intentionally stale; the UI
+  computes "currently N days" from ``due_at`` + render-time clock.
 
 In production the scanner runs as a cron / background task. The
 prototype exposes :meth:`OverdueScanner.scan` as a single async call
@@ -70,13 +84,22 @@ class TrackingAgent:
 
 @dataclass(slots=True, frozen=True)
 class OverdueRecord:
-    """Result entry from :meth:`OverdueScanner.scan`."""
+    """Result entry from :meth:`OverdueScanner.scan`.
+
+    ``newly_recorded`` reflects the tier-1 ``overdue-{saga_id}``
+    observation; ``recall_proposed_newly`` reflects the tier-2
+    ``recall-proposed-{saga_id}`` observation. Both are False on
+    replay (UNIQUE collision returned the existing row); callers can
+    use either flag to gate one-shot side-effects (e.g. staff email).
+    """
 
     saga_id: UUID
     reshare_id: str | None
     due_at: datetime
     days_overdue: int
     newly_recorded: bool
+    recall_proposed: bool = False
+    recall_proposed_newly: bool = False
 
 
 class OverdueScanner:
@@ -103,10 +126,20 @@ class OverdueScanner:
         *,
         actor: str = "agent:tracking",
         now_fn: Callable[[], datetime] | None = None,
+        recall_after_days: int | None = None,
     ):
         self._sm = sessionmaker
         self._actor = actor
         self._now = now_fn or (lambda: datetime.now(UTC))
+        # Resolve threshold lazily-by-construction so callers can pin it
+        # in tests without monkeypatching settings. Production wiring
+        # passes ``settings.tracking_recall_after_days`` from the API
+        # lifespan.
+        if recall_after_days is None:
+            from agora.config import get_settings
+
+            recall_after_days = get_settings().tracking_recall_after_days
+        self._recall_after_days = recall_after_days
 
     async def scan(self) -> list[OverdueRecord]:
         """Run one pass over shipped sagas; return overdue records found."""
@@ -135,10 +168,11 @@ class OverdueScanner:
                     continue
 
                 days_overdue = max((now - due_at).days, 0)
+                reshare_id = ship_event.payload.get("reshare_id")
                 key = f"overdue-{saga.id}"
                 payload = {
                     "kind": "overdue",
-                    "reshare_id": ship_event.payload.get("reshare_id"),
+                    "reshare_id": reshare_id,
                     "due_at": due_iso,
                     "observed_at": now.isoformat(),
                     "days_overdue": days_overdue,
@@ -164,13 +198,54 @@ class OverdueScanner:
                     event is not None and event.idempotency_key == key
                     and event.payload.get("observed_at") == payload["observed_at"]
                 )
+
+                # Tier-2: recall_proposed once we cross the threshold.
+                # Advisory only — no outbox row, no state change. Staff
+                # console renders ``suggested_action`` as a CTA pointing
+                # at ``POST /sagas/{id}/compensate`` for SHIP. Replay is
+                # absorbed by the saga-event UNIQUE constraint exactly
+                # like tier-1.
+                recall_proposed = days_overdue >= self._recall_after_days
+                recall_newly = False
+                if recall_proposed:
+                    recall_key = f"recall-proposed-{saga.id}"
+                    recall_payload = {
+                        "kind": "recall_proposed",
+                        "suggested_action": "compensate_ship",
+                        "reshare_id": reshare_id,
+                        "due_at": due_iso,
+                        "observed_at": now.isoformat(),
+                        "days_overdue": days_overdue,
+                        "threshold_days": self._recall_after_days,
+                    }
+                    recall_rationale = (
+                        f"Item {days_overdue} day(s) overdue "
+                        f"(>= {self._recall_after_days}); recommend "
+                        "issuing a recall via /compensate."
+                    )
+                    recall_event = await coord.record_observation(
+                        saga_id=saga.id,
+                        step=StepName.SHIP,
+                        actor=self._actor,
+                        payload=recall_payload,
+                        rationale=recall_rationale,
+                        idempotency_key=recall_key,
+                    )
+                    recall_newly = bool(
+                        recall_event is not None
+                        and recall_event.idempotency_key == recall_key
+                        and recall_event.payload.get("observed_at")
+                        == recall_payload["observed_at"]
+                    )
                 results.append(
                     OverdueRecord(
                         saga_id=saga.id,
-                        reshare_id=ship_event.payload.get("reshare_id"),
+                        reshare_id=reshare_id,
                         due_at=due_at,
                         days_overdue=days_overdue,
                         newly_recorded=newly,
+                        recall_proposed=recall_proposed,
+                        recall_proposed_newly=recall_newly,
                     )
                 )
 
@@ -178,6 +253,10 @@ class OverdueScanner:
             "saga.overdue_scan.complete",
             scanned=len(results),
             newly=sum(1 for r in results if r.newly_recorded),
+            recall_proposed=sum(1 for r in results if r.recall_proposed),
+            recall_proposed_newly=sum(
+                1 for r in results if r.recall_proposed_newly
+            ),
         )
         return results
 

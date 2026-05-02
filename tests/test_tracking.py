@@ -295,6 +295,139 @@ async def test_overdue_scanner_ignores_non_shipped_sagas(engine: AsyncEngine) ->
 
 
 @pytest.mark.asyncio
+async def test_overdue_scanner_emits_recall_proposed_past_threshold(
+    engine: AsyncEngine,
+) -> None:
+    """Past ``recall_after_days``, scanner appends a recall_proposed obs."""
+    sm = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    now = datetime(2026, 6, 1, tzinfo=UTC)
+    due_at = now - timedelta(days=15)  # 15 >= 14 default threshold
+    saga_id, _ = await _seed_shipped_saga(sm, due_at=due_at, reshare_id="rs-r-1")
+
+    scanner = OverdueScanner(sm, now_fn=lambda: now, recall_after_days=14)
+    records = await scanner.scan()
+
+    assert len(records) == 1
+    rec = records[0]
+    assert rec.days_overdue == 15
+    assert rec.recall_proposed is True
+    assert rec.recall_proposed_newly is True
+    # Tier-1 still emitted alongside tier-2.
+    assert rec.newly_recorded is True
+
+    async with sm() as session, session.begin():
+        ledger = SagaLedger(session)
+        events = await ledger.events_for(saga_id)
+    obs_kinds = sorted(
+        str(e.payload.get("kind", ""))
+        for e in events
+        if e.kind == EventKind.OBSERVATION
+    )
+    assert obs_kinds == ["overdue", "recall_proposed"]
+    recall_obs = next(
+        e
+        for e in events
+        if e.kind == EventKind.OBSERVATION
+        and e.payload.get("kind") == "recall_proposed"
+    )
+    assert recall_obs.idempotency_key == f"recall-proposed-{saga_id}"
+    assert recall_obs.payload["suggested_action"] == "compensate_ship"
+    assert recall_obs.payload["reshare_id"] == "rs-r-1"
+    assert recall_obs.payload["threshold_days"] == 14
+
+
+@pytest.mark.asyncio
+async def test_overdue_scanner_no_recall_below_threshold(
+    engine: AsyncEngine,
+) -> None:
+    """Below ``recall_after_days``, only tier-1 overdue is written."""
+    sm = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    now = datetime(2026, 6, 1, tzinfo=UTC)
+    due_at = now - timedelta(days=3)  # 3 < 14
+    saga_id, _ = await _seed_shipped_saga(sm, due_at=due_at)
+
+    scanner = OverdueScanner(sm, now_fn=lambda: now, recall_after_days=14)
+    records = await scanner.scan()
+
+    assert len(records) == 1
+    assert records[0].recall_proposed is False
+    assert records[0].recall_proposed_newly is False
+
+    async with sm() as session, session.begin():
+        ledger = SagaLedger(session)
+        events = await ledger.events_for(saga_id)
+    assert not any(
+        e.kind == EventKind.OBSERVATION
+        and e.payload.get("kind") == "recall_proposed"
+        for e in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_overdue_scanner_recall_is_idempotent_across_runs(
+    engine: AsyncEngine,
+) -> None:
+    """Re-running past threshold must not write a duplicate recall obs."""
+    sm = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    now = datetime(2026, 6, 1, tzinfo=UTC)
+    due_at = now - timedelta(days=20)
+    saga_id, _ = await _seed_shipped_saga(sm, due_at=due_at)
+
+    scanner = OverdueScanner(sm, now_fn=lambda: now, recall_after_days=14)
+    first = await scanner.scan()
+
+    later = now + timedelta(days=2)
+    scanner2 = OverdueScanner(sm, now_fn=lambda: later, recall_after_days=14)
+    second = await scanner2.scan()
+
+    assert first[0].recall_proposed_newly is True
+    assert second[0].recall_proposed is True
+    assert second[0].recall_proposed_newly is False
+
+    async with sm() as session, session.begin():
+        ledger = SagaLedger(session)
+        events = await ledger.events_for(saga_id)
+    recall_obs = [
+        e
+        for e in events
+        if e.kind == EventKind.OBSERVATION
+        and e.payload.get("kind") == "recall_proposed"
+    ]
+    assert len(recall_obs) == 1, "scanner must not double-emit recall_proposed"
+
+
+@pytest.mark.asyncio
+async def test_overdue_scanner_recall_writes_no_outbox(
+    engine: AsyncEngine,
+) -> None:
+    """Recall escalation is advisory: zero outbox rows after a tier-2 scan.
+
+    Hard invariant from ADR-0005: agents recommend, staff commits. The
+    scanner must never enqueue a recall on the wire — it surfaces a
+    suggestion and waits for ``POST /sagas/{id}/compensate``.
+    """
+    from sqlalchemy import select as _select
+
+    from agora.saga.db import OutboxRow
+
+    sm = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    now = datetime(2026, 6, 1, tzinfo=UTC)
+    due_at = now - timedelta(days=30)
+    await _seed_shipped_saga(sm, due_at=due_at)
+
+    scanner = OverdueScanner(sm, now_fn=lambda: now, recall_after_days=14)
+    await scanner.scan()
+
+    async with sm() as session, session.begin():
+        rows = (await session.execute(_select(OutboxRow))).scalars().all()
+    assert rows == [], "scanner must never enqueue outbox intents"
+
+
+@pytest.mark.asyncio
 async def test_overdue_scanner_run_forever_loops_until_cancelled(
     engine: AsyncEngine,
 ) -> None:

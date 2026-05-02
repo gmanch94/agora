@@ -305,7 +305,10 @@ def create_app() -> FastAPI:
             log.info("api.outbox_worker.disabled")
 
         if settings.tracking_scanner_enabled:
-            scanner = OverdueScanner(get_sessionmaker())
+            scanner = OverdueScanner(
+                get_sessionmaker(),
+                recall_after_days=settings.tracking_recall_after_days,
+            )
             scanner_task = asyncio.create_task(
                 scanner.run_forever(
                     poll_interval=settings.tracking_scan_interval_secs
