@@ -48,6 +48,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from agora.clients.ncip import NcipClient
 from agora.clients.reshare import ReShareClient
 from agora.logging import get_logger
 from agora.saga.idempotency import (
@@ -259,6 +260,46 @@ def make_reshare_handler(client: ReShareClient) -> Handler:
         method = getattr(client, action, None)
         if method is None or not callable(method):
             raise ValueError(f"reshare client has no action {action!r}")
+
+        await method(idempotency_key=idempotency_key, **args)
+
+    return handler
+
+
+def make_ncip_handler(client: NcipClient) -> Handler:
+    """Build a Handler that dispatches ``payload['action']`` on an NCIP client.
+
+    Expected payload shape::
+
+        {"action": "check_out" | "check_in",
+         "args": { ...method kwargs (excluding idempotency_key)... }}
+
+    NCIP traffic talks to the local ILS for circulation events tied to
+    ILL — ``check_out`` when the borrower picks up the supplied item,
+    ``check_in`` on return. The idempotency contract mirrors
+    :func:`make_reshare_handler`: the key is sourced from the outbox
+    row, not the payload, so a worker crash between the remote call
+    and ``mark_delivered`` is safe to replay against any NCIP server
+    that honours an idempotency token (the mock client dedups on the
+    key directly).
+
+    Today the NCIP client is mock-only (CLAUDE.md known-gap); this
+    handler is wired into the lifespan ahead of the real HTTP/SOAP
+    client landing so flows can start writing ``target="ncip"`` rows
+    when the saga design needs them.
+    """
+
+    async def handler(payload: dict[str, Any], idempotency_key: str) -> None:
+        action = payload.get("action")
+        args = payload.get("args", {})
+        if not isinstance(action, str):
+            raise ValueError(f"ncip outbox payload missing 'action': {payload!r}")
+        if not isinstance(args, dict):
+            raise ValueError(f"ncip outbox payload 'args' must be dict: {payload!r}")
+
+        method = getattr(client, action, None)
+        if method is None or not callable(method):
+            raise ValueError(f"ncip client has no action {action!r}")
 
         await method(idempotency_key=idempotency_key, **args)
 

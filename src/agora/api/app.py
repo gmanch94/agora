@@ -39,6 +39,7 @@ from agora.api.schemas import (
     StepRunResponse,
     SubmitRequestResponse,
 )
+from agora.clients.ncip import MockNcipClient
 from agora.clients.reshare import MockReShareClient
 from agora.config import get_settings
 from agora.logging import configure_logging, get_logger
@@ -59,7 +60,7 @@ from agora.saga.ledger import (
     SagaNotFoundError,
     TerminalStateError,
 )
-from agora.saga.outbox import OutboxWorker, make_reshare_handler
+from agora.saga.outbox import OutboxWorker, make_ncip_handler, make_reshare_handler
 from agora.saga.steps import StepRegistry
 
 log = get_logger(__name__)
@@ -202,6 +203,10 @@ def create_app() -> FastAPI:
     # Wire saga step registry. Mock client by default; a future change
     # can route to ``HttpReShareClient`` when ``settings.reshare_enabled``.
     reshare = MockReShareClient()
+    # NCIP client is mock-only today (CLAUDE.md known-gap). Constructed
+    # here so the handler is wired into the outbox worker once and shares
+    # process lifetime with the API.
+    ncip = MockNcipClient()
     transaction = TransactionAgent(reshare)
     registry = build_registry(transaction)
 
@@ -223,7 +228,10 @@ def create_app() -> FastAPI:
         if settings.outbox_worker_enabled:
             worker = OutboxWorker(
                 get_sessionmaker(),
-                {"reshare": make_reshare_handler(reshare)},
+                {
+                    "reshare": make_reshare_handler(reshare),
+                    "ncip": make_ncip_handler(ncip),
+                },
                 max_attempts=settings.outbox_retry_max_attempts,
             )
             worker_task = asyncio.create_task(
@@ -285,6 +293,7 @@ def create_app() -> FastAPI:
 
     app.state.registry = registry
     app.state.reshare = reshare
+    app.state.ncip = ncip
     # Ensure attributes always exist so dependents can read them even
     # when the lifespan never runs (e.g. ASGI transports that skip it).
     app.state.outbox_worker = None
