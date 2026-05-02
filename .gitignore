@@ -51,3 +51,7 @@ vendor/
 # Logs
 *.log
 logs/
+
+# Claude Code runtime state (hooks scratch files, session locks)
+.claude/state/
+.claude/scheduled_tasks.lock
