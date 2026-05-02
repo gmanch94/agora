@@ -20,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
+from agora.clients.ncip import MockNcipClient
 from agora.clients.reshare import MockReShareClient
 from agora.saga.db import OutboxRow
 from agora.saga.idempotency import outbox_enqueue
@@ -27,6 +28,7 @@ from agora.saga.outbox import (
     DrainStats,
     Handler,
     OutboxWorker,
+    make_ncip_handler,
     make_reshare_handler,
 )
 
@@ -251,3 +253,102 @@ async def test_reshare_handler_rejects_unknown_action(sm: async_sessionmaker) ->
     assert stats.failed == 1
     row = await _row(sm, row_id)
     assert "not_a_method" in (row.last_error or "")
+
+
+async def test_ncip_handler_dispatches_check_out_and_check_in(
+    sm: async_sessionmaker,
+) -> None:
+    """make_ncip_handler routes payload['action'] to the right NCIP method.
+
+    Mirror of test_reshare_handler_dispatches_to_client. Verifies that
+    a flow writing target='ncip' rows lands check_out / check_in calls
+    on the NCIP client with the row's idempotency key.
+    """
+    client = MockNcipClient()
+    handler: Handler = make_ncip_handler(client)
+
+    co_idem = "outbox-ncip-co-1"
+    await _enqueue(
+        sm,
+        target="ncip",
+        payload={
+            "action": "check_out",
+            "args": {"item_id": "item-42", "patron_id": "p1"},
+        },
+        idempotency_key=co_idem,
+    )
+
+    worker = OutboxWorker(sm, {"ncip": handler})
+    stats = await worker.drain_once()
+    assert stats == DrainStats(delivered=1)
+
+    # Replay confirms the mock recorded the call under that idem key.
+    prior = await client.check_out(
+        idempotency_key=co_idem, item_id="item-42", patron_id="p1"
+    )
+    assert prior.state == "checked_out"
+    assert prior.item_id == "item-42"
+
+    # Round-trip with check_in.
+    await _enqueue(
+        sm,
+        target="ncip",
+        payload={"action": "check_in", "args": {"item_id": "item-42"}},
+        idempotency_key="outbox-ncip-ci-1",
+    )
+    stats2 = await worker.drain_once()
+    assert stats2 == DrainStats(delivered=1)
+
+    in_replay = await client.check_in(
+        idempotency_key="outbox-ncip-ci-1", item_id="item-42"
+    )
+    assert in_replay.state == "checked_in"
+
+
+async def test_ncip_handler_rejects_unknown_action(sm: async_sessionmaker) -> None:
+    """An unknown NCIP action surfaces as a failed outbox row, not a crash."""
+    client = MockNcipClient()
+    handler = make_ncip_handler(client)
+
+    row_id = await _enqueue(
+        sm,
+        target="ncip",
+        payload={"action": "not_a_method", "args": {}},
+    )
+
+    worker = OutboxWorker(sm, {"ncip": handler}, base_backoff_secs=0)
+    stats = await worker.drain_once()
+
+    assert stats.failed == 1
+    row = await _row(sm, row_id)
+    assert "not_a_method" in (row.last_error or "")
+
+
+async def test_ncip_handler_rejects_malformed_payload(sm: async_sessionmaker) -> None:
+    """Missing 'action' or non-dict 'args' must fail loudly, not silently."""
+    client = MockNcipClient()
+    handler = make_ncip_handler(client)
+
+    # Missing action.
+    row_id_a = await _enqueue(
+        sm,
+        target="ncip",
+        payload={"args": {"item_id": "x"}},
+        idempotency_key="ncip-bad-1",
+    )
+    # Non-dict args.
+    row_id_b = await _enqueue(
+        sm,
+        target="ncip",
+        payload={"action": "check_in", "args": "oops"},
+        idempotency_key="ncip-bad-2",
+    )
+
+    worker = OutboxWorker(sm, {"ncip": handler}, base_backoff_secs=0)
+    stats = await worker.drain_once()
+
+    assert stats.failed == 2
+    row_a = await _row(sm, row_id_a)
+    row_b = await _row(sm, row_id_b)
+    assert "missing 'action'" in (row_a.last_error or "")
+    assert "must be dict" in (row_b.last_error or "")

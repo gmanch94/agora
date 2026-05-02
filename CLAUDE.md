@@ -118,7 +118,12 @@ ISO 18626 message types — see table in `clients/reshare.py`.
   mod-rs does not honour `Idempotency-Key` — replay-safety lives in
   the saga ledger's UNIQUE constraint, not the wire.
 - TrackingAgent is a stub (no overdue-detection cron yet).
-- NCIP client is mock-only.
+- NCIP client is mock-only. The outbox handler `make_ncip_handler` is
+  wired into the lifespan alongside the ReShare handler so flows can
+  begin writing `target="ncip"` rows before the real HTTP/SOAP client
+  lands. No flow currently dispatches via NCIP — a future change will
+  enqueue `check_out` on SHIP and `check_in` on RETURN once the saga
+  design names the right hook points.
 - Outbox is wired into flows for every ReShare-touching step **except
   APPROVE forward** (ADR-0011). APPROVE still calls ReShare inline
   because the saga ledger needs the returned `reshare_id` stamped
