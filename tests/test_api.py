@@ -15,9 +15,11 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
 
+import pytest
 import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from agora.api.app import create_app
 
@@ -26,7 +28,7 @@ from agora.api.app import create_app
 
 
 @pytest_asyncio.fixture
-async def app(engine) -> FastAPI:
+async def app(engine: AsyncEngine) -> FastAPI:
     """Build a fresh FastAPI app per test (private step registry)."""
     return create_app()
 
@@ -234,7 +236,7 @@ async def test_compensate_unknown_step_returns_400(client: AsyncClient) -> None:
     assert r.status_code == 400
 
 
-async def test_outbox_worker_starts_and_stops_with_lifespan(engine) -> None:
+async def test_outbox_worker_starts_and_stops_with_lifespan(engine: AsyncEngine) -> None:
     """``create_app`` lifespan spawns the outbox worker task and cancels it."""
     app = create_app()
     # Before lifespan runs, attribute exists but no task.
@@ -254,7 +256,9 @@ async def test_outbox_worker_starts_and_stops_with_lifespan(engine) -> None:
     assert task_after.cancelled() or task_after.done()
 
 
-async def test_outbox_worker_disabled_via_settings(engine, monkeypatch) -> None:
+async def test_outbox_worker_disabled_via_settings(
+    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """``AGORA_OUTBOX_WORKER_ENABLED=0`` skips spawning the worker."""
     from agora.config import get_settings
 

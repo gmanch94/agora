@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from uuid import uuid4
+from typing import Any
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from agora.agents.transaction import TransactionAgent
 from agora.clients.reshare import MockReShareClient
-from agora.models.events import NewSagaEvent
+from agora.models.events import NewSagaEvent, SagaEvent
 from agora.models.lifecycle import (
     EventKind,
     LifecycleState,
@@ -31,6 +33,7 @@ from agora.saga.db import OutboxRow
 from agora.saga.flows import build_registry
 from agora.saga.idempotency import new_idempotency_key
 from agora.saga.ledger import SagaLedger
+from agora.saga.steps import StepRegistry
 
 
 def _build_request() -> IllRequest:
@@ -48,11 +51,11 @@ def _build_request() -> IllRequest:
 
 
 @pytest.mark.asyncio
-async def test_forward_step_blocked_without_committed_gate(session) -> None:
+async def test_forward_step_blocked_without_committed_gate(session: AsyncSession) -> None:
     saga_id = uuid4()
     request = _build_request()
     reshare = MockReShareClient()
-    registry = build_registry(TransactionAgent(reshare))  # type: ignore[arg-type]
+    registry = build_registry(TransactionAgent(reshare))
 
     async with session.begin():
         ledger = SagaLedger(session)
@@ -77,11 +80,11 @@ async def test_forward_step_blocked_without_committed_gate(session) -> None:
 
 
 @pytest.mark.asyncio
-async def test_happy_path_full_lifecycle(session) -> None:
+async def test_happy_path_full_lifecycle(session: AsyncSession) -> None:
     saga_id = uuid4()
     request = _build_request()
     reshare = MockReShareClient()
-    registry = build_registry(TransactionAgent(reshare))  # type: ignore[arg-type]
+    registry = build_registry(TransactionAgent(reshare))
 
     async with session.begin():
         ledger = SagaLedger(session)
@@ -104,7 +107,7 @@ async def test_happy_path_full_lifecycle(session) -> None:
             )
         )
 
-    extras: dict = {"chosen_supplier": "B"}
+    extras: dict[str, Any] = {"chosen_supplier": "B"}
 
     # ROUTE
     await _gate_and_run(session, registry, saga_id, request, StepName.ROUTE, extras)
@@ -130,11 +133,11 @@ async def test_happy_path_full_lifecycle(session) -> None:
 
 
 @pytest.mark.asyncio
-async def test_compensator_on_approve_cancels_at_supplier(session) -> None:
+async def test_compensator_on_approve_cancels_at_supplier(session: AsyncSession) -> None:
     saga_id = uuid4()
     request = _build_request()
     reshare = MockReShareClient()
-    registry = build_registry(TransactionAgent(reshare))  # type: ignore[arg-type]
+    registry = build_registry(TransactionAgent(reshare))
 
     async with session.begin():
         ledger = SagaLedger(session)
@@ -145,7 +148,7 @@ async def test_compensator_on_approve_cancels_at_supplier(session) -> None:
             initial_state=LifecycleState.ROUTED,
         )
 
-    extras: dict = {"chosen_supplier": "B"}
+    extras: dict[str, Any] = {"chosen_supplier": "B"}
     forward = await _gate_and_run(
         session,
         registry,
@@ -175,15 +178,15 @@ async def test_compensator_on_approve_cancels_at_supplier(session) -> None:
 
 
 async def _gate_and_run(
-    session,
-    registry,
-    saga_id,
-    request,
+    session: AsyncSession,
+    registry: StepRegistry,
+    saga_id: UUID,
+    request: IllRequest,
     step: StepName,
-    extras: dict,
+    extras: dict[str, Any],
     *,
     from_state: LifecycleState | None = None,
-):
+) -> SagaEvent:
     """Open + commit a gate, then execute the forward step."""
     async with session.begin():
         coord = Coordinator(session=session, registry=registry)
@@ -211,12 +214,12 @@ async def _gate_and_run(
 
 
 @pytest.mark.asyncio
-async def test_ship_forward_enqueues_outbox_row(session) -> None:
+async def test_ship_forward_enqueues_outbox_row(session: AsyncSession) -> None:
     """SHIP forward returns an OutboxIntent; coordinator must enqueue it."""
     saga_id = uuid4()
     request = _build_request()
     reshare = MockReShareClient()
-    registry = build_registry(TransactionAgent(reshare))  # type: ignore[arg-type]
+    registry = build_registry(TransactionAgent(reshare))
 
     async with session.begin():
         ledger = SagaLedger(session)
@@ -262,12 +265,12 @@ async def test_ship_forward_enqueues_outbox_row(session) -> None:
 
 
 @pytest.mark.asyncio
-async def test_replayed_forward_does_not_double_enqueue(session) -> None:
+async def test_replayed_forward_does_not_double_enqueue(session: AsyncSession) -> None:
     """Re-running a forward with the same idempotency_key skips outbox enqueue."""
     saga_id = uuid4()
     request = _build_request()
     reshare = MockReShareClient()
-    registry = build_registry(TransactionAgent(reshare))  # type: ignore[arg-type]
+    registry = build_registry(TransactionAgent(reshare))
 
     async with session.begin():
         ledger = SagaLedger(session)

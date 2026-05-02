@@ -13,10 +13,10 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from agora.agents.tracking import OverdueScanner
 from agora.agents.transaction import TransactionAgent
@@ -58,11 +58,11 @@ def _build_request() -> IllRequest:
 
 
 async def _seed_shipped_saga(
-    sessionmaker: async_sessionmaker,
+    sessionmaker: async_sessionmaker[AsyncSession],
     *,
     due_at: datetime,
     reshare_id: str = "rs-overdue-1",
-) -> tuple:
+) -> tuple[UUID, IllRequest]:
     """Seed a saga directly into SHIPPED with a hand-crafted ship payload."""
     saga_id = uuid4()
     request = _build_request()
@@ -98,12 +98,12 @@ async def _seed_shipped_saga(
 
 
 @pytest.mark.asyncio
-async def test_ship_forward_stamps_due_at(session) -> None:
+async def test_ship_forward_stamps_due_at(session: AsyncSession) -> None:
     """SHIP forward payload must carry due_at + shipped_at + loan_period_days."""
     saga_id = uuid4()
     request = _build_request()
     reshare = MockReShareClient()
-    registry = build_registry(TransactionAgent(reshare))  # type: ignore[arg-type]
+    registry = build_registry(TransactionAgent(reshare))
 
     async with session.begin():
         ledger = SagaLedger(session)
@@ -144,12 +144,12 @@ async def test_ship_forward_stamps_due_at(session) -> None:
 
 
 @pytest.mark.asyncio
-async def test_ship_forward_honours_loan_period_override(session) -> None:
+async def test_ship_forward_honours_loan_period_override(session: AsyncSession) -> None:
     """ctx.extras['loan_period_days'] overrides the default loan window."""
     saga_id = uuid4()
     request = _build_request()
     reshare = MockReShareClient()
-    registry = build_registry(TransactionAgent(reshare))  # type: ignore[arg-type]
+    registry = build_registry(TransactionAgent(reshare))
 
     async with session.begin():
         ledger = SagaLedger(session)
@@ -187,7 +187,7 @@ async def test_ship_forward_honours_loan_period_override(session) -> None:
 
 
 @pytest.mark.asyncio
-async def test_overdue_scanner_records_observation_when_past_due(engine) -> None:
+async def test_overdue_scanner_records_observation_when_past_due(engine: AsyncEngine) -> None:
     """Scanner appends one OBSERVATION event per shipped-overdue saga."""
     sm = async_sessionmaker(bind=engine, expire_on_commit=False)
 
@@ -221,7 +221,7 @@ async def test_overdue_scanner_records_observation_when_past_due(engine) -> None
 
 
 @pytest.mark.asyncio
-async def test_overdue_scanner_is_idempotent_across_runs(engine) -> None:
+async def test_overdue_scanner_is_idempotent_across_runs(engine: AsyncEngine) -> None:
     """Re-running the scanner does not double-record the observation."""
     sm = async_sessionmaker(bind=engine, expire_on_commit=False)
 
@@ -251,7 +251,7 @@ async def test_overdue_scanner_is_idempotent_across_runs(engine) -> None:
 
 
 @pytest.mark.asyncio
-async def test_overdue_scanner_skips_not_yet_due(engine) -> None:
+async def test_overdue_scanner_skips_not_yet_due(engine: AsyncEngine) -> None:
     """Sagas with future due_at are not flagged."""
     sm = async_sessionmaker(bind=engine, expire_on_commit=False)
 
@@ -273,7 +273,7 @@ async def test_overdue_scanner_skips_not_yet_due(engine) -> None:
 
 
 @pytest.mark.asyncio
-async def test_overdue_scanner_ignores_non_shipped_sagas(engine) -> None:
+async def test_overdue_scanner_ignores_non_shipped_sagas(engine: AsyncEngine) -> None:
     """Sagas not in SHIPPED are skipped even if a past ship event exists."""
     sm = async_sessionmaker(bind=engine, expire_on_commit=False)
 

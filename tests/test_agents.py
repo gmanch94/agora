@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 
@@ -21,7 +22,7 @@ from agora.models.request import (
 )
 
 
-def _request(**overrides) -> IllRequest:
+def _request(**overrides: Any) -> IllRequest:
     base = dict(
         request_type=RequestType.LOAN,
         patron=PatronRef(library_symbol="A", patron_id="p1"),

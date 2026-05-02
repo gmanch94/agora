@@ -5,6 +5,7 @@ from __future__ import annotations
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from agora.models.events import NewSagaEvent
 from agora.models.lifecycle import (
@@ -18,7 +19,7 @@ from agora.saga.ledger import SagaLedger, TerminalStateError
 
 
 @pytest.mark.asyncio
-async def test_create_saga_and_append_first_event(session) -> None:
+async def test_create_saga_and_append_first_event(session: AsyncSession) -> None:
     saga_id = uuid4()
     request_id = uuid4()
     async with session.begin():
@@ -51,7 +52,7 @@ async def test_create_saga_and_append_first_event(session) -> None:
 
 
 @pytest.mark.asyncio
-async def test_replay_with_same_idempotency_key_is_noop(session) -> None:
+async def test_replay_with_same_idempotency_key_is_noop(session: AsyncSession) -> None:
     saga_id = uuid4()
     key = new_idempotency_key()
     async with session.begin():
@@ -79,7 +80,7 @@ async def test_replay_with_same_idempotency_key_is_noop(session) -> None:
 
 
 @pytest.mark.asyncio
-async def test_state_advances_on_committed_forward(session) -> None:
+async def test_state_advances_on_committed_forward(session: AsyncSession) -> None:
     saga_id = uuid4()
     async with session.begin():
         ledger = SagaLedger(session)
@@ -105,7 +106,7 @@ async def test_state_advances_on_committed_forward(session) -> None:
 
 
 @pytest.mark.asyncio
-async def test_terminal_saga_blocks_further_state_change(session) -> None:
+async def test_terminal_saga_blocks_further_state_change(session: AsyncSession) -> None:
     saga_id = uuid4()
     async with session.begin():
         ledger = SagaLedger(session)
@@ -135,7 +136,7 @@ async def test_terminal_saga_blocks_further_state_change(session) -> None:
 
 
 @pytest.mark.asyncio
-async def test_find_committed_forward_returns_latest(session) -> None:
+async def test_find_committed_forward_returns_latest(session: AsyncSession) -> None:
     saga_id = uuid4()
     async with session.begin():
         ledger = SagaLedger(session)
