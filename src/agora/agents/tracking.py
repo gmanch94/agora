@@ -26,7 +26,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agora.logging import get_logger
 from agora.models.lifecycle import LifecycleState, StepName
@@ -98,7 +98,7 @@ class OverdueScanner:
 
     def __init__(
         self,
-        sessionmaker: async_sessionmaker,
+        sessionmaker: async_sessionmaker[AsyncSession],
         *,
         actor: str = "agent:tracking",
         now_fn: Callable[[], datetime] | None = None,

@@ -30,7 +30,12 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from agora.config import get_settings
@@ -40,7 +45,7 @@ class Base(DeclarativeBase):
     """SQLAlchemy declarative base."""
 
 
-class _PortableUUID(TypeDecorator):
+class _PortableUUID(TypeDecorator[UUID]):
     """UUID column that's native on Postgres and CHAR(36) on SQLite.
 
     Stores Python ``uuid.UUID`` objects on both sides; the SQLite
@@ -196,7 +201,7 @@ class OutboxRow(Base):
 
 
 _engine: AsyncEngine | None = None
-_sessionmaker: async_sessionmaker | None = None
+_sessionmaker: async_sessionmaker[AsyncSession] | None = None
 
 
 def get_engine() -> AsyncEngine:
@@ -215,7 +220,7 @@ def get_engine() -> AsyncEngine:
     return _engine
 
 
-def get_sessionmaker() -> async_sessionmaker:
+def get_sessionmaker() -> async_sessionmaker[AsyncSession]:
     """Lazily build the async sessionmaker."""
     global _sessionmaker
     if _sessionmaker is None:

@@ -126,10 +126,12 @@ ISO 18626 message types — see table in `clients/reshare.py`.
   via `_derive_extras`. Full migration requires either an
   `APPROVING` intermediate state or teaching `_derive_extras` to read
   a worker-written observation event — future ADR. The API process
-  does not yet spawn a worker — `happy_path` demo drains inline;
-  production needs `OutboxWorker.run_forever` as a background task
-  on app startup. Worker still assumes a single drainer; multi-worker
-  safety needs `SELECT ... FOR UPDATE SKIP LOCKED` (Postgres-only).
+  spawns `OutboxWorker.run_forever` as an `asyncio.Task` from the
+  FastAPI lifespan (`create_app`), polling at
+  `AGORA_OUTBOX_POLL_INTERVAL_SECS` (default 1.0s) and cancelled on
+  shutdown. Disable with `AGORA_OUTBOX_WORKER_ENABLED=0`. The worker
+  still assumes a single drainer per DB; multi-worker safety needs
+  `SELECT ... FOR UPDATE SKIP LOCKED` (Postgres-only).
 - `POST /sagas/{id}/approve` and `POST /sagas/{id}/compensate` are
   wired end-to-end (commit gate + run forward / run compensator in
   one transaction). Step inputs (`chosen_supplier`, `reshare_id`) are
@@ -137,8 +139,12 @@ ISO 18626 message types — see table in `clients/reshare.py`.
   field overrides where derivation is impossible (e.g. first ROUTE).
 - Alembic migration never tested against real Postgres — only SQLite
   via `Base.metadata.create_all()`.
-- mypy installed but not run end-to-end (Protocol covariance issues
-  with mock clients).
+- mypy `--strict` runs clean against `src/` (36 files; configured in
+  `pyproject.toml` with `files = ["src"]`). `tests/` is intentionally
+  excluded from the gate — it has missing annotations + obsolete
+  `# type: ignore` markers from earlier iterations. Adding test
+  type-checking is a future cleanup. Package ships a `py.typed`
+  marker so downstream consumers pick up the inline types.
 - `pyproject.toml` declares `requires-python = ">=3.11"` but built on
   3.14.3.
 

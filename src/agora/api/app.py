@@ -14,6 +14,8 @@ Auth is intentionally *not* implemented in the prototype — see ADR-0007.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
@@ -56,6 +58,7 @@ from agora.saga.ledger import (
     SagaNotFoundError,
     TerminalStateError,
 )
+from agora.saga.outbox import OutboxWorker, make_reshare_handler
 from agora.saga.steps import StepRegistry
 
 log = get_logger(__name__)
@@ -180,22 +183,71 @@ def create_app() -> FastAPI:
     ``app.state`` so request handlers can resolve them via dependency
     without rebuilding closures on every call (which would otherwise
     trip ``StepRegistry.register``'s same-name-different-callable check).
+
+    Startup spawns a single :class:`OutboxWorker` task that polls the
+    ``outbox`` table and dispatches pending rows. Disable via
+    ``AGORA_OUTBOX_WORKER_ENABLED=0`` (e.g. when running migrations).
+    Tests using ``httpx.ASGITransport`` do not trigger the lifespan, so
+    no worker spawns there; tests that explicitly need the worker can
+    enter the lifespan context manually.
     """
     configure_logging()
     settings = get_settings()
-    app = FastAPI(
-        title="Agora ILL",
-        description="Agentic Inter-Library Loan staff console",
-        version=__version__,
-    )
 
     # Wire saga step registry. Mock client by default; a future change
     # can route to ``HttpReShareClient`` when ``settings.reshare_enabled``.
     reshare = MockReShareClient()
-    transaction = TransactionAgent(reshare)  # type: ignore[arg-type]
+    transaction = TransactionAgent(reshare)
     registry = build_registry(transaction)
+
+    @contextlib.asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        """Spawn the outbox worker on startup; cancel it on shutdown."""
+        worker_task: asyncio.Task[None] | None = None
+        if settings.outbox_worker_enabled:
+            worker = OutboxWorker(
+                get_sessionmaker(),
+                {"reshare": make_reshare_handler(reshare)},
+                max_attempts=settings.outbox_retry_max_attempts,
+            )
+            worker_task = asyncio.create_task(
+                worker.run_forever(
+                    poll_interval=settings.outbox_poll_interval_secs
+                ),
+                name="agora.outbox.worker",
+            )
+            app.state.outbox_worker = worker
+            app.state.outbox_worker_task = worker_task
+            log.info(
+                "api.outbox_worker.started",
+                poll_interval=settings.outbox_poll_interval_secs,
+            )
+        else:
+            app.state.outbox_worker = None
+            app.state.outbox_worker_task = None
+            log.info("api.outbox_worker.disabled")
+        try:
+            yield
+        finally:
+            if worker_task is not None:
+                worker_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await worker_task
+                log.info("api.outbox_worker.stopped")
+
+    app = FastAPI(
+        title="Agora ILL",
+        description="Agentic Inter-Library Loan staff console",
+        version=__version__,
+        lifespan=lifespan,
+    )
+
     app.state.registry = registry
     app.state.reshare = reshare
+    # Ensure attributes always exist so dependents can read them even
+    # when the lifespan never runs (e.g. ASGI transports that skip it).
+    app.state.outbox_worker = None
+    app.state.outbox_worker_task = None
 
     @app.get("/health", response_model=HealthResponse)
     async def health() -> HealthResponse:

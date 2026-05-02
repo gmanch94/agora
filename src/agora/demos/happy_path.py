@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import UTC, datetime
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -71,7 +72,7 @@ async def main() -> None:
     discovery = DiscoveryAgent(sru, consortium_members={"MEMBER1"})
     routing = RoutingAgent()
     policy = PolicyAgent()
-    tx = TransactionAgent(reshare)  # type: ignore[arg-type]
+    tx = TransactionAgent(reshare)
     registry = build_registry(tx)
 
     # --- build request -----------------------------------------------
@@ -135,7 +136,7 @@ async def main() -> None:
     worker = OutboxWorker(sessionmaker, {"reshare": make_reshare_handler(reshare)})
 
     # --- drive lifecycle through gates --------------------------------
-    extras: dict = {"chosen_supplier": chosen_supplier}
+    extras: dict[str, Any] = {"chosen_supplier": chosen_supplier}
     for step in (StepName.ROUTE, StepName.APPROVE, StepName.SHIP, StepName.RETURN_ITEM):
         # Open + commit gate (simulating staff click).
         async with sessionmaker() as session, session.begin():
