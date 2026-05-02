@@ -256,7 +256,7 @@ async def test_reshare_handler_rejects_unknown_action(sm: async_sessionmaker[Asy
 
 
 async def test_ncip_handler_dispatches_check_out_and_check_in(
-    sm: async_sessionmaker,
+    sm: async_sessionmaker[AsyncSession],
 ) -> None:
     """make_ncip_handler routes payload['action'] to the right NCIP method.
 
@@ -305,7 +305,7 @@ async def test_ncip_handler_dispatches_check_out_and_check_in(
     assert in_replay.state == "checked_in"
 
 
-async def test_ncip_handler_rejects_unknown_action(sm: async_sessionmaker) -> None:
+async def test_ncip_handler_rejects_unknown_action(sm: async_sessionmaker[AsyncSession]) -> None:
     """An unknown NCIP action surfaces as a failed outbox row, not a crash."""
     client = MockNcipClient()
     handler = make_ncip_handler(client)
@@ -324,7 +324,7 @@ async def test_ncip_handler_rejects_unknown_action(sm: async_sessionmaker) -> No
     assert "not_a_method" in (row.last_error or "")
 
 
-async def test_ncip_handler_rejects_malformed_payload(sm: async_sessionmaker) -> None:
+async def test_ncip_handler_rejects_malformed_payload(sm: async_sessionmaker[AsyncSession]) -> None:
     """Missing 'action' or non-dict 'args' must fail loudly, not silently."""
     client = MockNcipClient()
     handler = make_ncip_handler(client)

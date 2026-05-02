@@ -17,8 +17,17 @@ Five user-facing states map onto the ISO 18626 supplier-side state machine:
 ```
 
 `LifecycleState` enum (in `src/agora/models/lifecycle.py`):
-`SUBMITTED, ROUTED, APPROVED, SHIPPED, RETURNED, CANCELLED, UNFILLED, DISPUTED`.
+`SUBMITTED, ROUTED, APPROVING, APPROVED, SHIPPED, RETURNED, CANCELLED,
+UNFILLED, DISPUTED`.
 `TERMINAL_STATES = {RETURNED, CANCELLED, UNFILLED, DISPUTED}`.
+
+`APPROVING` is an in-flight intermediate added per ADR-0012. It marks
+"intent committed, supplier not yet acknowledged" — the APPROVE
+forward will enqueue a `send_request` outbox row and the worker will
+project the supplier ack into a transition to `APPROVED`. The
+diagram above still shows the user-facing happy path; today's code
+transitions directly `ROUTED → APPROVED` until the flow rewrite
+lands in the follow-up PR.
 
 ## Forward transitions
 
@@ -51,7 +60,7 @@ lifecycle. Map these to user lifecycle as follows:
 
 | ISO 18626 state             | User-visible status                                            |
 |-----------------------------|----------------------------------------------------------------|
-| Requested                   | Submitted (peer contacted)                                     |
+| Requested                   | Approving (intent sent, supplier ack pending — ADR-0012)       |
 | ExpectToSupply / WillSupply | Approved                                                       |
 | Loaned / Overdue / Recalled | Shipped                                                        |
 | LoanCompleted               | Returned                                                       |

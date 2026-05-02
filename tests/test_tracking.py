@@ -18,7 +18,7 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from agora.agents.tracking import OverdueScanner
+from agora.agents.tracking import OverdueRecord, OverdueScanner
 from agora.agents.transaction import TransactionAgent
 from agora.clients.reshare import MockReShareClient
 from agora.models.events import NewSagaEvent
@@ -295,7 +295,9 @@ async def test_overdue_scanner_ignores_non_shipped_sagas(engine: AsyncEngine) ->
 
 
 @pytest.mark.asyncio
-async def test_overdue_scanner_run_forever_loops_until_cancelled(engine) -> None:
+async def test_overdue_scanner_run_forever_loops_until_cancelled(
+    engine: AsyncEngine,
+) -> None:
     """run_forever invokes scan() repeatedly until cancellation.
 
     Stubs ``scanner.scan`` to avoid racing real DB sessions against the
@@ -307,7 +309,7 @@ async def test_overdue_scanner_run_forever_loops_until_cancelled(engine) -> None
     scanner = OverdueScanner(sm)
     calls = {"n": 0}
 
-    async def counting_scan() -> list:
+    async def counting_scan() -> list[OverdueRecord]:
         calls["n"] += 1
         return []
 
@@ -326,14 +328,16 @@ async def test_overdue_scanner_run_forever_loops_until_cancelled(engine) -> None
 
 
 @pytest.mark.asyncio
-async def test_overdue_scanner_run_forever_swallows_pass_errors(engine) -> None:
+async def test_overdue_scanner_run_forever_swallows_pass_errors(
+    engine: AsyncEngine,
+) -> None:
     """A scan-pass exception is logged + absorbed; loop keeps running."""
     sm = async_sessionmaker(bind=engine, expire_on_commit=False)
 
     scanner = OverdueScanner(sm)
     calls = {"n": 0}
 
-    async def flaky_scan() -> list:
+    async def flaky_scan() -> list[OverdueRecord]:
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("transient db blip")
