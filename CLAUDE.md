@@ -117,7 +117,15 @@ ISO 18626 message types — see table in `clients/reshare.py`.
   uses HTTP Basic (dev path); production needs Okapi token flow.
   mod-rs does not honour `Idempotency-Key` — replay-safety lives in
   the saga ledger's UNIQUE constraint, not the wire.
-- TrackingAgent is a stub (no overdue-detection cron yet).
+- TrackingAgent: `OverdueScanner.run_forever` now runs as a background
+  task spawned from the FastAPI lifespan (`agora.tracking.scanner`),
+  polling at `AGORA_TRACKING_SCAN_INTERVAL_SECS` (default 300s). Each
+  pass scans shipped sagas past `due_at` and writes a deterministic
+  `overdue-{saga_id}` OBSERVATION event — UNIQUE constraint absorbs
+  replay. Disable via `AGORA_TRACKING_SCANNER_ENABLED=0`. Single
+  drainer assumed (same caveat as outbox worker). Recall escalation
+  on prolonged overdue is still future work — staff console surfaces
+  the observation badge today.
 - NCIP client is mock-only.
 - Outbox is wired into flows for every ReShare-touching step **except
   APPROVE forward** (ADR-0011). APPROVE still calls ReShare inline

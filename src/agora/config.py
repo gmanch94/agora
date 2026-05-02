@@ -50,6 +50,12 @@ class Settings(BaseSettings):
     outbox_poll_interval_secs: float = Field(
         default=1.0, alias="AGORA_OUTBOX_POLL_INTERVAL_SECS"
     )
+    tracking_scanner_enabled: bool = Field(
+        default=True, alias="AGORA_TRACKING_SCANNER_ENABLED"
+    )
+    tracking_scan_interval_secs: float = Field(
+        default=300.0, alias="AGORA_TRACKING_SCAN_INTERVAL_SECS"
+    )
 
     @property
     def reshare_enabled(self) -> bool:
