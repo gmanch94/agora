@@ -511,10 +511,14 @@ def make_ncip_handler(client: NcipClient) -> Handler:
     Today the NCIP client is mock-only (CLAUDE.md known-gap); this
     handler is wired into the lifespan ahead of the real HTTP/SOAP
     client landing so flows can start writing ``target="ncip"`` rows
-    when the saga design needs them.
+    when the saga design needs them. No ``on_success`` projection is
+    registered for ``target="ncip"`` today — NCIP responses don't
+    currently carry data the saga ledger consumes — but the handler
+    forwards its return value so a future projection can opt in
+    without changing this contract.
     """
 
-    async def handler(payload: dict[str, Any], idempotency_key: str) -> None:
+    async def handler(payload: dict[str, Any], idempotency_key: str) -> Any:
         action = payload.get("action")
         args = payload.get("args", {})
         if not isinstance(action, str):
@@ -526,6 +530,6 @@ def make_ncip_handler(client: NcipClient) -> Handler:
         if method is None or not callable(method):
             raise ValueError(f"ncip client has no action {action!r}")
 
-        await method(idempotency_key=idempotency_key, **args)
+        return await method(idempotency_key=idempotency_key, **args)
 
     return handler
