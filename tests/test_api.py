@@ -21,10 +21,34 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from agora.api.app import create_app
+from agora.api.app import _build_outbox_worker, create_app
+from agora.saga.db import get_sessionmaker
 
 # Tests inherit ``engine`` (auto-uses :memory: SQLite) so the API's
 # ``get_sessionmaker()`` resolves to that DB.
+
+
+async def _drive_outbox_worker(app: FastAPI) -> None:
+    """Drain the outbox once with the app's reshare/ncip clients.
+
+    The ASGI test transport skips the FastAPI lifespan, so the
+    background outbox worker never spawns. Tests that depend on
+    ADR-0012 projection behaviour (APPROVE forward → APPROVING,
+    worker drains, OBSERVATION advances to APPROVED) call this
+    helper between the APPROVE request and any subsequent SHIP /
+    compensate request.
+
+    Wires exactly the same handler + ``on_success`` map the lifespan
+    builds via :func:`_build_outbox_worker`, so the test exercises
+    the production projection contract.
+    """
+    worker = _build_outbox_worker(
+        get_sessionmaker(),
+        reshare=app.state.reshare,
+        ncip=app.state.ncip,
+        max_attempts=5,
+    )
+    await worker.drain_until_empty()
 
 
 @pytest_asyncio.fixture
@@ -81,8 +105,18 @@ async def test_submit_creates_saga_in_submitted_state(client: AsyncClient) -> No
     assert detail["events"][0]["outcome"] == "committed"
 
 
-async def test_full_lifecycle_via_approve_endpoints(client: AsyncClient) -> None:
-    """Submitted -> Routed -> Approved -> Shipped -> Returned via API."""
+async def test_full_lifecycle_via_approve_endpoints(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    """Submitted -> Routed -> Approving -> Approved -> Shipped -> Returned.
+
+    Per ADR-0012 the APPROVE endpoint returns immediately with state
+    ``approving``; the supplier round-trip happens off the request
+    path via the outbox worker, which writes an OBSERVATION to
+    advance the saga to ``approved``. This test drives the worker
+    explicitly between APPROVE and SHIP so the saga reaches the
+    state SHIP requires.
+    """
     saga_id = (await client.post("/requests", json=_request_payload())).json()[
         "saga_id"
     ]
@@ -100,16 +134,31 @@ async def test_full_lifecycle_via_approve_endpoints(client: AsyncClient) -> None
     assert r.status_code == 200, r.text
     assert r.json()["state_after"] == "routed"
 
-    # APPROVE — chosen_supplier derived from prior ROUTE forward.
+    # APPROVE — forward returns immediately with state APPROVING. The
+    # forward payload no longer carries reshare_id (ADR-0012); the
+    # worker projects it onto an OBSERVATION below.
     r = await client.post(
         f"/sagas/{saga_id}/approve",
         json={"step": "approve", "actor": "staff:test", "rationale": "demo approve"},
     )
     assert r.status_code == 200, r.text
-    assert r.json()["state_after"] == "approved"
-    assert r.json()["payload"]["reshare_id"]
+    assert r.json()["state_after"] == "approving"
+    assert "reshare_id" not in r.json()["payload"]
 
-    # SHIP — reshare_id derived from APPROVE forward.
+    # Drive the worker so the supplier ack lands and the projection
+    # advances the saga to APPROVED.
+    await _drive_outbox_worker(app)
+
+    detail = (await client.get(f"/sagas/{saga_id}")).json()
+    assert detail["saga"]["current_state"] == "approved"
+    approve_obs = next(
+        e for e in detail["events"]
+        if e["kind"] == "observation" and e["step"] == "approve"
+    )
+    assert approve_obs["state_after"] == "approved"
+    assert approve_obs["payload"]["reshare_id"]
+
+    # SHIP — reshare_id derived from APPROVE OBSERVATION via _derive_extras.
     r = await client.post(
         f"/sagas/{saga_id}/approve",
         json={"step": "ship", "actor": "staff:test", "rationale": "demo ship"},
@@ -171,9 +220,9 @@ async def test_approve_unknown_saga_returns_404(client: AsyncClient) -> None:
 
 
 async def test_compensate_after_approve_cancels_at_supplier(
-    client: AsyncClient,
+    app: FastAPI, client: AsyncClient
 ) -> None:
-    """Drive the saga to APPROVED, then compensate to CANCELLED."""
+    """Drive the saga to APPROVED via worker, then compensate to CANCELLED."""
     saga_id = (await client.post("/requests", json=_request_payload())).json()[
         "saga_id"
     ]
@@ -194,9 +243,18 @@ async def test_compensate_after_approve_cancels_at_supplier(
         json={"step": "approve", "actor": "staff:test", "rationale": "ok"},
     )
     assert r.status_code == 200, r.text
-    assert r.json()["state_after"] == "approved"
+    # ADR-0012: forward lands in APPROVING; the worker projects the
+    # supplier ack to advance to APPROVED.
+    assert r.json()["state_after"] == "approving"
+
+    await _drive_outbox_worker(app)
+
+    detail = (await client.get(f"/sagas/{saga_id}")).json()
+    assert detail["saga"]["current_state"] == "approved"
 
     # Compensate APPROVE: should cancel at supplier and move to CANCELLED.
+    # ``reshare_id`` is sourced from the APPROVE OBSERVATION via
+    # ``api._derive_extras`` — no manual ``extras`` needed.
     r = await client.post(
         f"/sagas/{saga_id}/compensate",
         json={"step": "approve", "actor": "staff:test", "rationale": "patron withdrew"},
@@ -207,6 +265,42 @@ async def test_compensate_after_approve_cancels_at_supplier(
 
     detail = (await client.get(f"/sagas/{saga_id}")).json()
     assert detail["saga"]["current_state"] == "cancelled"
+
+
+async def test_compensate_during_approving_returns_400(client: AsyncClient) -> None:
+    """Compensating before the worker drains is rejected with a clear error.
+
+    Per the compensator's guard (saga/flows.py): without a
+    ``reshare_id`` there is nothing concrete at the supplier to
+    cancel. The endpoint must surface this as a 400 rather than
+    enqueue a malformed cancel intent. The test deliberately omits
+    the outbox drain so the saga sits in APPROVING with the outbox
+    row still pending.
+    """
+    saga_id = (await client.post("/requests", json=_request_payload())).json()[
+        "saga_id"
+    ]
+    await client.post(
+        f"/sagas/{saga_id}/approve",
+        json={
+            "step": "route",
+            "actor": "staff:test",
+            "rationale": "ok",
+            "extras": {"chosen_supplier": "MEMBER1"},
+        },
+    )
+    r = await client.post(
+        f"/sagas/{saga_id}/approve",
+        json={"step": "approve", "actor": "staff:test", "rationale": "ok"},
+    )
+    assert r.json()["state_after"] == "approving"
+
+    r = await client.post(
+        f"/sagas/{saga_id}/compensate",
+        json={"step": "approve", "actor": "staff:test", "rationale": "too soon"},
+    )
+    assert r.status_code == 400, r.text
+    assert "supplier ack pending" in r.json()["detail"]
 
 
 async def test_compensate_without_committed_forward_returns_409(

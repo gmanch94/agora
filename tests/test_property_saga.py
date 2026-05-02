@@ -147,11 +147,21 @@ _SPECS: dict[StepName, _StepSpec] = {
     StepName.APPROVE: _StepSpec(
         step=StepName.APPROVE,
         pre_state=LifecycleState.ROUTED,
-        forward_state=LifecycleState.APPROVED,
+        # ADR-0012: forward lands in APPROVING (intermediate). The
+        # supplier ack — projected by the outbox worker as an
+        # OBSERVATION — is what advances the saga to APPROVED. These
+        # property tests don't drive the worker, so the comp is
+        # exercised against a saga in APPROVING with reshare_id
+        # supplied via ``extras_seed`` (mirroring what
+        # ``_derive_extras`` would assemble in the API).
+        forward_state=LifecycleState.APPROVING,
         comp_state=LifecycleState.CANCELLED,
-        forward_has_outbox=False,  # APPROVE forward stays inline (ADR-0011)
+        forward_has_outbox=True,
         comp_has_outbox=True,
-        extras_seed=(("chosen_supplier", "B"),),
+        extras_seed=(
+            ("chosen_supplier", "B"),
+            ("reshare_id", "rs-prop-1"),
+        ),
     ),
     StepName.SHIP: _StepSpec(
         step=StepName.SHIP,
@@ -302,14 +312,15 @@ async def test_compensator_lands_in_documented_state(session: AsyncSession, step
         new_idempotency_key(prefix=step.value),
     )
 
-    # APPROVE forward stamps the live reshare_id; comp needs it back.
+    # ``extras_seed`` already contains everything the comp needs —
+    # ``reshare_id`` for APPROVE/SHIP/RETURN_ITEM, ``chosen_supplier``
+    # for ROUTE — so a single pass through ``_seed_to_dict`` is
+    # sufficient. Pre-PR-B this branch had a special-case for APPROVE
+    # that pulled ``reshare_id`` off the live forward payload (the
+    # inline-supplier-call era); after ADR-0012 reshare_id rides on
+    # an OBSERVATION the worker writes asynchronously, so the test
+    # supplies it via the seed instead.
     comp_extras = _seed_to_dict(spec.extras_seed)
-    if step == StepName.APPROVE:
-        async with session.begin():
-            ledger = SagaLedger(session)
-            fwd = await ledger.find_committed_forward(saga_id, step.value)
-        assert fwd is not None
-        comp_extras["reshare_id"] = fwd.payload["reshare_id"]
 
     await _comp(
         session, registry, saga_id, request, step,
@@ -382,13 +393,10 @@ async def test_compensator_replay_is_idempotent(
         new_idempotency_key(prefix=step.value),
     )
 
+    # See note in ``test_compensator_lands_in_documented_state``: the
+    # APPROVE special-case is gone; ``extras_seed`` carries the
+    # reshare_id post-ADR-0012.
     comp_extras = _seed_to_dict(spec.extras_seed)
-    if step == StepName.APPROVE:
-        async with session.begin():
-            ledger = SagaLedger(session)
-            fwd = await ledger.find_committed_forward(saga_id, step.value)
-        assert fwd is not None
-        comp_extras["reshare_id"] = fwd.payload["reshare_id"]
 
     fixed_key = new_idempotency_key(prefix=f"comp-{step.value}-rep")
     forward_outbox_rows_before = 0

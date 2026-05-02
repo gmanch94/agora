@@ -23,7 +23,7 @@ from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agora import __version__
 from agora.agents.tracking import OverdueScanner
@@ -39,8 +39,8 @@ from agora.api.schemas import (
     StepRunResponse,
     SubmitRequestResponse,
 )
-from agora.clients.ncip import MockNcipClient
-from agora.clients.reshare import MockReShareClient
+from agora.clients.ncip import MockNcipClient, NcipClient
+from agora.clients.reshare import MockReShareClient, ReShareClient
 from agora.config import get_settings
 from agora.logging import configure_logging, get_logger
 from agora.models.events import NewSagaEvent, SagaEvent
@@ -60,7 +60,12 @@ from agora.saga.ledger import (
     SagaNotFoundError,
     TerminalStateError,
 )
-from agora.saga.outbox import OutboxWorker, make_ncip_handler, make_reshare_handler
+from agora.saga.outbox import (
+    OutboxWorker,
+    make_ncip_handler,
+    make_reshare_handler,
+    make_reshare_on_success,
+)
 from agora.saga.steps import StepRegistry
 
 log = get_logger(__name__)
@@ -118,11 +123,20 @@ def _derive_extras(
     events: list[SagaEvent],
     override: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Reconstruct step-input extras from prior committed forward events.
+    """Reconstruct step-input extras from prior committed events.
 
-    Walks events in seq order so the most recent forward wins. Compensators
+    Walks events in seq order so the most recent commit wins. Compensators
     that reverse a step also clear the value the forward set, keeping the
     derived extras consistent with the saga's logical position.
+
+    Two event kinds contribute to extras:
+
+    - ``FORWARD`` — the steady-state source for ``chosen_supplier``
+      (set by ROUTE forward) and historical ``reshare_id`` (older
+      sagas where APPROVE forward was inline; ADR-0011 vintage).
+    - ``OBSERVATION`` for ``StepName.APPROVE`` — the new home for
+      ``reshare_id`` after ADR-0012 migrated APPROVE forward to the
+      outbox. The outbox worker projects the supplier ack here.
 
     The caller's ``override`` (request-body ``extras``) is merged last so
     a staff member can supply or correct an input the ledger doesn't have
@@ -142,6 +156,13 @@ def _derive_extras(
                 extras["chosen_supplier"] = payload["supplier_symbol"]
             if payload.get("reshare_id"):
                 extras["reshare_id"] = payload["reshare_id"]
+        elif ev.kind == EventKind.OBSERVATION and ev.step == StepName.APPROVE:
+            # ADR-0012: outbox-worker projection of the supplier ack
+            # carries reshare_id (and supplier_symbol) onto the ledger.
+            if payload.get("reshare_id"):
+                extras["reshare_id"] = payload["reshare_id"]
+            if payload.get("supplier_symbol"):
+                extras["chosen_supplier"] = payload["supplier_symbol"]
         elif ev.kind == EventKind.COMPENSATOR:
             # Reverse what the paired forward set so the next attempt
             # at that step requires a fresh input.
@@ -155,6 +176,40 @@ def _derive_extras(
             if v is not None:
                 extras[k] = v
     return extras
+
+
+def _build_outbox_worker(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    *,
+    reshare: ReShareClient,
+    ncip: NcipClient,
+    max_attempts: int,
+) -> OutboxWorker:
+    """Construct a fully-wired :class:`OutboxWorker`.
+
+    Single source of truth for the worker's handler + ``on_success``
+    layout so the API lifespan and integration tests build exactly
+    the same worker — drift here would silently change projection
+    behaviour between production and tests, which would invalidate
+    the e2e coverage of ADR-0012.
+
+    Threads the ReShare ``send_request`` → APPROVING-to-APPROVED
+    projection (ADR-0012) into ``on_success['reshare']``. Other
+    targets register a handler only.
+    """
+    return OutboxWorker(
+        sessionmaker,
+        handlers={
+            "reshare": make_reshare_handler(reshare),
+            "ncip": make_ncip_handler(ncip),
+        },
+        on_success={
+            # send_request projection: supplier ack lands as an
+            # OBSERVATION advancing APPROVING -> APPROVED. ADR-0012.
+            "reshare": make_reshare_on_success(),
+        },
+        max_attempts=max_attempts,
+    )
 
 
 def _make_context(
@@ -226,12 +281,10 @@ def create_app() -> FastAPI:
         scanner_task: asyncio.Task[None] | None = None
 
         if settings.outbox_worker_enabled:
-            worker = OutboxWorker(
+            worker = _build_outbox_worker(
                 get_sessionmaker(),
-                {
-                    "reshare": make_reshare_handler(reshare),
-                    "ncip": make_ncip_handler(ncip),
-                },
+                reshare=reshare,
+                ncip=ncip,
                 max_attempts=settings.outbox_retry_max_attempts,
             )
             worker_task = asyncio.create_task(
