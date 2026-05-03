@@ -444,16 +444,18 @@ catalogs publish SRU anyway. SRU covers the prototype scope.
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
 | `HttpReShareClient`           | Create-request body shape unverified vs `PatronRequest` Grails domain. Recall mapping unverified — raises until confirmed. |
 | Auth                          | HTTP Basic only. Production needs Okapi token flow.                                                                       |
-| APPROVE forward               | Inline wire call breaks the outbox invariant. Future ADR with `APPROVING` state or worker observation event.              |
-| Outbox multi-worker           | Single drainer assumption. Need `FOR UPDATE SKIP LOCKED` on Postgres for HA.                                              |
-| Alembic                       | Never tested against real Postgres. SQLite-only via `create_all()` so far.                                                |
-| TrackingAgent cron            | `OverdueScanner.scan()` exists; periodic invocation not wired. Mirror outbox-worker lifespan pattern.                     |
 | ReconciliationAgent           | Thin wrapper today; lacks failure-classification policy (when to run which compensator automatically).                     |
 | NCIP client                   | Mock-only.                                                                                                                |
 | ISO 18626 XSD validation      | Delegated entirely to mod-rs. Not independently validated.                                                                |
 | Observability (traces)        | structlog only. No OpenTelemetry yet.                                                                                     |
-| PRD/architecture drift        | Some early PRD docs predate ADR-0011 + lifespan worker. Stale-check pass pending.                                         |
+| PRD/architecture drift        | Stale-check pass ran 2026-05-04 (post PRs #25/#27/#28); 26 drift candidates across 6 files captured for follow-up PRs.    |
 | Python version                | Built/tested on 3.14.3 but `pyproject.toml` declares `>=3.11`.                                                            |
+
+> **Recently closed** (kept here for changelog continuity; remove on next refresh):
+> APPROVE forward inline → outbox via `APPROVING` (ADR-0012, PR #17).
+> Outbox multi-worker → `FOR UPDATE SKIP LOCKED` + claim-via-status (PR #25).
+> Alembic vs real Postgres → `tests/test_alembic_postgres.py` + `postgres-tests.yml` CI (PR #24).
+> TrackingAgent cron → `OverdueScanner.run_forever` spawned from FastAPI lifespan.
 
 All gaps are tracked in `CLAUDE.md`.
 
