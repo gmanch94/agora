@@ -1,4 +1,4 @@
-# Agora — Architecture (hand-drawn)
+# Agora — Architecture
 
 > Last reviewed against code: 2026-05-03 (post PRs #17/#18/#19/#24/
 > #25/#28 + RECEIVED state + state-aware SHIP comp + NCIP-checkout
@@ -7,18 +7,24 @@
 > alembic-on-real-postgres CI, multi-worker outbox,
 > borrower-receipt state).
 
-The diagrams below use Mermaid's hand-drawn (`look: handDrawn`) theme so
-they read like a whiteboard sketch. GitHub renders them inline.
+Diagrams pin `theme: neutral` so each block renders as a stable
+light-palette box (dark text on light fills) regardless of the
+viewer's GitHub light/dark preference — letting GitHub auto-remap
+to dark would put white text on the classDef'd pastel node fills
+and produce white-on-pastel that no one can read. Earlier revisions
+also added `look: handDrawn` for a whiteboard aesthetic; that's
+been retired because the hand-drawn cluster fills stack into
+unreadable cross-hatch patterns when subgraphs sit side-by-side
+(see Layer cake), and the sketch strokes go invisible against dark
+backgrounds when GitHub does try to remap. Legibility beats
+aesthetic.
 
 ## Layer cake
 
 ```mermaid
 ---
 config:
-  look: handDrawn
   theme: neutral
-  flowchart:
-    htmlLabels: true
 ---
 flowchart TB
     subgraph UI["Staff console (FastAPI + future HTMX/React)"]
@@ -90,8 +96,11 @@ flowchart TB
 ```mermaid
 ---
 config:
-  look: handDrawn
   theme: neutral
+  themeVariables:
+    lineColor: "#64748b"
+    transitionColor: "#64748b"
+    transitionLabelColor: "#1f2937"
 ---
 stateDiagram-v2
     [*] --> Submitted: patron submits<br/>(OpenURL / form)
@@ -99,15 +108,15 @@ stateDiagram-v2
     Routed --> Approving: staff approves<br/>(APPROVE forward<br/>enqueues outbox)
     Approving --> Approved: outbox worker<br/>delivered + projection<br/>writes reshare_id
     Approved --> Shipped: lender confirms<br/>SupplierMarkShipped<br/>(reshare confirm_shipment only)
-    Shipped --> Received: borrower confirms<br/>physical receipt<br/>(ItemReceived note;<br/>+ NCIP check_out fan-out)
+    Shipped --> Received: borrower confirms<br/>physical receipt<br/>(ItemReceived note —<br/>+ NCIP check_out fan-out)
     Received --> Returned: borrower confirms<br/>RequesterMarkReturned<br/>(+ NCIP check_in fan-out)
     Returned --> [*]
 
     Submitted --> Cancelled: submit compensator<br/>(patron withdraw)
     Routed --> Submitted: route compensator<br/>(re-rank suppliers)
     Approved --> Cancelled: approve compensator<br/>(cancel at supplier)
-    Shipped --> Disputed: ship compensator from SHIPPED<br/>(recall only — no ILS loan exists;<br/>RECEIVE forward never ran)
-    Received --> Disputed: ship compensator from RECEIVED<br/>(recall only — patron has item;<br/>return flow owns check_in)
+    Shipped --> Disputed: ship compensator from SHIPPED<br/>(recall only — no ILS loan exists —<br/>RECEIVE forward never ran)
+    Received --> Disputed: ship compensator from RECEIVED<br/>(recall only — patron has item —<br/>return flow owns check_in)
     Received --> Disputed: receive compensator<br/>(physical receipt contested —<br/>staff reconciliation)
     Returned --> Disputed: return compensator<br/>(reconciliation case)
     Cancelled --> [*]
@@ -152,7 +161,6 @@ States and compensator targets reflect `LifecycleState` and
 ```mermaid
 ---
 config:
-  look: handDrawn
   theme: neutral
 ---
 flowchart LR
@@ -175,7 +183,6 @@ flowchart LR
 ```mermaid
 ---
 config:
-  look: handDrawn
   theme: neutral
 ---
 flowchart TB
@@ -201,7 +208,6 @@ honour it, but we do not depend on the external side for dedup.
 ```mermaid
 ---
 config:
-  look: handDrawn
   theme: neutral
 ---
 flowchart LR
