@@ -2,8 +2,13 @@
 """Run comprehensive security scans on a Python project.
 
 Originally from wdm0006/python-skills (MIT, Will McGinnis). Cherry-picked
-into agora as part of the security-audit skill. Unmodified — see
-SKILL.md for agora-specific framing.
+into agora as part of the security-audit skill. Modified to invoke
+scanners via ``sys.executable -m <module>`` instead of bare PATH lookup
+so it works against a venv-only install (Windows ``.venv\\Scripts\\``,
+or any layout where the scanners aren't on the system ``PATH``). The
+unmaintained ``safety`` scanner was dropped — ``pip-audit`` covers the
+same vulnerability database. See SKILL.md "Bundled scripts" for
+agora-specific framing.
 
 Usage:
     python security_scan.py /path/to/project
@@ -12,7 +17,7 @@ Usage:
 
 import argparse
 import json
-import subprocess
+import subprocess  # nosec B404  # invoking trusted scanners with fixed argv
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,8 +35,16 @@ class ScanResult:
 def run_bandit(project_path: Path) -> ScanResult:
     """Run Bandit static security analysis."""
     try:
-        result = subprocess.run(
-            ["bandit", "-r", str(project_path / "src"), "-f", "json"],
+        result = subprocess.run(  # nosec B603  # fixed argv, no shell
+            [
+                sys.executable,
+                "-m",
+                "bandit",
+                "-r",
+                str(project_path / "src"),
+                "-f",
+                "json",
+            ],
             capture_output=True,
             text=True,
         )
@@ -53,7 +66,7 @@ def run_bandit(project_path: Path) -> ScanResult:
             tool="bandit",
             success=False,
             findings=[],
-            error="bandit not installed. Run: pip install bandit",
+            error="bandit module not importable. Run: pip install bandit",
         )
     except Exception as e:
         return ScanResult(
@@ -67,8 +80,8 @@ def run_bandit(project_path: Path) -> ScanResult:
 def run_pip_audit() -> ScanResult:
     """Run pip-audit for dependency vulnerabilities."""
     try:
-        result = subprocess.run(
-            ["pip-audit", "--format", "json"],
+        result = subprocess.run(  # nosec B603  # fixed argv, no shell
+            [sys.executable, "-m", "pip_audit", "--format", "json"],
             capture_output=True,
             text=True,
         )
@@ -90,7 +103,7 @@ def run_pip_audit() -> ScanResult:
             tool="pip-audit",
             success=False,
             findings=[],
-            error="pip-audit not installed. Run: pip install pip-audit",
+            error="pip_audit module not importable. Run: pip install pip-audit",
         )
     except Exception as e:
         return ScanResult(
@@ -101,48 +114,11 @@ def run_pip_audit() -> ScanResult:
         )
 
 
-def run_safety() -> ScanResult:
-    """Run Safety for dependency vulnerabilities."""
-    try:
-        result = subprocess.run(
-            ["safety", "check", "--json"],
-            capture_output=True,
-            text=True,
-        )
-        if result.stdout:
-            data = json.loads(result.stdout)
-            vulnerabilities = data.get("vulnerabilities", [])
-            return ScanResult(
-                tool="safety",
-                success=True,
-                findings=vulnerabilities,
-            )
-        return ScanResult(
-            tool="safety",
-            success=True,
-            findings=[],
-        )
-    except FileNotFoundError:
-        return ScanResult(
-            tool="safety",
-            success=False,
-            findings=[],
-            error="safety not installed. Run: pip install safety",
-        )
-    except Exception as e:
-        return ScanResult(
-            tool="safety",
-            success=False,
-            findings=[],
-            error=str(e),
-        )
-
-
 def check_secrets(project_path: Path) -> ScanResult:
     """Check for hardcoded secrets."""
     try:
-        result = subprocess.run(
-            ["detect-secrets", "scan", str(project_path)],
+        result = subprocess.run(  # nosec B603  # fixed argv, no shell
+            [sys.executable, "-m", "detect_secrets", "scan", str(project_path)],
             capture_output=True,
             text=True,
         )
@@ -257,7 +233,7 @@ def main():
     parser.add_argument(
         "--skip",
         nargs="+",
-        choices=["bandit", "pip-audit", "safety", "secrets"],
+        choices=["bandit", "pip-audit", "secrets"],
         default=[],
         help="Skip specific scanners",
     )
@@ -280,10 +256,6 @@ def main():
     if "pip-audit" not in args.skip:
         print("Running pip-audit...")
         results.append(run_pip_audit())
-
-    if "safety" not in args.skip:
-        print("Running Safety...")
-        results.append(run_safety())
 
     if "secrets" not in args.skip:
         print("Checking for secrets...")
