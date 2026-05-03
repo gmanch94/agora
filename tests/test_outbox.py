@@ -38,7 +38,11 @@ from agora.models.request import (
     RequestType,
 )
 from agora.saga.db import OutboxRow
-from agora.saga.idempotency import new_idempotency_key, outbox_enqueue
+from agora.saga.idempotency import (
+    new_idempotency_key,
+    outbox_claim,
+    outbox_enqueue,
+)
 from agora.saga.ledger import SagaLedger
 from agora.saga.outbox import (
     DrainStats,
@@ -527,8 +531,134 @@ async def test_unknown_target_skipped_not_failed(sm: async_sessionmaker[AsyncSes
 
     assert stats == DrainStats(skipped_no_handler=1)
     row = await _row(sm, row_id)
+    # Worker claimed the row (in_flight) then released it back to
+    # pending when no handler matched. attempts stays at 0 — no
+    # dispatch was attempted.
     assert row.status == "pending"
     assert row.attempts == 0  # we never even tried
+    assert row.claimed_at is None  # claim released by no-handler branch
+
+
+async def test_drain_marks_in_flight_during_dispatch(
+    sm: async_sessionmaker[AsyncSession],
+) -> None:
+    """A claimed row is ``in_flight`` while the handler is running.
+
+    Verifies the claim pattern: the row enters ``in_flight`` when
+    claimed, exits ``in_flight`` when marked delivered. Two concurrent
+    workers can't observe the same row in ``pending`` once it's been
+    claimed.
+    """
+    seen_status: list[str] = []
+
+    async def inspect_handler(payload: dict[str, Any], idem: str) -> None:
+        # Mid-dispatch, peek at the row's status from a fresh session.
+        async with sm() as s:
+            r = (
+                await s.execute(
+                    select(OutboxRow).where(OutboxRow.idempotency_key == idem)
+                )
+            ).scalar_one()
+            seen_status.append(r.status)
+
+    await _enqueue(
+        sm,
+        target="t1",
+        payload={},
+        idempotency_key="idem-inflight-1",
+    )
+    worker = OutboxWorker(sm, {"t1": inspect_handler})
+    stats = await worker.drain_once()
+
+    assert stats == DrainStats(delivered=1)
+    # Row was in_flight while the handler ran.
+    assert seen_status == ["in_flight"]
+
+
+async def test_orphan_recovery_reclaims_stale_in_flight(
+    sm: async_sessionmaker[AsyncSession],
+) -> None:
+    """Claims older than ``lease_secs`` are swept back to ``pending``.
+
+    Simulates a worker crash mid-dispatch: claim a row, never mark it
+    delivered or failed, then call ``outbox_claim`` again with
+    ``lease_secs=0`` so the prior claim is immediately stale. The
+    second claim should pick up the same row.
+    """
+    row_id = await _enqueue(
+        sm,
+        target="t1",
+        payload={},
+        idempotency_key="idem-orphan-1",
+    )
+
+    # Claim once with a normal lease — row goes in_flight.
+    async with sm() as s, s.begin():
+        first = await outbox_claim(s, limit=10, lease_secs=600)
+    assert len(first) == 1
+    assert first[0].id == row_id
+
+    row = await _row(sm, row_id)
+    assert row.status == "in_flight"
+    assert row.claimed_at is not None
+
+    # A second claim with the same long lease should NOT re-pick the row
+    # (its claim is still valid).
+    async with sm() as s, s.begin():
+        second = await outbox_claim(s, limit=10, lease_secs=600)
+    assert second == []
+
+    # Now claim with lease_secs=0: the prior claim is immediately stale,
+    # orphan recovery flips it back to pending, then the same call
+    # re-claims it.
+    async with sm() as s, s.begin():
+        third = await outbox_claim(s, limit=10, lease_secs=0)
+    assert len(third) == 1
+    assert third[0].id == row_id
+
+    row2 = await _row(sm, row_id)
+    assert row2.status == "in_flight"  # newly re-claimed
+    assert row2.attempts == 0  # orphan recovery doesn't burn attempts
+
+
+async def test_handler_failure_clears_claim(
+    sm: async_sessionmaker[AsyncSession],
+) -> None:
+    """A failed dispatch must release ``claimed_at`` so the next pass re-claims.
+
+    Without this, retried rows would carry a stale ``claimed_at`` that
+    confuses orphan-recovery accounting (the row is no longer
+    in_flight, so the lease is moot — but explicitness avoids surprises).
+    """
+    async def boom(payload: dict[str, Any], idem: str) -> None:
+        raise RuntimeError("nope")
+
+    row_id = await _enqueue(sm, target="t1", payload={})
+    worker = OutboxWorker(sm, {"t1": boom}, base_backoff_secs=0)
+    await worker.drain_once()
+
+    row = await _row(sm, row_id)
+    assert row.status == "pending"
+    assert row.claimed_at is None  # claim released on failure
+    assert row.attempts == 1
+
+
+async def test_dead_letter_clears_claim(
+    sm: async_sessionmaker[AsyncSession],
+) -> None:
+    """Terminal failure also clears ``claimed_at``."""
+    async def boom(payload: dict[str, Any], idem: str) -> None:
+        raise RuntimeError("nope")
+
+    row_id = await _enqueue(sm, target="t1", payload={})
+    worker = OutboxWorker(
+        sm, {"t1": boom}, max_attempts=1, base_backoff_secs=0
+    )
+    await worker.drain_once()
+
+    row = await _row(sm, row_id)
+    assert row.status == "dead_letter"
+    assert row.claimed_at is None
 
 
 async def test_reshare_handler_dispatches_to_client(sm: async_sessionmaker[AsyncSession]) -> None:

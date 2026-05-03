@@ -1,10 +1,11 @@
 name: postgres-tests
 
-# Real-Postgres Alembic + ORM-parity test (backlog #4). Runs the
-# integration-marked tests in tests/test_alembic_postgres.py against
-# a postgres:15-alpine service container. Other test categories
-# (the SQLite-backed unit/property/e2e suite) are not in scope here
-# -- triple-gate-in-CI is tracked separately.
+# Real-Postgres tests against a postgres:15-alpine service container:
+#   - tests/test_alembic_postgres.py        — Alembic + ORM parity (backlog #4)
+#   - tests/test_outbox_concurrent_postgres.py — multi-worker outbox
+#     safety via SELECT ... FOR UPDATE SKIP LOCKED (backlog #5)
+# Other test categories (the SQLite-backed unit/property/e2e suite)
+# are not in scope here -- triple-gate-in-CI is tracked separately.
 
 on:
   push:
@@ -46,11 +47,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
-      - name: Run alembic + ORM parity tests
+      - name: Run real-Postgres integration tests
         env:
           # Service container is reachable at localhost:5432 inside
           # the runner. asyncpg URL drives the async engine; alembic
           # honors the injected sqlalchemy.url.
           AGORA_TEST_DB_URL: postgresql+asyncpg://agora:agora@localhost:5432/agora_test
         run: |
-          pytest tests/test_alembic_postgres.py -v
+          pytest tests/test_alembic_postgres.py tests/test_outbox_concurrent_postgres.py -v
