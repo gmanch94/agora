@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     reshare_tenant: str = Field(default="consortium-a", alias="RESHARE_TENANT")
     reshare_user: str = Field(default="", alias="RESHARE_USER")
     reshare_password: str = Field(default="", alias="RESHARE_PASSWORD")
+    # When set, ``HttpReShareClient`` authenticates via the FOLIO Okapi
+    # token flow (POST {okapi_url}/authn/login → ``x-okapi-token`` header)
+    # instead of HTTP Basic. Reuses ``RESHARE_USER`` and ``RESHARE_PASSWORD``
+    # as Okapi credentials. See ADR-0013.
+    okapi_url: str = Field(default="", alias="OKAPI_URL")
 
     ncip_base_url: str = Field(default="", alias="NCIP_BASE_URL")
     ncip_agency_id: str = Field(default="AGORA-DEV", alias="NCIP_AGENCY_ID")
