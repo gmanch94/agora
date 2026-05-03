@@ -185,8 +185,17 @@ ISO 18626 message types — see table in `clients/reshare.py`.
   one transaction). Step inputs (`chosen_supplier`, `reshare_id`) are
   derived from prior committed forwards; the request body's `extras`
   field overrides where derivation is impossible (e.g. first ROUTE).
-- Alembic migration never tested against real Postgres — only SQLite
-  via `Base.metadata.create_all()`.
+- Alembic migration is now exercised against a real `postgres:15-alpine`
+  service container in `.github/workflows/postgres-tests.yml`. Three
+  tests in `tests/test_alembic_postgres.py` cover (a) `upgrade head`
+  succeeds, (b) `upgrade head -> downgrade base -> upgrade head`
+  round-trips cleanly, (c) ORM metadata in `saga/db.py` matches the
+  live migrated schema via `alembic.autogenerate.compare_metadata`
+  with a thin filter that drops cosmetic noise (`modify_default`
+  text-vs-FunctionElement, `modify_type` when types stringify the
+  same). Tests skip locally unless `AGORA_TEST_DB_URL` is set; CI
+  always runs them. SQLite tests still use `Base.metadata.create_all()`
+  for boot speed.
 - mypy `--strict` runs clean against `src/` AND `tests/` (configured
   in `pyproject.toml` with `files = ["src", "tests"]`). Package ships
   a `py.typed` marker so downstream consumers pick up the inline
