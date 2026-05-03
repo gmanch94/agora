@@ -1,6 +1,7 @@
 # PRD 03 — Saga & Idempotency
 
-> Last reviewed against code: 2026-05-02.
+> Last reviewed against code: 2026-05-03 (post RECEIVE step + RECEIVED
+> state + NCIP fan-out re-anchor SHIP→RECEIVE).
 
 ## Saga model
 
@@ -20,7 +21,7 @@ CREATE TABLE saga_event (
     saga_id         UUID NOT NULL REFERENCES saga(id) ON DELETE CASCADE,
     seq             INT  NOT NULL,
     kind            VARCHAR(32) NOT NULL,          -- 'forward' | 'compensator' | 'gate' | 'observation'
-    step            VARCHAR(32) NOT NULL,          -- 'submit'|'route'|'approve'|'ship'|'return'|'cancel'|'reroute'|'revoke'|'recall'|'dispute'
+    step            VARCHAR(32) NOT NULL,          -- forwards: 'submit'|'route'|'approve'|'ship'|'receive'|'return'  // compensators / branches: 'cancel'|'reroute'|'revoke'|'recall'|'dispute'
     state_before    VARCHAR(32) NOT NULL,
     state_after     VARCHAR(32) NOT NULL,
     actor           VARCHAR(255) NOT NULL,
@@ -182,6 +183,60 @@ delivered flag commit atomically; a failed projection re-queues the
 row for retry without leaving the saga half-advanced. Hitting
 `/compensate` during the APPROVING window (supplier ack still
 pending) returns 400 — there is no `reshare_id` to cancel against.
+
+### RECEIVE + RETURN through the outbox (NCIP fan-out)
+
+`SHIPPED → RECEIVED → RETURNED` are the borrower-side leg. Both
+forwards emit two outbox intents in one step (one per target):
+
+| Forward  | `target='reshare'` intent              | `target='ncip'` intent                          |
+| -------- | -------------------------------------- | ----------------------------------------------- |
+| RECEIVE  | (none — supplier-side stays `Loaned`)  | `check_out` against the borrower's local ILS    |
+| RETURN   | `confirm_return` (ItemReturned)        | `check_in` against the borrower's local ILS    |
+
+Because `outbox.idempotency_key` is `UNIQUE` across all targets, the
+NCIP row carries a `:ncip` suffix on `ctx.idempotency_key` so it
+collides with neither the bare-key reshare row nor a replay of the
+same step. Convention: when a step emits both a reshare and an NCIP
+intent the reshare row takes the bare key and the NCIP row takes
+`:ncip`. RECEIVE has only one intent (the NCIP `check_out`) and
+keeps the suffix for consistency.
+
+**NCIP `check_out` is anchored on RECEIVE forward** (re-anchored
+from SHIP — see `docs/lessons.md` § Saga / ledger; CLAUDE.md
+"Known gaps" carries the canonical prose). The
+patron's ILS record reflects the loan from the moment they
+physically take custody, not from supplier shipment. Trade-off: a
+saga whose patron never confirms receipt will never have a
+`check_out` dispatched; the TrackingAgent tier-3 watch
+(`receipt-unconfirmed-{saga_id}`) surfaces this to staff. `due_at`
+still anchors to `shipped_at` because the loan-period clock is a
+supplier-side commitment that starts at shipment, and an
+unconfirmed-receipt saga still needs an overdue threshold.
+
+**NCIP outcomes do not gate saga state.** Failure surfaces as a
+stuck outbox row for staff review; the saga continues. The NCIP
+HTTP/SOAP client itself remains a mock today (`MockNcipClient`) —
+real `mod-ncip` integration is future work.
+
+### SHIP compensator (post-RECEIVE re-anchor)
+
+The SHIP compensator emits a single ReShare `recall_request` in
+either branch (saga at `SHIPPED` or post-`RECEIVED`) and lands in
+`DISPUTED`. The `current_state` check survives only as state-aware
+rationale text; functionally both branches enqueue the same recall.
+
+- At `SHIPPED` no ILS loan was ever opened (RECEIVE forward never
+  ran) — recall is the only correct action.
+- At `RECEIVED` the patron physically holds the book so the loan
+  correctly reflects current custody; the eventual return flow owns
+  `check_in`.
+
+The earlier state-aware NCIP rollback (PR #37, idempotency-key
+suffix `:ncip-rollback`) compensated for an upstream design tension
+that the re-anchor removed. Logged in `docs/lessons.md` § Saga /
+ledger as a generalised lesson: re-anchoring a side effect can
+obsolete prior state-aware logic.
 
 ## Properties to verify
 
