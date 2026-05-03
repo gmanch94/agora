@@ -2,7 +2,8 @@
 
 > Last reviewed against code: 2026-05-03 (post CrossRef client PR-A
 > — `CROSSREF_*` env vars added; tier-3 receipt-unconfirmed watch
-> from prior session unchanged).
+> from prior session unchanged; PR-2a routing seam adds
+> `AGORA_ROUTING_TIEBREAK_EPSILON`).
 
 Operational reference for the Agora ILL prototype. Covers bring-up,
 day-to-day operation (outbox, overdue scan, gate workflow), and
@@ -67,6 +68,7 @@ the process env. Defaults target local dev (Postgres on `localhost:5433`).
 | `AGORA_TRACKING_SCAN_INTERVAL_SECS` | `300.0`                                                | Overdue scanner poll interval (5 min default).             |
 | `AGORA_TRACKING_RECALL_AFTER_DAYS`  | `14`                                                   | Days past `due_at` before tier-2 `recall-proposed` fires.  |
 | `AGORA_TRACKING_UNCONFIRMED_RECEIPT_AFTER_DAYS` | `7`                                        | Days past `shipped_at` (with no RECEIVE event) before tier-3 `receipt-unconfirmed` fires. Independent of tier-1/2; tracks transit time. |
+| `AGORA_ROUTING_TIEBREAK_EPSILON`    | `0.05`                                                 | RoutingAgent LLM tie-breaker activation threshold. When the rules-baseline scoring puts the top-2 candidates within this gap, `RoutingAgent` consults the configured `LlmTiebreaker` (if any). Placeholder until PR-2b tunes against eval — see ADR-0014. |
 
 `.env.example` in the repo lists the same set with safe defaults.
 

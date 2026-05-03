@@ -56,9 +56,7 @@ class Settings(BaseSettings):
     # constants in place for when http is enabled.
     sru_enabled: bool = Field(default=False, alias="AGORA_SRU_ENABLED")
 
-    crossref_base_url: str = Field(
-        default="https://api.crossref.org", alias="CROSSREF_BASE_URL"
-    )
+    crossref_base_url: str = Field(default="https://api.crossref.org", alias="CROSSREF_BASE_URL")
     crossref_timeout_secs: float = Field(default=5.0, alias="CROSSREF_TIMEOUT_SECS")
     # Polite-pool opt-in: when set, ``HttpCrossrefClient`` sends
     # ``User-Agent: Agora/0.1 (mailto:<value>)`` per CrossRef's
@@ -71,21 +69,13 @@ class Settings(BaseSettings):
 
     saga_stall_timeout_secs: int = Field(default=600, alias="SAGA_STALL_TIMEOUT_SECS")
     outbox_retry_max_attempts: int = Field(default=10, alias="OUTBOX_RETRY_MAX_ATTEMPTS")
-    outbox_worker_enabled: bool = Field(
-        default=True, alias="AGORA_OUTBOX_WORKER_ENABLED"
-    )
-    outbox_poll_interval_secs: float = Field(
-        default=1.0, alias="AGORA_OUTBOX_POLL_INTERVAL_SECS"
-    )
-    tracking_scanner_enabled: bool = Field(
-        default=True, alias="AGORA_TRACKING_SCANNER_ENABLED"
-    )
+    outbox_worker_enabled: bool = Field(default=True, alias="AGORA_OUTBOX_WORKER_ENABLED")
+    outbox_poll_interval_secs: float = Field(default=1.0, alias="AGORA_OUTBOX_POLL_INTERVAL_SECS")
+    tracking_scanner_enabled: bool = Field(default=True, alias="AGORA_TRACKING_SCANNER_ENABLED")
     tracking_scan_interval_secs: float = Field(
         default=300.0, alias="AGORA_TRACKING_SCAN_INTERVAL_SECS"
     )
-    tracking_recall_after_days: int = Field(
-        default=14, alias="AGORA_TRACKING_RECALL_AFTER_DAYS"
-    )
+    tracking_recall_after_days: int = Field(default=14, alias="AGORA_TRACKING_RECALL_AFTER_DAYS")
     # Tier-3 watch (post NCIP-checkout SHIP→RECEIVE re-anchor): a saga
     # whose patron never confirms RECEIVE will never have a NCIP
     # ``check_out`` dispatched (the borrower-side ILS loan only opens
@@ -97,6 +87,20 @@ class Settings(BaseSettings):
     tracking_unconfirmed_receipt_after_days: int = Field(
         default=7, alias="AGORA_TRACKING_UNCONFIRMED_RECEIPT_AFTER_DAYS"
     )
+
+    # RoutingAgent LLM tie-breaker activation threshold. When the
+    # rules-baseline scoring puts the top-2 candidates within this gap,
+    # ``RoutingAgent`` consults the configured ``LlmTiebreaker`` (if
+    # any). Larger values fire the LLM more often (higher cost,
+    # potentially better calls); smaller values keep the rules path
+    # dominant. Default 0.05 is a placeholder until PR-2b runs the
+    # eval against a real LLM and tunes against committed scenarios —
+    # at the rules score scale (max ≈ 1.0), 0.05 captures cases where
+    # rules effectively tied (the four ground-truth-vs-rules
+    # disagreement scenarios in ``evals/routing/scenarios.json`` have
+    # gaps of 0.0 except routing-015, whose 0.46 gap is documented
+    # in ADR-0014 as out-of-scope for the tie-breaker).
+    routing_tiebreak_epsilon: float = Field(default=0.05, alias="AGORA_ROUTING_TIEBREAK_EPSILON")
 
     @property
     def reshare_enabled(self) -> bool:

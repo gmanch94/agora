@@ -125,21 +125,30 @@ ISO 18626 message types — see table in `clients/reshare.py`.
   backlog #9 PR-C / PR-D. mod-rs does not honour `Idempotency-Key`
   — replay-safety lives in the saga ledger's UNIQUE constraint,
   not the wire.
-- RoutingAgent uses a deterministic rules-only weighted-sum today
-  (no LLM call). PR-1 of the LLM track shipped only the eval harness
-  + ADR-0014 — `src/agora/evals/routing.py` scores any
-  `RoutingAgent`-shaped object against
-  `evals/routing/scenarios.json` (20 hand-labeled scenarios) on
-  top-1 accuracy + mean Spearman. Committed rules-baseline floor in
-  `evals/routing/baseline.json`: top-1 **0.8000**, mean Spearman
-  **0.5556**. PR-2 (LLM tie-breaker prompt + ADK call + ε threshold +
-  fallback) MUST meet or exceed both numbers before merging — see
-  ADR-0014 for the gating policy. Four scenarios in the set
-  (`routing-013..016`) are deliberate rules-baseline misses encoding
-  metadata-only signals (SLA tier, reciprocity, format affinity,
-  on-time reliability) — that's the surface area the LLM is hired
-  to decide. Run via `make eval-routing` (NOT part of `triple-gate`
-  CI yet — PR-2 will add the regression hook).
+- RoutingAgent uses a deterministic rules-only weighted-sum baseline
+  + a pluggable `LlmTiebreaker` seam (PR-2a). The LLM Protocol +
+  `MockLlmTiebreaker` test double + ε config
+  (`AGORA_ROUTING_TIEBREAK_EPSILON`, default 0.05) all ship; the
+  agent is byte-identical to PR-1 when constructed with no
+  `llm_tiebreaker=` kwarg. **No real LLM adapter wired** — that's
+  PR-2b alongside the prompt template + eval rerun + CI gate.
+  PR-2b's adapter MUST be ADK-mediated (ADR-0003), `temperature=0`
+  for determinism, and meet/exceed the committed rules-baseline floor
+  in `evals/routing/baseline.json`: top-1 **0.8000**, mean Spearman
+  **0.5556**. Four scenarios (`routing-013..016`) are deliberate
+  rules-baseline misses encoding metadata-only signals (SLA tier,
+  reciprocity, format affinity, on-time reliability). Three (013,
+  014, 016) have rules score gap 0.0 — true ties — and are in scope
+  for the tie-breaker. The fourth (015) has gap 0.46 and is
+  documented in ADR-0014 as **out of scope for the tie-breaker
+  mechanism** (a future ADR may revisit if real consortium routing
+  benefits from an always-on advisory call). Eval harness via
+  `make eval-routing`; NOT in `triple-gate` CI yet — PR-2b adds the
+  regression hook at the same time it commits the new baseline.
+  Failure paths in the seam (LLM raises / abstains / returns unknown
+  symbol) ALWAYS fall back to the rules pick + diagnostic; the agent
+  never re-raises out to its caller (advisory-only invariant per
+  ADR-0005).
 - DiscoveryAgent has CrossRef + SRU client factories
   (`agora.clients.crossref.get_crossref_client`,
   `agora.clients.sru.get_sru_client`) gated on

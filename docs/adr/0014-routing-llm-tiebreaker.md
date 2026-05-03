@@ -1,7 +1,9 @@
 # ADR 0014 — RoutingAgent LLM-augmented tie-breaker
 
 **Status:** Accepted
-**Date:** 2026-05-03
+**Date:** 2026-05-03 (revised same day post PR-2a seam landing —
+implementation note split into PR-2a / PR-2b; `routing-015` scope
+finding documented)
 
 ## Context
 
@@ -146,17 +148,93 @@ ordering for staff to review (advisory-only — ADR-0005).
 
 ## Implementation note
 
-PR-1 (this PR) ships the eval harness, the scenario set, the committed
-baseline, and this ADR. **No change to `RoutingAgent` itself.** The
-PRD-02 RoutingAgent section is updated to point at the harness.
+The original sketch had PR-2 ship the seam + the prompt + the ADK
+adapter + the eval rerun + the CI gate as one PR. That bundle has
+since been **split into PR-2a (seam) and PR-2b (LLM)** for three
+concrete reasons:
 
-PR-2 wires the LLM tie-breaker (prompt + ADK call + ε threshold +
-fallback path), runs the harness against the new agent, gates on the
-floor numbers above. PR-3 (if needed) tunes ε and the prompt against
-production traces.
+1. The eval rerun requires actually calling a real LLM. Without that
+   call the baseline doesn't move and the gate is unchanged — so
+   "seam + adapter without eval rerun" is functionally equivalent to
+   shipping just the seam.
+2. The real ADK call needs a credential + quota project (the GCP
+   warning at session bootstrap flags the quota project as missing).
+   That's a config problem, not a code problem, and it shouldn't
+   block a code-only PR.
+3. Prompt design is the hard part of this work and benefits from
+   being its own PR with its own iteration cycle. Splitting lets
+   PR-2a stand on a fully-mocked test surface while PR-2b iterates
+   against real LLM outputs.
 
-The harness is invoked via `make eval-routing` (writes
-`evals/routing/baseline.json` and prints a per-scenario summary). It
-is **not** part of the `triple-gate` CI workflow yet — gating on the
-baseline's existence is enough until PR-2 has an LLM call to gate.
-PR-2 will add the CI hook.
+### PR-1 (shipped) — eval scaffolding
+
+`evals/routing/{scenarios,baseline}.json`,
+`src/agora/evals/routing.py`, this ADR. Rules-baseline floor pinned;
+no change to `RoutingAgent`.
+
+### PR-2a (this PR) — pluggable seam
+
+- `LlmTiebreaker` Protocol + `TiebreakDecision` dataclass +
+  `MockLlmTiebreaker` test double in `src/agora/agents/routing.py`.
+- `RoutingAgent.__init__` gains optional `llm_tiebreaker=` kwarg and
+  optional `epsilon=` override; `run` gains optional `item=` kwarg
+  for patron-side metadata.
+- ε exposed via `Settings.routing_tiebreak_epsilon` /
+  `AGORA_ROUTING_TIEBREAK_EPSILON` (default 0.05).
+- Six-case test matrix in `tests/test_routing_tiebreaker.py`:
+  rules-only path / wide-gap-no-call / within-ε-call /
+  exception-fallback / unknown-symbol-fallback / abstain-fallback.
+- **No change to `evals/routing/baseline.json`** — the rules
+  baseline floor is what PR-2b has to beat, so we hold it byte-stable
+  through PR-2a. The eval harness produces an unchanged report.
+- **No prompt template, no real LLM adapter, no CI gate change.**
+
+### PR-2b (next) — prompt + ADK adapter + eval rerun + CI gate
+
+- `AdkLlmTiebreaker` adapter (or whatever the eventual concrete
+  implementation is named) implementing the Protocol shipped in
+  PR-2a. Determinism pin: `temperature=0`, single-run scoring.
+- Prompt template that takes `list[HolderCandidate]` + optional
+  `ItemMetadata` and returns a `TiebreakDecision`-shaped JSON
+  response constrained to a candidate symbol or null. The prompt
+  enforces ≤1-sentence rationale (so the agent's composed rationale
+  stays ≤3 sentences total — see PRD-02).
+- Eval rerun against the LLM-augmented agent; commit the new
+  `baseline.json` if it beats the floor.
+- CI hook running `python -m agora.evals.routing --no-write` and
+  diffing scores vs `baseline.json`. Regression = red CI.
+
+### Scope finding from PR-2a: scenario `routing-015` is out-of-scope
+
+The advisor's discriminator-constraint check (computed at PR-2a
+implementation time) revealed that `routing-015` has a rules-baseline
+top-2 score gap of **0.46**. The LLM tie-breaker, by design, only
+fires when the gap is below ε. With ε=0.05 (or any sane near-tie
+threshold) the LLM will never see `routing-015`, so PR-2b cannot
+fix it via the tie-breaker mechanism even with a perfect prompt.
+
+The other three inversion scenarios (`routing-013`, `014`, `016`)
+have score gap 0.0 — true ties — and remain in scope. PR-2b is
+expected to lift top-1 from 16/20 (0.8000) to 19/20 (0.9500) by
+fixing those three; `routing-015` stays a baseline miss.
+
+Two paths forward, both deferred:
+
+- (A) Relabel `routing-015` so its expected pick becomes the rules
+  pick (MEM-A), reducing the inversion set to three scenarios. Honest
+  but loses signal.
+- (B) Extend RoutingAgent scope to support an "always-on" advisory
+  call when the request item carries delivery-format affinity that
+  rules can't read. Bigger ADR; revisit once PR-2b has shipped and
+  there's data on whether real consortium routing benefits from the
+  format-affinity case.
+
+Neither is in PR-2a or PR-2b's scope. The case stays in
+`scenarios.json` as documentation that the metric is honest about a
+known limitation.
+
+### Harness is not part of `triple-gate` CI yet
+
+`make eval-routing` writes `evals/routing/baseline.json` locally;
+PR-2b will add the regression check at the same time as the new
+baseline.
