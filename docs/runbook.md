@@ -48,8 +48,9 @@ the process env. Defaults target local dev (Postgres on `localhost:5433`).
 | `AGORA_DB_URL`                      | `postgresql+asyncpg://agora:agora@localhost:5433/agora` | Tests override to `sqlite+aiosqlite:///:memory:`.          |
 | `AGORA_DB_POOL_SIZE`                | `10`                                                   |                                                            |
 | `RESHARE_BASE_URL`                  | `""`                                                   | Empty → mock client. Non-empty triggers real HTTP client.  |
-| `RESHARE_TENANT`                    | `consortium-a`                                         | Maps to mod-rs `X-Okapi-Tenant`.                           |
-| `RESHARE_USER` / `RESHARE_PASSWORD` | `""`                                                   | HTTP Basic for dev; production needs Okapi token.          |
+| `RESHARE_TENANT`                    | `consortium-a`                                         | Maps to mod-rs `X-Okapi-Tenant` (login + data requests).   |
+| `RESHARE_USER` / `RESHARE_PASSWORD` | `""`                                                   | HTTP Basic for dev; reused as Okapi creds when `OKAPI_URL` is set (ADR-0013). |
+| `OKAPI_URL`                         | `""`                                                   | When set, `HttpReShareClient` authenticates via FOLIO Okapi token flow (`POST {OKAPI_URL}/authn/login`) instead of HTTP Basic. See ADR-0013. |
 | `NCIP_BASE_URL`                     | `""`                                                   | Mock-only today.                                           |
 | `NCIP_AGENCY_ID`                    | `AGORA-DEV`                                            | Agency symbol stamped on NCIP requests.                    |
 | `SRU_LOC_URL`                       | `https://lx2.loc.gov/voyager`                          | Library of Congress SRU.                                   |

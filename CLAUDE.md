@@ -109,16 +109,22 @@ ISO 18626 message types — see table in `clients/reshare.py`.
 - `HttpReShareClient` paths and action vocabulary verified against
   mod-rs master (UrlMappings.groovy, PatronRequestController.groovy,
   Actions.groovy, ModuleDescriptor-template.json — see module
-  docstring). Remaining unverified surface: (a) the create-request
-  body shape (binds to the `PatronRequest` Grails domain class —
-  caller's `request_payload` is passed through verbatim with the
-  supplier merged under `supplyingInstitutionSymbol`), (b) response
-  field names beyond `id`/`hrid`/`state`, (c) the recall-request
-  mapping — mod-rs has no first-class action so `recall_request`
-  raises `ClientError` until confirmed against a live tenant. Auth
-  uses HTTP Basic (dev path); production needs Okapi token flow.
-  mod-rs does not honour `Idempotency-Key` — replay-safety lives in
-  the saga ledger's UNIQUE constraint, not the wire.
+  docstring). The FastAPI app wires `get_client()` from
+  `agora.clients.reshare`, which returns `HttpReShareClient` when
+  `RESHARE_BASE_URL` is set and `MockReShareClient` otherwise. Auth
+  is HTTP Basic by default; setting `OKAPI_URL` switches to the
+  FOLIO Okapi token flow via `OkapiAuth` (ADR-0013, PR #34).
+  Remaining unverified surface: (a) the create-request body shape
+  (binds to the `PatronRequest` Grails domain class — caller's
+  `request_payload` is passed through verbatim with the supplier
+  merged under `supplyingInstitutionSymbol`), (b) response field
+  names beyond `id`/`hrid`/`state`, (c) the recall-request mapping
+  — mod-rs has no first-class action so `recall_request` raises
+  `ClientError` until confirmed against a live tenant. (a)–(c) are
+  blocked on a sandbox tenant for live-payload probing — see
+  backlog #9 PR-C / PR-D. mod-rs does not honour `Idempotency-Key`
+  — replay-safety lives in the saga ledger's UNIQUE constraint,
+  not the wire.
 - NCIP fan-out is wired on SHIP and RETURN forwards (fire-and-forget,
   borrower-side ILS): `ship_forward` emits a second `target="ncip"`
   intent for `check_out`, `return_forward` emits one for `check_in`.
@@ -231,10 +237,12 @@ ISO 18626 message types — see table in `clients/reshare.py`.
 - **Never auto-commit forward saga steps without a committed gate.**
   This breaks the human-in-loop invariant.
 - **Never amend git commits unless the user explicitly asks.** Create
-  a new commit instead. (User has GPG signing on; pinentry can hang —
-  if it times out, ask before bypassing.)
+  a new commit instead.
 - **Never skip hooks** (`--no-verify`, `--no-gpg-sign`) without
-  explicit permission.
+  explicit permission. (GPG signing is currently disabled —
+  `commit.gpgsign=false` as of 2026-05-03 — so commits go through
+  without pinentry prompts. If the user re-enables it, pinentry
+  hangs become possible again.)
 - **When adding DB columns or tables**, write a new Alembic revision
   in `alembic/versions/` AND update the ORM in `saga/db.py`. Do not
   rely on `create_all()` for production — only tests.
