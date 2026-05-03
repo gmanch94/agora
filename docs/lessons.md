@@ -199,13 +199,16 @@ documents the rule explicitly.
 
 ### 2026-04-29 — `Base.metadata.create_all()` for tests, Alembic for production
 SQLite tests use `create_all()` directly; Postgres uses Alembic
-migrations. The Alembic path has *never* been tested against a real
-Postgres in CI. Every new column or table needs (a) a new revision
+migrations. Every new column or table needs (a) a new revision
 in `alembic/versions/` AND (b) the ORM in `saga/db.py` updated. Do
 not rely on `create_all()` to "just work" — the column/index DDL it
-emits is not what Alembic emits. Backlog item: stand up a
-real-Postgres Alembic test.
-*(Known-gap entry in CLAUDE.md.)*
+emits is not what Alembic emits. **Closed by PR #24** (2026-05-02):
+`postgres-tests.yml` now runs three tests against `postgres:15-alpine`
+in CI — `upgrade head`, `upgrade head → downgrade base → upgrade head`
+round-trip, and `compare_metadata` ORM-vs-migrated-schema parity.
+SQLite still uses `create_all()` for boot speed in unit tests.
+*(Original known-gap in CLAUDE.md; closed in PR #24, see
+`tests/test_alembic_postgres.py`.)*
 
 ### 2026-04-29 — Lifecycle column is `VARCHAR`, so adding a state needs no DDL
 ADR-0012 prep added `LifecycleState.APPROVING`. The Alembic revision

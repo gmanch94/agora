@@ -1,6 +1,8 @@
 # Agora — Architecture (hand-drawn)
 
-> Last reviewed against code: 2026-05-02.
+> Last reviewed against code: 2026-05-03 (post PRs #17/#18/#19/#24/
+> #25/#28 — APPROVING-via-outbox, NCIP fan-out, TrackingScanner
+> lifespan task, alembic-on-real-postgres CI, multi-worker outbox).
 
 The diagrams below use Mermaid's hand-drawn (`look: handDrawn`) theme so
 they read like a whiteboard sketch. GitHub renders them inline.
@@ -26,7 +28,7 @@ flowchart TB
         DISC["DiscoveryAgent<br/>SRU + OpenURL"]
         ROUTE["RoutingAgent<br/>weighted scorer"]
         POL["PolicyAgent<br/>CONTU / eligibility / budget"]
-        TX["TransactionAgent<br/>drives ReShare"]
+        TX["TransactionAgent<br/>builds ReShare intents"]
         TRK["TrackingAgent<br/>overdue / recall"]
         REC["ReconciliationAgent<br/>compensator"]
     end
@@ -36,6 +38,11 @@ flowchart TB
         LEDGER[("saga_event<br/>append-only ledger")]
         SAGAS[("saga<br/>state projection")]
         IDEM[("inbox / outbox<br/>idempotency tables")]
+    end
+
+    subgraph WORKERS["Lifespan tasks (asyncio)"]
+        OUTW["OutboxWorker<br/>claim via SKIP LOCKED<br/>→ ReShare / NCIP<br/>→ projection callback"]
+        SCAN["OverdueScanner<br/>tier-1 overdue +<br/>tier-2 recall_proposed"]
     end
 
     subgraph RESHARE["FOLIO mod-rs (ReShare)"]
@@ -60,9 +67,15 @@ flowchart TB
     DISC -.advisory.-> COORD
     ROUTE -.advisory.-> COORD
     POL  -.advisory.-> COORD
-    TX   --> RESHARE
+    TX   -.intent.-> IDEM
     TRK  --> COORD
     REC  --> COORD
+
+    OUTW --> IDEM
+    OUTW --> RESHARE
+    OUTW --> MODNCIP
+    OUTW -.projection.-> LEDGER
+    SCAN --> LEDGER
 
     DISC --> CAT
     RESHARE --> PEERS
@@ -80,15 +93,16 @@ config:
 stateDiagram-v2
     [*] --> Submitted: patron submits<br/>(OpenURL / form)
     Submitted --> Routed: staff approves<br/>routing rec
-    Routed --> Approved: staff approves<br/>+ supplier accepts
-    Approved --> Shipped: lender confirms<br/>SupplierMarkShipped
-    Shipped --> Returned: borrower confirms<br/>RequesterMarkReturned
+    Routed --> Approving: staff approves<br/>(APPROVE forward<br/>enqueues outbox)
+    Approving --> Approved: outbox worker<br/>delivered + projection<br/>writes reshare_id
+    Approved --> Shipped: lender confirms<br/>SupplierMarkShipped<br/>(+ NCIP check_out fan-out)
+    Shipped --> Returned: borrower confirms<br/>RequesterMarkReturned<br/>(+ NCIP check_in fan-out)
     Returned --> [*]
 
     Submitted --> Cancelled: submit compensator<br/>(patron withdraw)
     Routed --> Submitted: route compensator<br/>(re-rank suppliers)
     Approved --> Cancelled: approve compensator<br/>(cancel at supplier)
-    Shipped --> Disputed: ship compensator<br/>(recall enqueued — manual)
+    Shipped --> Disputed: ship compensator<br/>(recall enqueued — manual;<br/>NCIP NOT rolled back)
     Returned --> Disputed: return compensator<br/>(reconciliation case)
     Cancelled --> [*]
     Unfilled --> [*]
@@ -96,9 +110,22 @@ stateDiagram-v2
 ```
 
 States and compensator targets reflect `LifecycleState` and
-`saga/flows.py` (no `Recalled` state in the enum — the SHIP
-compensator transitions to `Disputed` and enqueues a recall outbox
-intent for staff intervention).
+`saga/flows.py`. Notes:
+
+- `APPROVING` (per ADR-0012, PR #17) is the in-flight state between
+  the staff click and the supplier ack: APPROVE forward enqueues an
+  outbox `send_request` intent and advances to `APPROVING`; the
+  worker drains the row, calls ReShare, and the projection callback
+  writes an OBSERVATION carrying `reshare_id` that advances to
+  `APPROVED`. Compensate during `APPROVING` returns 400 — there is
+  no `reshare_id` to cancel against.
+- No `Recalled` state in the enum — the SHIP compensator transitions
+  to `Disputed` and enqueues a recall outbox intent for staff
+  intervention.
+- NCIP fan-out on SHIP/RETURN is fire-and-forget (CLAUDE.md
+  known-gap) and the SHIP compensator does **not** issue a NCIP
+  `check_in` rollback — staff investigates the stuck NCIP outbox row
+  separately.
 
 ## Saga step anatomy (forward + compensator pair)
 
@@ -139,7 +166,7 @@ flowchart TB
     LEDG -->|duplicate key| SAVEPOINT["savepoint rolls back<br/>row only — caller tx safe"]
     LEDG -->|fresh| OK["commit"]
 
-    OUT["Outbound delivery<br/>(to ReShare / peer)"] --> OBOX[("outbox<br/>pending → delivered<br/>or → dead-letter")]
+    OUT["Outbound delivery<br/>(to ReShare / peer / NCIP)"] --> OBOX[("outbox<br/>pending → in_flight<br/>→ delivered or → dead_letter<br/>(claimed_at lease;<br/>SKIP LOCKED on Postgres)")]
     OBOX -->|UNIQUE idempotency_key<br/>= worker-replay safe| RS["ReShare mod-rs<br/>(ignores Idempotency-Key;<br/>replay-safety lives in<br/>saga + outbox UNIQUEs)"]
 ```
 

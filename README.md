@@ -3,6 +3,8 @@
 > Research prototype. Multi-library consortium. Agents over FOLIO/ReShare.
 > Saga + idempotency. Human-approval at every state transition.
 
+> Last reviewed against code: 2026-05-03.
+
 ## What this is
 
 Agora is a research prototype that puts a multi-agent orchestration layer
@@ -18,11 +20,19 @@ reimplement them.
 
 ## Status
 
-**Bootstrap phase.** This repository contains the project plan, PRDs,
-ADRs, and initial code scaffolding. End-to-end demo not yet runnable.
+**Working prototype.** End-to-end demo runs via `make demo`
+(`agora.demos.happy_path`). 76 tests green (+6 postgres-only in CI).
+Saga + outbox + APPROVING-via-outbox (ADR-0012), multi-worker outbox
+safety (`SELECT … FOR UPDATE SKIP LOCKED`), TrackingAgent overdue
+scanner wired into the FastAPI lifespan, and Alembic-on-real-Postgres
+all shipped. CI gates: bandit + pip-audit + detect-secrets, pytest +
+ruff + mypy --strict, alembic+ORM parity against `postgres:15-alpine`.
 
 See `docs/prd/` for product requirements, `docs/adr/` for architecture
-decisions, and `prompts/build-agora.md` to bootstrap a fresh dev session.
+decisions (12 ADRs through 0012), `docs/architecture.md` for the
+hand-drawn diagrams, `docs/runbook.md` for operations, `docs/solution.md`
+for the solution doc, `docs/lessons.md` for accumulated gotchas, and
+`prompts/build-agora.md` to bootstrap a fresh dev session.
 
 ## Quick layout
 
@@ -30,19 +40,27 @@ decisions, and `prompts/build-agora.md` to bootstrap a fresh dev session.
 agora/
 ├── prompts/             # Project bootstrap prompt
 ├── docs/
-│   ├── prd/             # Product requirements
-│   └── adr/             # Architecture decisions
+│   ├── prd/             # Product requirements (00-06)
+│   ├── adr/             # Architecture decisions (0001-0012)
+│   ├── architecture.md  # Hand-drawn Mermaid diagrams
+│   ├── runbook.md       # Operations / on-call notes
+│   ├── solution.md      # Solution overview
+│   └── lessons.md       # Accumulated gotchas (append-only)
+├── alembic/versions/    # DB migrations
 ├── src/agora/
 │   ├── agents/          # Discovery, Routing, Policy, Transaction,
-│   │                    #   Tracking, Reconciliation
-│   ├── saga/            # Coordinator, ledger, steps, idempotency
-│   ├── clients/         # ReShare, NCIP, SRU, OpenURL clients
-│   ├── api/             # FastAPI staff console
+│   │                    #   Tracking (+ OverdueScanner), Reconciliation
+│   ├── saga/            # Coordinator, ledger, flows (forward+
+│   │                    #   compensator pairs), steps, idempotency,
+│   │                    #   outbox, db
+│   ├── clients/         # ReShare, NCIP, SRU, OpenURL
+│   ├── api/             # FastAPI staff console + lifespan
+│   ├── demos/           # happy_path runnable end-to-end demo
 │   ├── models/          # pydantic schemas (ISO 18626 subset)
-│   ├── config.py
-│   └── cli.py
-├── tests/               # pytest + Hypothesis property tests
-├── docker-compose.yml   # Postgres + (eventually) ReShare sandbox
+│   ├── config.py / cli.py / logging.py / py.typed
+├── tests/               # 76 unit + property + e2e (+6 postgres-only)
+├── .github/workflows/   # audit.yml, postgres-tests.yml, triple-gate.yml
+├── docker-compose.yml   # Postgres-only sandbox today
 ├── Makefile
 └── pyproject.toml
 ```
@@ -91,7 +109,13 @@ make api
 - [PRD 04 — Discovery](docs/prd/04-discovery.md)
 - [PRD 05 — Staff Console](docs/prd/05-staff-console.md)
 - [PRD 06 — Non-Functional Requirements](docs/prd/06-non-functional.md)
-- [ADRs](docs/adr/)
+- [Architecture diagrams](docs/architecture.md)
+- [Runbook](docs/runbook.md)
+- [Solution overview](docs/solution.md)
+- [Lessons learned](docs/lessons.md)
+- [ADRs](docs/adr/) — 12 records through
+  [ADR-0011 (outbox commit-then-enqueue)](docs/adr/0011-outbox-commit-then-enqueue.md)
+  and [ADR-0012 (APPROVE forward via outbox)](docs/adr/0012-approve-forward-outbox-migration.md)
 - [Bootstrap prompt](prompts/build-agora.md)
 
 ## License
