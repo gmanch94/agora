@@ -1,8 +1,10 @@
 # PRD 04 — Discovery
 
-> Last reviewed against code: 2026-05-03 (post CrossRef client PR —
-> client + ``MockCrossrefClient`` + tests landed; DiscoveryAgent
-> integration is queued as PR-B).
+> Last reviewed against code: 2026-05-03 (post CrossRef client PR-A
+> + DiscoveryAgent integration PR-B — DOI input now triggers a
+> CrossRef identity confirmation that re-keys the SRU search;
+> CrossRef errors and 404s downgrade to diagnostics so SRU still
+> runs).
 
 ## Inputs
 
@@ -22,8 +24,9 @@ OpenURL/citation
   Parse → Item + Citation (KEV fields)
        │
        ▼
-  Identifier lookup (DOI → CrossRef: client landed in PR-A;
-                     OCLC# → WorldCat: still future, sandbox blocker)
+  Identifier confirmation (DOI → CrossRef: PR-A client + PR-B agent
+                            integration; OCLC# → WorldCat: future,
+                            sandbox blocker)
        │
        ▼
   Holdings search (SRU; LoC default; consortium union catalog planned)
@@ -32,18 +35,35 @@ OpenURL/citation
   HolderCandidate list (deduped by symbol)
 ```
 
-**Today** `DiscoveryAgent.run` searches by ISBN → ISSN → title (in
-that order of preference) via the SRU client. The CrossRef client
-exists at `src/agora/clients/crossref.py` (PR-A) but is not yet
-wired into the agent — DOI inputs land in `IllRequest.item.doi`
-without a lookup. WorldCat and consortium-union SRU remain
+**Today** `DiscoveryAgent.run` consults CrossRef when (a) the patron
+supplied a DOI AND (b) the agent was constructed with a CrossRef
+client; uses the confirmed ISBN/ISSN/title to seed the SRU search
+(preferring CrossRef-confirmed values over the patron's own); then
+searches SRU by ISBN → ISSN → title in that order of preference.
+Existing callers that built the agent without `crossref=` keep
+working unchanged. WorldCat and consortium-union SRU remain
 unimplemented.
 
-**Roles, two clients.** CrossRef confirms *bibliographic identity*
-for a DOI (title, ISSN, year, container, item kind); SRU finds *who
-holds* the item (MARC 852). PR-B will fan out DiscoveryAgent to
-both: CrossRef when a DOI is present, then SRU keyed off the
-confirmed ISBN/ISSN, with merge-rank in the candidate list.
+**Two clients, two roles — sequential pipeline, not a merge.**
+CrossRef confirms *bibliographic identity* for a DOI (title, ISSN,
+ISBN, container, year, item kind); it returns no holdings. SRU
+finds *who holds* the item (MARC 852). DiscoveryAgent therefore
+runs them sequentially — CrossRef sharpens the identifier, then
+SRU answers "who has it." The candidate list is always
+SRU-derived; CrossRef enrichment only changes which identifier
+seeds the SRU search. There is no candidate-list merge.
+
+**CrossRef is best-effort.** A 404 (DOI unknown to CrossRef), a
+5xx, or a network failure produces a diagnostic and the SRU search
+runs against the request's own identifiers. Discovery never fails
+because of CrossRef; the `RemoteUnavailableError` is caught inside
+the agent.
+
+**Saga durability.** `request.item` is never mutated — CrossRef
+confirmation happens runtime-only and feeds local "effective
+identifier" variables consumed by the SRU call. Re-running
+discovery on a saga always starts from the patron's submitted
+metadata.
 
 ## SRU usage
 

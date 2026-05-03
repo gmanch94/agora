@@ -1,15 +1,39 @@
 """DiscoveryAgent — resolve a citation to candidate holders.
 
-This is a deterministic rules-driven agent in the prototype. It calls
-the SRU client and converts results into ``HolderCandidate`` records
-that RoutingAgent consumes. No LLM call here — discovery is a
-search-and-merge problem, not a judgement problem.
+This is a deterministic rules-driven agent in the prototype. Two
+clients, two roles:
+
+- ``CrossrefClient`` confirms *bibliographic identity* when the patron
+  supplied a DOI: it returns the canonical title / ISSN / ISBN /
+  container / year for the work. CrossRef knows nothing about
+  holdings, so it cannot rank suppliers; what it does is sharpen the
+  identifier we hand to SRU. A patron who pasted a DOI may have
+  omitted (or guessed) the ISSN — CrossRef-confirmed ISSN is
+  authoritative.
+- ``SruClient`` finds *who holds* the item via MARC 852 subfields.
+  This is the source of the candidate list.
+
+Therefore this agent is **not** a "merge two ranked lists" job; it is
+a sequential pipeline (CrossRef → identifier choice → SRU). The
+candidate list is always SRU-derived; CrossRef enrichment only
+changes which identifier the SRU search keys off.
+
+CrossRef is best-effort. A 404 (DOI unknown to CrossRef), a 5xx, or a
+network error must NOT prevent the SRU fallback from running — we
+still want to find the book, even if we can't confirm its identity.
+``RemoteUnavailableError`` is caught here and surfaced as a
+diagnostic, not a failure.
+
+No LLM call here — discovery is a search-and-merge problem, not a
+judgement problem.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from agora.clients.crossref import CrossrefClient, CrossrefRecord
+from agora.clients.errors import RemoteUnavailableError
 from agora.clients.sru import SruClient, SruRecord
 from agora.models.candidate import HolderCandidate
 from agora.models.request import IllRequest
@@ -27,42 +51,133 @@ class DiscoveryRecommendation:
 
 
 class DiscoveryAgent:
-    """Search SRU + (later) WorldCat for holders of the requested item."""
+    """Search SRU (and optionally CrossRef) for holders of the requested item.
+
+    ``crossref`` is optional. Existing callers that constructed the
+    agent with only the SRU client keep working unchanged — without
+    a CrossRef client, DOI inputs are passed through as today (no
+    identity confirmation, just whatever ISBN/ISSN/title the patron
+    typed). WorldCat support is still future work.
+    """
 
     def __init__(
         self,
         sru: SruClient,
         *,
+        crossref: CrossrefClient | None = None,
         consortium_members: set[str] | None = None,
     ):
         self._sru = sru
+        self._crossref = crossref
         self._members = consortium_members or set()
 
     async def run(self, request: IllRequest) -> DiscoveryRecommendation:
-        records: list[SruRecord] = []
         diagnostics: list[str] = []
 
-        if request.item.isbn:
-            records = await self._sru.search_isbn(request.item.isbn)
-        elif request.item.issn:
-            records = await self._sru.search_issn(request.item.issn)
-        elif request.item.title:
-            records = await self._sru.search_title(
-                request.item.title, request.item.author
-            )
-        else:
-            diagnostics.append("no isbn/issn/title available; cannot search")
+        # --- Step 1: optional CrossRef identity confirmation. ----------
+        # CrossRef is consulted iff the patron supplied a DOI AND the
+        # agent was built with a CrossRef client. Errors (5xx,
+        # network) are downgraded to diagnostics so SRU still runs.
+        cr_record = await self._maybe_lookup_crossref(request, diagnostics)
 
+        # --- Step 2: choose effective identifiers for SRU search. -----
+        # CrossRef-confirmed identifiers take precedence (the patron's
+        # input may have been wrong or incomplete for DOI-only
+        # submissions). The request itself is NOT mutated — saga
+        # input is durable.
+        eff_isbn, eff_issn, eff_title, eff_author = self._effective_identifiers(
+            request, cr_record
+        )
+
+        # --- Step 3: SRU search via the most-specific identifier. -----
+        records: list[SruRecord] = []
+        if eff_isbn:
+            records = await self._sru.search_isbn(eff_isbn)
+        elif eff_issn:
+            records = await self._sru.search_issn(eff_issn)
+        elif eff_title:
+            records = await self._sru.search_title(eff_title, eff_author)
+        else:
+            # No usable identifier survived CrossRef + the request.
+            # Most likely path: DOI-only request whose CrossRef
+            # lookup returned None and produced no fallback ISSN/ISBN.
+            diagnostics.append(
+                "no isbn/issn/title available for SRU; cannot search"
+            )
+
+        # --- Step 4: dedupe holders into candidates. ------------------
         candidates = self._records_to_candidates(records)
 
         if not candidates:
             diagnostics.append("zero holders matched; saga will be Unfilled")
 
-        rationale = self._make_rationale(request, candidates, diagnostics)
+        rationale = self._make_rationale(
+            request, candidates, cr_record, eff_isbn, eff_issn, eff_title
+        )
         return DiscoveryRecommendation(
             candidates=candidates,
             diagnostics=diagnostics,
             rationale=rationale,
+        )
+
+    async def _maybe_lookup_crossref(
+        self, request: IllRequest, diagnostics: list[str]
+    ) -> CrossrefRecord | None:
+        """Best-effort CrossRef DOI → identity lookup.
+
+        Returns ``None`` when: no DOI on the request, no CrossRef
+        client configured, the DOI was not registered with CrossRef,
+        or CrossRef was unreachable. The last two paths emit a
+        diagnostic so staff can see why identity wasn't confirmed.
+        Never raises — a CrossRef hiccup must not break discovery.
+        """
+        if self._crossref is None:
+            return None
+        doi = request.item.doi
+        if not doi:
+            return None
+        try:
+            record = await self._crossref.lookup_doi(doi)
+        except RemoteUnavailableError as exc:
+            # Hard upstream failure. Log via diagnostic and let SRU
+            # carry on with the patron's original identifiers.
+            diagnostics.append(
+                f"crossref unavailable; falling back to SRU ({exc})"
+            )
+            return None
+        if record is None:
+            diagnostics.append(
+                f"crossref returned no record for doi={doi}"
+            )
+            return None
+        return record
+
+    @staticmethod
+    def _effective_identifiers(
+        request: IllRequest, cr: CrossrefRecord | None
+    ) -> tuple[str | None, str | None, str | None, str | None]:
+        """Compute (isbn, issn, title, author) used to search SRU.
+
+        Preference order: CrossRef-confirmed value, then the request's
+        own value. CrossRef is authoritative for identity when it
+        answered — the patron's typed ISSN may have been wrong/missing
+        for a DOI-paste flow. ``request.item`` is intentionally not
+        mutated.
+        """
+        if cr is None:
+            return (
+                request.item.isbn,
+                request.item.issn,
+                request.item.title or None,
+                request.item.author,
+            )
+        return (
+            cr.isbn or request.item.isbn,
+            cr.issn or request.item.issn,
+            cr.title or request.item.title or None,
+            request.item.author,  # CrossRef has authors but we don't
+                                   # currently use them for SRU CQL —
+                                   # let the patron's hint stand.
         )
 
     def _records_to_candidates(self, records: list[SruRecord]) -> list[HolderCandidate]:
@@ -87,12 +202,36 @@ class DiscoveryAgent:
     def _make_rationale(
         request: IllRequest,
         candidates: list[HolderCandidate],
-        diagnostics: list[str],
+        cr: CrossrefRecord | None,
+        eff_isbn: str | None,
+        eff_issn: str | None,
+        eff_title: str | None,
     ) -> str:
-        if not candidates:
-            return "No SRU holdings matched; recommend marking Unfilled."
-        consortium = sum(1 for c in candidates if c.is_consortium_member)
-        return (
-            f"Found {len(candidates)} holder(s) for "
-            f"{request.item.title!r}; {consortium} in-consortium."
+        # Provenance prefix: tell staff if CrossRef confirmed identity
+        # and what identifier seeded the SRU search. Helps reviewers
+        # spot when the patron's metadata was wrong.
+        parts: list[str] = []
+        if cr is not None:
+            container = f" ({cr.container_title})" if cr.container_title else ""
+            year = f" {cr.year}" if cr.year else ""
+            parts.append(
+                f"CrossRef confirmed doi={cr.doi} → {cr.title!r}{container}{year}."
+            )
+        seed = (
+            f"isbn={eff_isbn}" if eff_isbn
+            else f"issn={eff_issn}" if eff_issn
+            else f"title={eff_title!r}" if eff_title
+            else "no identifier"
         )
+        if not candidates:
+            parts.append(
+                f"No SRU holdings matched (seed: {seed}); recommend marking Unfilled."
+            )
+            return " ".join(parts)
+        consortium = sum(1 for c in candidates if c.is_consortium_member)
+        title_for_msg = (cr.title if cr else None) or request.item.title
+        parts.append(
+            f"Found {len(candidates)} holder(s) for {title_for_msg!r} via SRU "
+            f"(seed: {seed}); {consortium} in-consortium."
+        )
+        return " ".join(parts)
