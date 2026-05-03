@@ -1,6 +1,8 @@
 # PRD 02 — Agents
 
-> Last reviewed against code: 2026-05-02.
+> Last reviewed against code: 2026-05-03 (post tier-2 recall-proposed
+> + tier-3 receipt-unconfirmed scanner emissions and FastAPI-lifespan
+> wiring).
 
 All agents are **advisory** in the prototype: they emit a recommendation
 + reasoning trace into the staff console. Staff commit by clicking
@@ -54,9 +56,19 @@ material.
 
 **Tools:** Postgres rule tables, copyright ledger queries.
 
-**Hard rules:** if any hard flag (copyright violation, patron suspended),
-agent returns `pass: false` and forward step is blocked even if staff
-clicks approve. Staff can override only with manual reason.
+**Hard flags (today, advisory only):** `PolicyDecision.hard_flags`
+exposes the subset of flags marked `is_hard=True` (e.g.
+`patron_suspended`, `contu_violation`). The coordinator does **not**
+auto-block on hard flags today — the saga has no hard-fail surface
+and staff approval remains the override (consistent with ADR-0005
+default-deny autonomy: agents recommend, staff commit). The
+`/sagas/{id}/override` endpoint sketched for a hard-fail flow is
+deferred — see PRD-05 for the revisit triggers.
+
+**Future:** if a hard-fail flow lands, the coordinator would consult
+`hard_flags` before opening the APPROVE gate, surface the flags in
+the staff console, and require an explicit `/override` POST with a
+typed reason that persists in the ledger.
 
 ## TransactionAgent
 
@@ -74,29 +86,55 @@ side dedups on its own request id.
 
 ## TrackingAgent
 
-**Job:** Append observations to the saga ledger (e.g. due-date set,
-overdue warning) without changing lifecycle state.
+**Job:** Append advisory OBSERVATION events to the saga ledger when a
+shipped saga crosses an interesting threshold. **No outbox writes,
+no state changes, no auto-compensator dispatch** (ADR-0005). Staff
+read the observation in the console and decide whether to escalate
+(e.g. click `/sagas/{id}/compensate` to fire the SHIP recall).
 
-**Inputs:** active saga rows in `Shipped` state.
+**Inputs:** active saga rows where `current_state == SHIPPED`. The
+SQL filter is the authoritative "patron has not yet confirmed
+receipt" signal for tier-3.
 
-**Outputs:** OBSERVATION events appended via
-`Coordinator.record_observation`. Lifecycle stays put; staff decides
-whether to escalate.
+**Outputs:** three OBSERVATION kinds, each with a deterministic
+idempotency key so re-running the scan is safe (the saga ledger's
+`UNIQUE(idempotency_key)` constraint absorbs duplicates and returns
+the existing row):
+
+| Tier | Key | Trigger | Threshold env var (default) |
+| ---- | --- | ------- | --------------------------- |
+| 1 — overdue            | `overdue-{saga_id}`            | `now > due_at` (loan-clock time)                                              | n/a                                                       |
+| 2 — recall proposed    | `recall-proposed-{saga_id}`    | `days_overdue >= threshold` once tier-1 has fired                             | `AGORA_TRACKING_RECALL_AFTER_DAYS` (14)                   |
+| 3 — receipt unconfirmed| `receipt-unconfirmed-{saga_id}`| `now - shipped_at >= threshold` AND saga still at `SHIPPED` (no RECEIVE yet)  | `AGORA_TRACKING_UNCONFIRMED_RECEIPT_AFTER_DAYS` (7)       |
+
+Tier-3 keys off **transit time**, not loan-clock time, and fires
+*independently* of tier-1/2 — a saga can be flagged
+"patron forgot to confirm" while `due_at` is still in the future.
+Tier-2 carries `suggested_action: "compensate_ship"` plus the
+`reshare_id` for the staff console to render as a CTA pointing at
+`POST /sagas/{id}/compensate`. Tier-3 carries no `suggested_action`
+field — staff console surfaces it as a "chase patron" hint without
+an in-saga CTA. Recorded `days_overdue` and `days_since_shipped` are
+point-in-time snapshots; the UI computes "currently N days" from the
+base timestamp + render clock.
 
 **Implementation:**
 - `TrackingAgent.observe(Observation)` — manual entry point for
-  callers who want to push an observation.
-- `OverdueScanner.scan()` — periodic sweep over sagas in `shipped`
-  whose `due_at` (stamped onto the SHIP forward payload) has passed.
-  Records one OBSERVATION per saga with deterministic
-  idempotency key `f"overdue-{saga_id}"`; the saga ledger's UNIQUE
-  constraint absorbs duplicates so re-running the scan is safe.
+  callers who want to push an ad-hoc observation.
+- `OverdueScanner.scan()` — single sweep that pre-computes both
+  metrics per saga then runs three independent tier blocks. See
+  `src/agora/agents/tracking.py`.
+- `OverdueScanner.run_forever()` — periodic loop calling `scan()`
+  at `AGORA_TRACKING_SCAN_INTERVAL_SECS` (default 300s).
 
-**Status:** core scanner implemented (`src/agora/agents/tracking.py`).
-**Cron / lifespan loop not yet wired** — production deployment needs
-a second `asyncio.Task` in the FastAPI lifespan that calls `scan()`
-on a schedule (mirror the outbox-worker pattern). Tracked in
-`CLAUDE.md` known-gaps.
+**Status:** scanner wired into the FastAPI lifespan as an
+`asyncio.Task` named `agora.tracking.scanner` (see PR #19 for tier-1/2
++ lifespan task; PR #39 for tier-3). Disable with
+`AGORA_TRACKING_SCANNER_ENABLED=0`. Multi-scanner safe by
+construction: the three deterministic keys per saga collide on
+`UNIQUE(saga_event.idempotency_key)`; concurrent scans are wasteful
+but never incorrect. Auto-recall and a dedicated `RECALLING`
+lifecycle state are explicit non-goals; staff still clicks.
 
 ## ReconciliationAgent
 
