@@ -1,0 +1,44 @@
+name: triple-gate
+
+# Code quality gate: pytest (unit + property + e2e SQLite-backed),
+# ruff (lint), mypy --strict (types). Sibling of audit.yml (security
+# scanners) and postgres-tests.yml (real-Postgres integration). All
+# three workflows must be green for a PR to merge cleanly.
+#
+# SQLite-only tests run here; the postgres-only tests skip themselves
+# unless AGORA_TEST_DB_URL is set (which is only set in
+# postgres-tests.yml). aiosqlite is now declared in [dev] so the
+# in-memory engine in tests/conftest.py imports cleanly.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  triple-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install dev extras
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: pytest
+        run: pytest tests/ -q
+
+      - name: ruff
+        run: ruff check src tests
+
+      - name: mypy --strict
+        run: mypy --strict
