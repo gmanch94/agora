@@ -193,11 +193,12 @@ class OverdueScanner:
                 # because the deterministic key collided. We still
                 # return a record for the caller's bookkeeping but
                 # mark it not-newly-recorded so callers can avoid
-                # double-notifying staff.
-                newly = bool(
-                    event is not None and event.idempotency_key == key
-                    and event.payload.get("observed_at") == payload["observed_at"]
-                )
+                # double-notifying staff. The returned event always
+                # carries the key we passed in; the differentiator is
+                # whether ``observed_at`` matches what *we* wrote (yes
+                # = we won the race / first scan; no = a prior scan
+                # already recorded it).
+                newly = event.payload.get("observed_at") == payload["observed_at"]
 
                 # Tier-2: recall_proposed once we cross the threshold.
                 # Advisory only — no outbox row, no state change. Staff
@@ -231,10 +232,8 @@ class OverdueScanner:
                         rationale=recall_rationale,
                         idempotency_key=recall_key,
                     )
-                    recall_newly = bool(
-                        recall_event is not None
-                        and recall_event.idempotency_key == recall_key
-                        and recall_event.payload.get("observed_at")
+                    recall_newly = (
+                        recall_event.payload.get("observed_at")
                         == recall_payload["observed_at"]
                     )
                 results.append(

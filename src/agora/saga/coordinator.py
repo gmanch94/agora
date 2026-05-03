@@ -158,13 +158,14 @@ class Coordinator:
                 rationale=result.rationale,
             )
             persisted = await self._ledger.append(event)
-            # Enqueue outbox intents in the same transaction. Skip on
-            # replay (append returned None for an idempotency-key
-            # collision) — the outbox row was written on the original
-            # pass, and re-enqueueing with the same key would trip the
-            # outbox UNIQUE constraint. See ADR-0011.
-            if persisted is not None:
-                await self._enqueue_outbox(ctx.saga_id, result)
+            # Enqueue outbox intents in the same transaction. On
+            # idempotency-key replay ``ledger.append`` returns the
+            # already-persisted event, and ``_enqueue_outbox`` swallows
+            # the per-intent ``IntegrityError`` from the outbox UNIQUE
+            # constraint inside its own savepoint — so re-running the
+            # same step is safe and does not double-enqueue. See
+            # ADR-0011.
+            await self._enqueue_outbox(ctx.saga_id, result)
             log.info(
                 "saga.forward.committed",
                 saga_id=str(ctx.saga_id),
@@ -172,7 +173,6 @@ class Coordinator:
                 state_after=result.state_after.value,
                 outbox_intents=len(result.outbox),
             )
-            assert persisted is not None  # nosec B101  # ledger.append never returns None in practice
             return persisted
         except Exception as exc:
             failed = NewSagaEvent(
@@ -240,9 +240,8 @@ class Coordinator:
         )
         persisted = await self._ledger.append(event)
         # Enqueue outbox intents atomically with the compensator event.
-        # Skip on replay; see run_forward for the rationale.
-        if persisted is not None:
-            await self._enqueue_outbox(ctx.saga_id, result)
+        # Replay-safe; see run_forward for the rationale.
+        await self._enqueue_outbox(ctx.saga_id, result)
         log.info(
             "saga.compensator.committed",
             saga_id=str(ctx.saga_id),
@@ -250,7 +249,6 @@ class Coordinator:
             state_after=result.state_after.value,
             outbox_intents=len(result.outbox),
         )
-        assert persisted is not None  # nosec B101  # ledger.append never returns None in practice
         return persisted
 
     async def _enqueue_outbox(self, saga_id: UUID, result: StepResult) -> None:
@@ -293,7 +291,7 @@ class Coordinator:
         payload: dict[str, Any],
         rationale: str | None = None,
         idempotency_key: str | None = None,
-    ) -> SagaEvent | None:
+    ) -> SagaEvent:
         """Append a non-state-changing observation (e.g. agent rationale).
 
         If ``idempotency_key`` is omitted, a fresh ULID is generated and
@@ -301,7 +299,11 @@ class Coordinator:
         (e.g. the overdue scanner uses ``f"overdue-{saga_id}"``) to make
         repeat appends idempotent — the second insert hits the saga
         ledger's UNIQUE constraint and ``ledger.append`` returns the
-        existing row instead of writing a duplicate.
+        existing row instead of writing a duplicate. Callers that need
+        to distinguish "newly written" from "already there" can compare
+        the returned event's ``idempotency_key`` (always the one passed
+        in) against a payload field they control (e.g. ``observed_at``
+        in the overdue scanner).
         """
         saga = await self._ledger.get_saga(saga_id)
         current = LifecycleState(saga.current_state)
