@@ -316,6 +316,53 @@ def _wire(reg: StepRegistry, tx: TransactionAgent) -> None:
         compensator=ship_compensator,
     )
 
+    # ----- RECEIVE -------------------------------------------------
+    # Borrower-side confirmation that the physical item arrived. Pure
+    # ledger write — no outbox row. ISO 18626 maps this to a
+    # ``RequestingAgencyMessage`` "ItemReceived" note; the supplier-side
+    # state stays ``Loaned`` so there is no peer status flip to drive.
+    # Payload forwards ``reshare_id`` (read from prior committed SHIP
+    # forward via ``ctx.extras['reshare_id']``) so the downstream RETURN
+    # forward + RECEIVE compensator can keep their handle on the
+    # consortium-scoped request id.
+    #
+    # Future: ADR-0011 known-gap re-anchors NCIP ``check_out`` from the
+    # SHIP forward to here so the patron's ILS record reflects the loan
+    # at physical-receipt rather than supplier-shipment. Out of scope
+    # for this PR (single-concern: state + step + gate).
+    async def receive_forward(ctx: SagaContext) -> StepResult:
+        reshare_id = ctx.extras.get("reshare_id")
+        if not reshare_id:
+            raise ValueError("ctx.extras['reshare_id'] is required for receive step")
+        return StepResult(
+            state_after=LifecycleState.RECEIVED,
+            payload={"reshare_id": reshare_id},
+            rationale=(
+                "Borrower confirmed physical receipt; supplier still holds "
+                "Loaned — saga moved to Received."
+            ),
+        )
+
+    async def receive_compensator(
+        ctx: SagaContext, fwd_payload: dict[str, Any]
+    ) -> StepResult:
+        # Receipt is physical — un-undoable. Compensator records the
+        # contradiction and lets staff resolve via reconciliation.
+        return StepResult(
+            state_after=LifecycleState.DISPUTED,
+            payload={"reshare_id": fwd_payload.get("reshare_id")},
+            rationale=(
+                "Receipt disputed; physical custody contested. Saga marked "
+                "Disputed for staff intervention."
+            ),
+        )
+
+    reg.register(
+        name=StepName.RECEIVE,
+        forward=receive_forward,
+        compensator=receive_compensator,
+    )
+
     # ----- RETURN --------------------------------------------------
     # Emits two outbox intents: (1) ReShare ``confirm_return`` for the
     # consortium peer, (2) NCIP ``check_in`` against the borrower's

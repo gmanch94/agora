@@ -177,9 +177,21 @@ _SPECS: dict[StepName, _StepSpec] = {
         extras_seed=(("reshare_id", "rs-prop-1"),),
         forward_outbox_count=2,  # reshare confirm_shipment + ncip check_out
     ),
+    StepName.RECEIVE: _StepSpec(
+        step=StepName.RECEIVE,
+        pre_state=LifecycleState.SHIPPED,
+        forward_state=LifecycleState.RECEIVED,
+        comp_state=LifecycleState.DISPUTED,
+        forward_has_outbox=False,  # pure ledger write — borrower confirm
+        comp_has_outbox=False,
+        extras_seed=(("reshare_id", "rs-prop-1"),),
+    ),
     StepName.RETURN_ITEM: _StepSpec(
         step=StepName.RETURN_ITEM,
-        pre_state=LifecycleState.SHIPPED,
+        # RECEIVE now sits between SHIP and RETURN; RETURN's pre-state
+        # is RECEIVED (lifecycle order). The property test creates the
+        # saga directly at this state so the chaining is implicit.
+        pre_state=LifecycleState.RECEIVED,
         forward_state=LifecycleState.RETURNED,
         comp_state=LifecycleState.DISPUTED,
         forward_has_outbox=True,
@@ -192,7 +204,7 @@ _SPECS: dict[StepName, _StepSpec] = {
 # Steps whose forward leaves the saga in a non-terminal state — those
 # are the only ones whose compensator can actually run (the ledger
 # blocks transitions out of TERMINAL_STATES).
-_COMP_RUNNABLE = [StepName.ROUTE, StepName.APPROVE, StepName.SHIP]
+_COMP_RUNNABLE = [StepName.ROUTE, StepName.APPROVE, StepName.SHIP, StepName.RECEIVE]
 _FORWARD_OUTBOX = [s for s, sp in _SPECS.items() if sp.forward_has_outbox]
 _ALL_STEPS = list(_SPECS.keys())
 

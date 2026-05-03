@@ -1,8 +1,9 @@
 # Agora — Architecture (hand-drawn)
 
 > Last reviewed against code: 2026-05-03 (post PRs #17/#18/#19/#24/
-> #25/#28 — APPROVING-via-outbox, NCIP fan-out, TrackingScanner
-> lifespan task, alembic-on-real-postgres CI, multi-worker outbox).
+> #25/#28 + RECEIVED state — APPROVING-via-outbox, NCIP fan-out,
+> TrackingScanner lifespan task, alembic-on-real-postgres CI,
+> multi-worker outbox, borrower-receipt state).
 
 The diagrams below use Mermaid's hand-drawn (`look: handDrawn`) theme so
 they read like a whiteboard sketch. GitHub renders them inline.
@@ -96,13 +97,15 @@ stateDiagram-v2
     Routed --> Approving: staff approves<br/>(APPROVE forward<br/>enqueues outbox)
     Approving --> Approved: outbox worker<br/>delivered + projection<br/>writes reshare_id
     Approved --> Shipped: lender confirms<br/>SupplierMarkShipped<br/>(+ NCIP check_out fan-out)
-    Shipped --> Returned: borrower confirms<br/>RequesterMarkReturned<br/>(+ NCIP check_in fan-out)
+    Shipped --> Received: borrower confirms<br/>physical receipt<br/>(ItemReceived note;<br/>supplier still Loaned)
+    Received --> Returned: borrower confirms<br/>RequesterMarkReturned<br/>(+ NCIP check_in fan-out)
     Returned --> [*]
 
     Submitted --> Cancelled: submit compensator<br/>(patron withdraw)
     Routed --> Submitted: route compensator<br/>(re-rank suppliers)
     Approved --> Cancelled: approve compensator<br/>(cancel at supplier)
     Shipped --> Disputed: ship compensator<br/>(recall enqueued — manual;<br/>NCIP NOT rolled back)
+    Received --> Disputed: receive compensator<br/>(physical receipt contested —<br/>staff reconciliation)
     Returned --> Disputed: return compensator<br/>(reconciliation case)
     Cancelled --> [*]
     Unfilled --> [*]
@@ -122,6 +125,14 @@ States and compensator targets reflect `LifecycleState` and
 - No `Recalled` state in the enum — the SHIP compensator transitions
   to `Disputed` and enqueues a recall outbox intent for staff
   intervention.
+- `RECEIVED` is a borrower-side marker between `SHIPPED` and
+  `RETURNED`: the saga records the patron's physical-receipt
+  confirmation as a pure ledger write (no outbox, no peer ack — the
+  supplier-side state stays `Loaned`). Compensator lands in
+  `Disputed` because receipt is physically un-undoable. NCIP
+  `check_out` is **not** yet re-anchored from SHIP to RECEIVE — that
+  is tracked separately in CLAUDE.md known-gaps and waits on a
+  follow-up PR.
 - NCIP fan-out on SHIP/RETURN is fire-and-forget (CLAUDE.md
   known-gap) and the SHIP compensator does **not** issue a NCIP
   `check_in` rollback — staff investigates the stuck NCIP outbox row

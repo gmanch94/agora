@@ -154,7 +154,13 @@ async def main() -> None:
 
     # --- drive lifecycle through gates --------------------------------
     extras: dict[str, Any] = {"chosen_supplier": chosen_supplier}
-    for step in (StepName.ROUTE, StepName.APPROVE, StepName.SHIP, StepName.RETURN_ITEM):
+    for step in (
+        StepName.ROUTE,
+        StepName.APPROVE,
+        StepName.SHIP,
+        StepName.RECEIVE,
+        StepName.RETURN_ITEM,
+    ):
         # Open + commit gate (simulating staff click).
         async with sessionmaker() as session, session.begin():
             coord = Coordinator(session=session, registry=registry)

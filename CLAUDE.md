@@ -6,8 +6,8 @@ the standards layer (ISO 18626, NCIP, SRU, OpenURL). Multi-library
 (default-deny autonomy). Research prototype — FedRAMP alignment-noted
 only, not authorized.
 
-Lifecycle: **Submitted → Routed → Approved → Shipped → Returned** with
-saga compensators paired to every forward step.
+Lifecycle: **Submitted → Routed → Approved → Shipped → Received →
+Returned** with saga compensators paired to every forward step.
 
 ## Quick start
 
@@ -135,15 +135,21 @@ ISO 18626 message types — see table in `clients/reshare.py`.
   across all targets (see `saga/db.py`). Approximations documented
   in `saga/flows.py` SHIP comment block: (a) `item_id = reshare_id`
   because IllRequest has no real ILS barcode today; (b) `check_out`
-  fires on supplier-shipped because there is no RECEIVED state — a
-  future borrower-receipt confirmation flow should re-anchor it.
-  Compensator-side NCIP rollback is **not** wired: SHIP-step rollback
-  is ambiguous (item may still be in transit; patron may never have
-  received it) so a real recall flow needs RECEIVED + receipt
-  confirmation before deciding whether to issue a compensating
-  `check_in`. The NCIP HTTP/SOAP client itself remains a mock —
-  `MockNcipClient` for prototype/tests; real `mod-ncip` integration
-  is still future work.
+  fires on supplier-shipped (NCIP fan-out **still anchored on SHIP**
+  even though `LifecycleState.RECEIVED` now exists). Re-anchoring NCIP
+  `check_out` from SHIP to RECEIVE is intentionally a separate PR — it
+  changes circulation timing (patron record reflects the loan only
+  after physical receipt rather than supplier shipment) and warrants
+  its own validation. Compensator-side NCIP rollback is **not** wired:
+  SHIP-step rollback is ambiguous when the patron has not yet hit
+  RECEIVE (item may still be in transit), so a real recall flow needs
+  to inspect the saga's current state — pre- vs post-RECEIVE — to
+  decide whether to issue a compensating `check_in`. RECEIVE itself
+  has no compensator-side NCIP work (it's a pure ledger-write step;
+  receipt is physically un-undoable, so its compensator records the
+  contradiction and routes to staff via `Disputed`). The NCIP
+  HTTP/SOAP client itself remains a mock — `MockNcipClient` for
+  prototype/tests; real `mod-ncip` integration is still future work.
 - TrackingAgent: `OverdueScanner.run_forever` now runs as a background
   task spawned from the FastAPI lifespan (asyncio task name
   `agora.tracking.scanner`; module is `agora.agents.tracking`),

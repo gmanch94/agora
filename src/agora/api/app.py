@@ -76,7 +76,13 @@ log = get_logger(__name__)
 # it commits at /requests. Compensator-only steps (CANCEL, REROUTE,
 # REVOKE, RECALL, DISPUTE) are not directly approvable either.
 _APPROVABLE_STEPS: frozenset[StepName] = frozenset(
-    {StepName.ROUTE, StepName.APPROVE, StepName.SHIP, StepName.RETURN_ITEM}
+    {
+        StepName.ROUTE,
+        StepName.APPROVE,
+        StepName.SHIP,
+        StepName.RECEIVE,
+        StepName.RETURN_ITEM,
+    }
 )
 
 

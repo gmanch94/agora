@@ -27,6 +27,7 @@ class LifecycleState(str, Enum):
     APPROVING = "approving"
     APPROVED = "approved"
     SHIPPED = "shipped"
+    RECEIVED = "received"
     RETURNED = "returned"
     CANCELLED = "cancelled"
     UNFILLED = "unfilled"
@@ -66,6 +67,7 @@ class StepName(str, Enum):
     ROUTE = "route"
     APPROVE = "approve"
     SHIP = "ship"
+    RECEIVE = "receive"
     RETURN_ITEM = "return"
     # Compensators / branches:
     CANCEL = "cancel"

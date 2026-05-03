@@ -1,25 +1,27 @@
 # PRD 01 — Lifecycle & State Machine
 
-> Last reviewed against code: 2026-05-02.
+> Last reviewed against code: 2026-05-03.
 
 ## Lifecycle
 
-Five user-facing states map onto the ISO 18626 supplier-side state machine:
+Six user-facing states map onto the ISO 18626 supplier-side state machine:
 
 ```
-   ┌─────────┐    ┌────────┐    ┌──────────┐    ┌────────┐    ┌──────────┐
-   │Submitted│───▶│Routed  │───▶│Approved  │───▶│Shipped │───▶│Returned  │
-   └─────────┘    └────────┘    └──────────┘    └────────┘    └──────────┘
-        │              │             │              │              │
-        ▼              ▼             ▼              ▼              ▼
-   Cancelled       Submitted     Cancelled       Disputed       Disputed
-   (terminal)      (re-rank)     (terminal)      (recall)       (manual)
+   ┌─────────┐    ┌────────┐    ┌──────────┐    ┌────────┐    ┌────────┐    ┌──────────┐
+   │Submitted│───▶│Routed  │───▶│Approved  │───▶│Shipped │───▶│Received│───▶│Returned  │
+   └─────────┘    └────────┘    └──────────┘    └────────┘    └────────┘    └──────────┘
+        │              │             │              │              │              │
+        ▼              ▼             ▼              ▼              ▼              ▼
+   Cancelled       Submitted     Cancelled       Disputed       Disputed       Disputed
+   (terminal)      (re-rank)     (terminal)      (recall)       (manual)       (manual)
 ```
 
 `LifecycleState` enum (in `src/agora/models/lifecycle.py`):
-`SUBMITTED, ROUTED, APPROVING, APPROVED, SHIPPED, RETURNED, CANCELLED,
-UNFILLED, DISPUTED`.
-`TERMINAL_STATES = {RETURNED, CANCELLED, UNFILLED, DISPUTED}`.
+`SUBMITTED, ROUTED, APPROVING, APPROVED, SHIPPED, RECEIVED, RETURNED,
+CANCELLED, UNFILLED, DISPUTED`.
+`TERMINAL_STATES = {RETURNED, CANCELLED, UNFILLED, DISPUTED}` —
+`RECEIVED` is **not** terminal (it's an active borrower-custody state
+that flows on to `RETURNED`).
 
 `APPROVING` is an in-flight intermediate added per ADR-0012. It marks
 "intent committed, supplier not yet acknowledged" — the APPROVE
@@ -37,6 +39,7 @@ lands in the follow-up PR.
 | Route | Submitted persisted | none | **Staff approve choice** | RoutingAgent |
 | Approve | Routed approved by staff | `Request` sent to chosen supplier | Supplier-side staff implicit | TransactionAgent |
 | Ship | Supplier marks `Loaned` | `SupplyingAgencyMessage Loaned` received | Lender confirm in their ILS | TransactionAgent |
+| Receive | Borrower confirms physical receipt | `RequestingAgencyMessage` "ItemReceived" note (supplier stays `Loaned`) | **Borrower confirm** | n/a (advisory; staff-driven) |
 | Return | Borrower returns item | `RequestingAgencyMessage Returned`, then supplier `LoanCompleted` | Borrower-side check-in | TransactionAgent |
 
 ## Compensators (per step)
@@ -47,6 +50,7 @@ lands in the follow-up PR.
 | Route   | `Submitted`             | Revert routing; saga returns to Submitted for re-rank (ledger-only). |
 | Approve | `Cancelled` (terminal)  | Enqueue `cancel_request` outbox intent → mod-rs cancel. |
 | Ship    | `Disputed`              | Enqueue `recall_request` outbox intent. NB: `HttpReShareClient.recall_request` raises today (mod-rs has no first-class recall); surfaces as a `dead_letter` row for staff. |
+| Receive | `Disputed`              | Receipt is physical — un-undoable. Records the contradiction and routes to staff reconciliation (ledger-only). |
 | Return  | `Disputed`              | Open manual reconciliation case (ledger-only). |
 
 **Compensators are not symmetric inverses.** They model real-world
@@ -62,7 +66,7 @@ lifecycle. Map these to user lifecycle as follows:
 |-----------------------------|----------------------------------------------------------------|
 | Requested                   | Approving (intent sent, supplier ack pending — ADR-0012)       |
 | ExpectToSupply / WillSupply | Approved                                                       |
-| Loaned / Overdue / Recalled | Shipped                                                        |
+| Loaned / Overdue / Recalled | Shipped (pre-borrower-receipt) **or** Received (post-receipt). Supplier-side stays `Loaned` either way; the user-visible split is driven by the borrower's `ItemReceived` confirmation. |
 | LoanCompleted               | Returned                                                       |
 | Unfilled                    | Unfilled (terminal)                                            |
 | Cancelled                   | Cancelled (terminal — APPROVE compensator end state)           |

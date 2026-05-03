@@ -173,6 +173,23 @@ merges can't repeat the trick.
 
 ## Workflow / process
 
+### 2026-05-03 — Sanity-check new test coverage by deleting the registration
+Adding `RECEIVE` step + state — the lifecycle-extend skill calls for
+"happy-path test that drives the saga through the new step." It's
+possible to write that test in a way that *passes whether or not
+the new step is actually wired*: e.g. if the saga state asserts only
+on the final `RETURNED`, and the loop happens to skip RECEIVE, the
+test stays green for the wrong reason. Advisor's check from PR #34
+generalised here: after writing the test, **temporarily delete the
+new registration** (e.g. comment out `reg.register(name=StepName.RECEIVE,
+...)`) and re-run. If the test still passes, it isn't exercising the
+new step. Done in this PR by scripting the deletion + restoration —
+3 of 3 RECEIVE tests failed without the registration, 3 of 3 passed
+with. Same shape as the lock-removal sanity check; same generic rule:
+prove the negative before trusting the positive.
+*(Backlog #3 RECEIVE state PR — `tests/test_coordinator.py::test_receive_*`,
+`src/agora/saga/flows.py::_wire`.)*
+
 ### 2026-05-03 — Verify your concurrency tests actually exercise the lock
 PR #34 added `OkapiAuth` with an `asyncio.Lock` around token
 acquisition + a test asserting "5 parallel requests = 1 login."
