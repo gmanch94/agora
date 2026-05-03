@@ -55,6 +55,7 @@ from tenacity import (
 )
 
 from agora.clients.errors import ClientError, NotFoundError, RemoteUnavailableError
+from agora.clients.okapi_auth import OkapiAuth
 from agora.config import Settings, get_settings
 from agora.logging import get_logger
 
@@ -115,8 +116,10 @@ class HttpReShareClient:
     ``request_payload`` accordingly.
 
     Auth: HTTP Basic is dev-only (works when hitting the module's
-    direct port with permissions disabled). Real deployments use the
-    Okapi token flow — wire that here once we have a live tenant.
+    direct port with permissions disabled). When ``OKAPI_URL`` is set
+    in config, the client switches to the FOLIO Okapi token flow via
+    :class:`OkapiAuth` (see ADR-0013) — required for any real
+    consortium tenant where requests go through the Okapi gateway.
     """
 
     # Action strings honoured by mod-rs's PatronRequestController.
@@ -131,11 +134,25 @@ class HttpReShareClient:
             raise ClientError("RESHARE_BASE_URL not configured")
         self._base_url = s.reshare_base_url.rstrip("/")
         self._tenant = s.reshare_tenant
-        self._auth: httpx.BasicAuth | None = (
-            httpx.BasicAuth(s.reshare_user, s.reshare_password)
-            if s.reshare_user
-            else None
-        )
+        # Auth strategy (per ADR-0013):
+        # - If ``OKAPI_URL`` is set → Okapi token flow (production).
+        # - Else if ``RESHARE_USER`` is set → HTTP Basic (dev only,
+        #   works when hitting mod-rs module-direct with permissions
+        #   disabled).
+        # - Else no auth (anonymous; only useful against a wide-open
+        #   sandbox).
+        self._auth: httpx.Auth | None
+        if s.okapi_url:
+            self._auth = OkapiAuth(
+                login_url=f"{s.okapi_url.rstrip('/')}/authn/login",
+                tenant=s.reshare_tenant,
+                username=s.reshare_user,
+                password=s.reshare_password,
+            )
+        elif s.reshare_user:
+            self._auth = httpx.BasicAuth(s.reshare_user, s.reshare_password)
+        else:
+            self._auth = None
         self._client = httpx.AsyncClient(timeout=10.0, auth=self._auth)
 
     async def aclose(self) -> None:
