@@ -91,9 +91,9 @@ Run after install or on any pull:
 ```
 
 The demo runs the full lifecycle Submitted → Routed → Approved →
-Shipped → Returned against in-memory SQLite + `MockReShareClient` and
-prints the resulting ledger. If any step prints an error, do not
-serve the API.
+Shipped → Received → Returned against in-memory SQLite +
+`MockReShareClient` and prints the resulting ledger. If any step
+prints an error, do not serve the API.
 
 ### 1.5 Serve the API
 
@@ -111,7 +111,7 @@ serve the API.
 ### 2.1 States
 
 ```
-Submitted → Routed → Approved → Shipped → Returned
+Submitted → Routed → Approved → Shipped → Received → Returned
 ```
 
 Compensator targets per step are tabled in PRD
@@ -143,6 +143,7 @@ from the prior committed forwards:
 | `route`    | `chosen_supplier`                                  | — (first step where staff picks a supplier)   |
 | `approve`  | none                                               | `chosen_supplier` from ROUTE forward          |
 | `ship`     | none                                               | `reshare_id` from APPROVE forward             |
+| `receive`  | none                                               | `reshare_id` from APPROVE forward             |
 | `return`   | none                                               | `reshare_id` from APPROVE forward             |
 
 Missing required `extras` → 400 with the missing key in `detail`.
@@ -215,6 +216,7 @@ worker crashes after the wire call but before
 | `route`       | ledger only                                                   | ledger only                          |
 | `approve`     | outbox `send_request` → APPROVING → projection → APPROVED ¹   | outbox `cancel_request` ²            |
 | `ship`        | outbox `confirm_shipment` (+ outbox `check_out` to NCIP)      | outbox `recall_request` ³            |
+| `receive`     | ledger only (borrower confirms physical receipt) ⁴            | ledger only (DISPUTED)               |
 | `return`      | outbox `confirm_return` (+ outbox `check_in` to NCIP)         | ledger only (DISPUTED)               |
 
 ¹ APPROVE migrated to outbox per ADR-0012 / PR #17. The forward
@@ -235,6 +237,12 @@ mod-rs recall mapping is verified against a live tenant. Under the
 outbox pattern this surfaces as a `dead_letter` row for staff review
 — exactly the signal we want. The mock client succeeds, keeping demo
 + tests green. See ADR-0011 + ADR-0012.
+
+⁴ RECEIVE is a borrower-side marker — physical receipt is confirmed
+in person, there is no peer ack to enqueue. ISO 18626 names this an
+`ItemReceived` note; the supplier-side state stays `Loaned`. The NCIP
+`check_out` fan-out is **not** yet re-anchored from SHIP to RECEIVE —
+that's a separate follow-up tracked in CLAUDE.md known-gaps.
 
 ### 3.4 Backoff & dead-letter
 
@@ -355,6 +363,7 @@ Conventions used today:
 | `route-`     | ROUTE step (`/approve` or demo)                   |
 | `approve-`   | APPROVE step                                      |
 | `ship-`      | SHIP step                                         |
+| `receive-`   | RECEIVE step                                      |
 | `return-`    | RETURN_ITEM step                                  |
 | `comp-`      | compensator events                                |
 | `gate-`      | open/commit gate events                           |

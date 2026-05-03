@@ -148,6 +148,14 @@ async def test_happy_path_full_lifecycle(session: AsyncSession) -> None:
     await _gate_and_run(session, registry, saga_id, request, StepName.SHIP, extras)
     await _drain_with_projection(session, reshare, ncip)
 
+    # RECEIVE — pure ledger write (no outbox), borrower confirms physical
+    # receipt. State -> RECEIVED. Forward carries reshare_id forward.
+    receive_forward = await _gate_and_run(
+        session, registry, saga_id, request, StepName.RECEIVE, extras
+    )
+    assert receive_forward.state_after == LifecycleState.RECEIVED
+    assert receive_forward.payload["reshare_id"] == item_id
+
     # RETURN — same fan-out (confirm_return + check_in).
     await _gate_and_run(
         session, registry, saga_id, request, StepName.RETURN_ITEM, extras
@@ -269,6 +277,127 @@ async def test_compensator_on_approve_cancels_at_supplier(session: AsyncSession)
         ledger = SagaLedger(session)
         saga = await ledger.get_saga(saga_id)
     assert saga.current_state == LifecycleState.CANCELLED.value
+
+
+@pytest.mark.asyncio
+async def test_receive_forward_blocked_without_committed_gate(
+    session: AsyncSession,
+) -> None:
+    """RECEIVE forward must require a committed gate (default-deny per ADR-0005)."""
+    saga_id = uuid4()
+    request = _build_request()
+    reshare = MockReShareClient()
+    registry = build_registry(TransactionAgent(reshare))
+
+    async with session.begin():
+        ledger = SagaLedger(session)
+        await ledger.create_saga(
+            saga_id=saga_id,
+            request_id=request.request_id,
+            request_payload=request.model_dump(mode="json"),
+            initial_state=LifecycleState.SHIPPED,
+        )
+
+    async with session.begin():
+        coord = Coordinator(session=session, registry=registry)
+        ctx = SagaContext(
+            saga_id=saga_id,
+            request=request,
+            current_state=LifecycleState.SHIPPED,
+            idempotency_key=new_idempotency_key(prefix="receive"),
+            actor="agent:transaction",
+            extras={"reshare_id": "rs-receive-1"},
+        )
+        with pytest.raises(GateRequiredError):
+            await coord.run_forward(ctx=ctx, step=StepName.RECEIVE)
+
+
+@pytest.mark.asyncio
+async def test_receive_forward_advances_to_received(session: AsyncSession) -> None:
+    """RECEIVE forward is a pure ledger write — no outbox, state -> RECEIVED."""
+    saga_id = uuid4()
+    request = _build_request()
+    reshare = MockReShareClient()
+    registry = build_registry(TransactionAgent(reshare))
+
+    async with session.begin():
+        ledger = SagaLedger(session)
+        await ledger.create_saga(
+            saga_id=saga_id,
+            request_id=request.request_id,
+            request_payload=request.model_dump(mode="json"),
+            initial_state=LifecycleState.SHIPPED,
+        )
+
+    forward = await _gate_and_run(
+        session,
+        registry,
+        saga_id,
+        request,
+        StepName.RECEIVE,
+        {"reshare_id": "rs-receive-1"},
+        from_state=LifecycleState.SHIPPED,
+    )
+    assert forward.state_after == LifecycleState.RECEIVED
+    assert forward.payload["reshare_id"] == "rs-receive-1"
+
+    # Pure ledger write — no outbox row.
+    async with session.begin():
+        rows = (
+            (
+                await session.execute(
+                    select(OutboxRow).where(OutboxRow.saga_id == saga_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert rows == [], "RECEIVE forward must not enqueue any outbox row"
+
+
+@pytest.mark.asyncio
+async def test_receive_compensator_lands_in_disputed(session: AsyncSession) -> None:
+    """RECEIVE compensator records the contradiction by marking Disputed."""
+    saga_id = uuid4()
+    request = _build_request()
+    reshare = MockReShareClient()
+    registry = build_registry(TransactionAgent(reshare))
+
+    async with session.begin():
+        ledger = SagaLedger(session)
+        await ledger.create_saga(
+            saga_id=saga_id,
+            request_id=request.request_id,
+            request_payload=request.model_dump(mode="json"),
+            initial_state=LifecycleState.SHIPPED,
+        )
+
+    await _gate_and_run(
+        session,
+        registry,
+        saga_id,
+        request,
+        StepName.RECEIVE,
+        {"reshare_id": "rs-receive-1"},
+        from_state=LifecycleState.SHIPPED,
+    )
+
+    async with session.begin():
+        coord = Coordinator(session=session, registry=registry)
+        ctx = SagaContext(
+            saga_id=saga_id,
+            request=request,
+            current_state=LifecycleState.RECEIVED,
+            idempotency_key=new_idempotency_key(prefix="comp-receive"),
+            actor="agent:reconciliation",
+            extras={"reshare_id": "rs-receive-1"},
+        )
+        await coord.run_compensator(ctx=ctx, step=StepName.RECEIVE)
+
+    async with session.begin():
+        ledger = SagaLedger(session)
+        saga = await ledger.get_saga(saga_id)
+    assert saga.current_state == LifecycleState.DISPUTED.value
 
 
 async def _drain_with_projection(
