@@ -1,7 +1,8 @@
 # Agora Runbook
 
-> Last reviewed against code: 2026-05-04 (post PR #30 — outbox
-> schema sync + APPROVE-via-outbox + env-var backfill).
+> Last reviewed against code: 2026-05-03 (post NCIP-checkout SHIP→RECEIVE
+> re-anchor — RECEIVE forward owns NCIP `check_out`, SHIP comp simplified
+> to single recall in either branch).
 
 Operational reference for the Agora ILL prototype. Covers bring-up,
 day-to-day operation (outbox, overdue scan, gate workflow), and
@@ -215,8 +216,8 @@ worker crashes after the wire call but before
 | `submit`      | ledger only                                                   | ledger only                          |
 | `route`       | ledger only                                                   | ledger only                          |
 | `approve`     | outbox `send_request` → APPROVING → projection → APPROVED ¹   | outbox `cancel_request` ²            |
-| `ship`        | outbox `confirm_shipment` (+ outbox `check_out` to NCIP)      | outbox `recall_request` ³ (+ NCIP `check_in` rollback when comp fires from SHIPPED ⁵) |
-| `receive`     | ledger only (borrower confirms physical receipt) ⁴            | ledger only (DISPUTED)               |
+| `ship`        | outbox `confirm_shipment` (reshare only — NCIP `check_out` re-anchored to RECEIVE) | outbox `recall_request` ³ (no NCIP rollback in either branch ⁵) |
+| `receive`     | outbox `check_out` to NCIP — borrower-receipt opens the ILS loan ⁴ | ledger only (DISPUTED) ⁶            |
 | `return`      | outbox `confirm_return` (+ outbox `check_in` to NCIP)         | ledger only (DISPUTED)               |
 
 ¹ APPROVE migrated to outbox per ADR-0012 / PR #17. The forward
@@ -238,21 +239,36 @@ outbox pattern this surfaces as a `dead_letter` row for staff review
 — exactly the signal we want. The mock client succeeds, keeping demo
 + tests green. See ADR-0011 + ADR-0012.
 
-⁴ RECEIVE is a borrower-side marker — physical receipt is confirmed
-in person, there is no peer ack to enqueue. ISO 18626 names this an
-`ItemReceived` note; the supplier-side state stays `Loaned`. The NCIP
-`check_out` fan-out is **not** yet re-anchored from SHIP to RECEIVE —
-that's a separate follow-up tracked in CLAUDE.md known-gaps.
+⁴ RECEIVE is the borrower-side physical-receipt confirmation. ISO
+18626 names this an `ItemReceived` note (the supplier-side state stays
+`Loaned`, no peer status flip); on Agora's side the forward emits a
+single `target="ncip"` `check_out` intent (idempotency-key suffix
+`:ncip`) so the patron's local ILS opens the loan from physical
+receipt rather than supplier shipment. `due_at` still anchors to
+`shipped_at` because the loan-period clock is a supplier-side
+commitment (a saga whose patron never confirms receipt still needs
+an overdue threshold). `item_id = reshare_id` per the prototype
+approximation documented in `saga/flows.py` § RECEIVE.
 
-⁵ SHIP-compensator NCIP rollback is **state-aware** — the comp inspects
-`ctx.current_state` and only emits the paired `check_in`
-(idempotency-key suffix `:ncip-rollback`) when the saga is at SHIPPED:
-the patron never physically received the item, so the ILS loan
-(recorded at supplier-shipped per the prototype anchor) is a false
-positive that the rollback clears. From RECEIVED or beyond, the patron
-holds the book — clearing the ILS loan would lie about custody, so
-the comp emits only the reshare recall and the eventual return flow
-owns the `check_in`.
+⁵ SHIP-compensator NCIP rollback is **gone** post NCIP-checkout
+re-anchor (this PR). Both branches converge on a single ReShare
+`recall_request` intent: at SHIPPED no ILS loan was ever opened
+(RECEIVE forward never ran), at RECEIVED the patron physically holds
+the book so the loan correctly reflects custody and the eventual
+return flow owns `check_in`. The `current_state` check survives only
+as state-aware rationale text on the StepResult; functionally the
+outbox payload is identical. The earlier state-aware NCIP rollback
+(PR #37, idempotency-key suffix `:ncip-rollback`) compensated for the
+upstream design tension that the re-anchor removed — see
+`docs/lessons.md` § Saga / ledger.
+
+⁶ RECEIVE compensator is deliberately ledger-only DISPUTED even
+though the forward now opens an ILS loan. The saga can't tell whether
+a receipt dispute is about non-receipt (loan should clear) or
+condition (loan should stay) — routing to DISPUTED preserves the
+"physically un-undoable" framing for staff resolution. A future PR
+may add a state-aware compensator (or a `/sagas/{id}/override`
+endpoint) once the staff console surfaces the necessary inputs.
 
 ### 3.4 Backoff & dead-letter
 

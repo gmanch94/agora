@@ -13,7 +13,37 @@ an ADR.
 
 ## Saga / ledger
 
+### 2026-05-03 — Re-anchoring a side effect can obsolete prior state-aware logic
+PR #37 wired a state-aware NCIP rollback into the SHIP compensator
+(emit `check_in` from `SHIPPED`, skip from `RECEIVED`) so the ILS
+record matched physical reality after a recall. One PR later, the
+NCIP `check_out` anchor moved from SHIP forward to RECEIVE forward —
+the cleaner circulation-timing model — and the SHIP comp's
+state-aware branch became dead code. Walking both branches under
+the new anchor: at SHIPPED no ILS loan was ever opened (RECEIVE
+never ran, so no `check_out` dispatched), at RECEIVED the patron
+holds the book (loan correctly reflects custody, return flow owns
+`check_in`). Both branches converge on "just recall." The
+`current_state` check survives only as state-aware rationale text.
+Generalises: state-aware compensator branches often signal an
+upstream design tension. When a future PR removes the tension, ask
+whether the branches still earn their keep — don't preserve them
+out of habit. PR #37's logic was correct given its anchor; this
+PR's deletion is also correct given the new anchor. Both versions
+shipped in the same week.
+*(Backlog item: NCIP `check_out` re-anchor SHIP→RECEIVE — see
+`saga/flows.py::receive_forward` + `ship_compensator`,
+`tests/test_coordinator.py::test_ship_compensator_from_{shipped,received}_emits_recall_only`,
+`tests/test_coordinator.py::test_receive_forward_advances_to_received`.)*
+
 ### 2026-05-03 — Compensator NCIP rollback is state-aware, not boolean
+*(Superseded for SHIP comp specifically by the NCIP-checkout
+SHIP→RECEIVE re-anchor — see entry above. The general lesson still
+applies: design compensators by asking "what does the other system
+believe right now?" not "what did the forward send?" The state-aware
+SHIP comp branch was correct under the old anchor; this re-anchor PR
+deletes it as dead code rather than amending it.)*
+
 The first instinct when wiring SHIP-compensator NCIP rollback was
 "emit `check_in` if the SHIP forward emitted `check_out`" — i.e. a
 forward-mirror. That's wrong. The right question is "what does the
