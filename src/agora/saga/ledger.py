@@ -80,12 +80,20 @@ class SagaLedger:
             raise SagaNotFoundError(f"saga {saga_id} not found")
         return saga
 
-    async def append(self, event: NewSagaEvent) -> SagaEvent | None:
+    async def append(self, event: NewSagaEvent) -> SagaEvent:
         """Append a new event row.
 
-        Returns ``None`` if the idempotency key already exists (replay).
+        On idempotency-key collision (benign replay) returns the
+        already-persisted event so callers can compare it against the
+        event they were trying to write — see ``tracking.py`` which uses
+        the returned ``observed_at`` to decide whether the row is newly
+        recorded or a duplicate of a prior pass.
+
         Raises ``TerminalStateError`` if the saga is already terminal
-        and the event is not a benign observation.
+        and the event is not a benign observation. Raises any other
+        ``IntegrityError`` (e.g. ``(saga_id, seq)`` collision from a
+        concurrent writer with a *different* idempotency key) — those
+        are real conflicts the caller must handle.
         """
         saga = await self.get_saga(event.saga_id)
         current = LifecycleState(saga.current_state)

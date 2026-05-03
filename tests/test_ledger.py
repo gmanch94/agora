@@ -80,6 +80,55 @@ async def test_replay_with_same_idempotency_key_is_noop(session: AsyncSession) -
 
 
 @pytest.mark.asyncio
+async def test_replay_returns_existing_event_not_none(
+    session: AsyncSession,
+) -> None:
+    """Pin the API contract: append on idempotency-key collision returns
+    the already-persisted event (same ``seq``, same ``id``), not None.
+
+    Backlog #8: the signature used to be ``-> SagaEvent | None`` and the
+    docstring promised None on replay, but the implementation has always
+    returned the existing row. Callers (tracking.py overdue scanner,
+    coordinator's outbox enqueue) depend on getting back a real event so
+    they can compare a payload field against what they tried to write.
+    """
+    saga_id = uuid4()
+    key = new_idempotency_key()
+    async with session.begin():
+        ledger = SagaLedger(session)
+        await ledger.create_saga(
+            saga_id=saga_id, request_id=uuid4(), request_payload={}
+        )
+        ev = NewSagaEvent(
+            saga_id=saga_id,
+            kind=EventKind.OBSERVATION,
+            step=StepName.SHIP,
+            state_before=LifecycleState.SUBMITTED,
+            state_after=LifecycleState.SUBMITTED,
+            actor="agent:test",
+            idempotency_key=key,
+            payload={"observed_at": "first-pass"},
+            outcome=StepOutcome.COMMITTED,
+        )
+        first = await ledger.append(ev)
+        # A second append with the same key but a payload that differs
+        # (mimicking a second scan with a later observed_at) must still
+        # return the *first* row's contents — proves the existing row
+        # comes back, not a fresh one.
+        ev_replay = ev.model_copy(update={"payload": {"observed_at": "second-pass"}})
+        second = await ledger.append(ev_replay)
+
+    assert second is not None
+    assert second.id == first.id, "replay must return the same row's id"
+    assert second.seq == first.seq, "replay must return the same row's seq"
+    assert second.idempotency_key == key
+    assert second.payload == {"observed_at": "first-pass"}, (
+        "replay must return the originally-persisted payload, "
+        "not the second-pass payload"
+    )
+
+
+@pytest.mark.asyncio
 async def test_state_advances_on_committed_forward(session: AsyncSession) -> None:
     saga_id = uuid4()
     async with session.begin():

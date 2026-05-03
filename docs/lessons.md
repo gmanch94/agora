@@ -224,16 +224,24 @@ Smoke-testing the security-audit skill (backlog #6) found 4 nosec'd
 lines: 2 legitimate (mypy narrowing in `clients/sru.py`, dev-default
 `0.0.0.0` bind in `config.py`) and 2 carrying the rationale "ledger.append
 never returns None in practice" at `saga/coordinator.py:175` and `:253`.
-But the `if persisted is not None:` guard 9 lines above (line 166) is
-proof that it *does* return None on idempotency-key collision, and the
-assert crashes the replay path. The nosec was true when written but the
-ADR-0011 outbox commit-then-enqueue work made replay return None and
-nobody re-read the comment. Audit takeaway: **every audit pass should
-grep `nosec` and re-justify each annotation against current code, not
-trust the comment.** This finding is backlog #8 (file an issue / fix in
-its own PR).
-*(PR #26 — see `src/agora/saga/coordinator.py:166-175`, `:241-253`;
-audit run via `.claude/skills/security-audit/`.)*
+The PR #26 audit pass framed this as a live bug ("guard above is the
+proof, replay path crashes"); the PR #27 fix surfaced that **the audit
+itself was a misread**. `ledger.append` actually has *never* returned
+None: the IntegrityError branch returns the existing event row (see
+`tests/test_ledger.py::test_replay_returns_existing_event_not_none`).
+The nosec rationale was true; the `if persisted is not None:` guard
+9 lines above was dead code; the asserts never crashed. The real defect
+was API-contract drift — three layers (signature `-> SagaEvent | None`,
+docstring "returns None on replay", impl returning the existing row)
+disagreed. Audit takeaway is unchanged and still load-bearing: **every
+audit pass should grep `nosec` and re-justify each annotation against
+current code, not trust the comment** — but the justification can also
+land on "the surrounding code lies; tighten it" rather than "the nosec
+lies; remove it." Fix in PR #27 tightened the signature to
+`-> SagaEvent`, removed the dead guards + redundant asserts, and added
+the replay-returns-existing test to pin the contract.
+*(PR #26 audit; PR #27 fix — see `src/agora/saga/coordinator.py`,
+`src/agora/saga/ledger.py`, `tests/test_ledger.py`.)*
 
 ### 2026-05-04 — Bundled `security_scan.py` runner needs `sys.executable -m`
 Upstream `wdm0006/python-skills/security-audit/scripts/security_scan.py`
