@@ -1,5 +1,8 @@
 # Agora — Solution Design Document
 
+> Last reviewed against code: 2026-05-04 (post PR #30 — outbox
+> schema sync + APPROVE-via-outbox + runbook env-var backfill).
+
 Single-narrative design doc. Stitches together what the PRDs say
 should exist, what the ADRs decided, what the code does today, and
 why the seams sit where they do. Read this first if you're new to
@@ -457,7 +460,7 @@ catalogs publish SRU anyway. SRU covers the prototype scope.
 | ISO 18626 XSD validation      | Delegated entirely to mod-rs. Not independently validated.                                                                |
 | Observability (traces)        | structlog only. No OpenTelemetry yet.                                                                                     |
 | PRD/architecture drift        | Stale-check pass ran 2026-05-04 (post PRs #25/#27/#28); 26 drift candidates across 6 files captured for follow-up PRs.    |
-| Python version                | Built/tested on 3.14.3 but `pyproject.toml` declares `>=3.11`.                                                            |
+| Python version                | CI gates on 3.11 (`triple-gate.yml` + `audit.yml` + `postgres-tests.yml`); local dev on 3.14.3. No 3.12/3.13 matrix.       |
 
 > **Recently closed** (kept here for changelog continuity; remove on next refresh):
 > APPROVE forward inline → outbox via `APPROVING` (ADR-0012, PR #17).
@@ -500,7 +503,7 @@ All gaps are tracked in `CLAUDE.md`.
 - `docs/runbook.md` — operational reference (bring-up, gate workflow, outbox, dead-letter triage)
 - `docs/architecture.md` — Mermaid diagrams (layer cake, lifecycle state machine, idempotency model)
 - `docs/prd/00-overview.md` … `06-non-functional.md` — product requirements (7 docs)
-- `docs/adr/0001-…` … `0011-outbox-commit-then-enqueue.md` — architecture decisions (11 docs)
+- `docs/adr/0001-…` … `0012-approve-via-outbox.md` — architecture decisions (12 docs)
 - `src/agora/api/app.py` — FastAPI factory + lifespan
 - `src/agora/saga/coordinator.py` — coordinator
 - `src/agora/saga/flows.py` — forward+compensator pairs

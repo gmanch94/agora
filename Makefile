@@ -1,6 +1,6 @@
 # Agora — common dev commands
 
-.PHONY: help install fmt lint type test test-fast cov audit up down logs db-reset migrate api demo chaos clean
+.PHONY: help install fmt lint type test test-fast cov audit up down logs db-reset migrate api demo clean
 
 help:
 	@echo "Common targets:"
@@ -19,7 +19,6 @@ help:
 	@echo "  migrate     alembic upgrade head"
 	@echo "  api         run FastAPI app locally"
 	@echo "  demo        run scripted happy-path demo"
-	@echo "  chaos       run saga compensation chaos test"
 	@echo "  clean       remove caches"
 
 install:
@@ -76,9 +75,6 @@ api:
 
 demo:
 	python -m agora.demos.happy_path
-
-chaos:
-	python -m agora.demos.chaos
 
 clean:
 	rm -rf .pytest_cache .mypy_cache .ruff_cache htmlcov .coverage

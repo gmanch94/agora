@@ -64,7 +64,9 @@ compliance burden.
   (`tests/test_property_saga.py`, Hypothesis). **Implemented** —
   53 tests green at time of review.
 - Architecture & decisions documented under `docs/` — PRDs, ADRs
-  (11), runbook, and SDD. **Implemented**.
-- Chaos test (`make chaos`): **planned, not yet wired** — no
-  `agora.demos.chaos` module today; the property tests cover
-  compensator symmetry but not random-injection chaos.
+  (12), runbook, and SDD. **Implemented**.
+- ~~Chaos test (`make chaos`)~~: **dropped** — never wired and the
+  property tests in `tests/test_property_saga.py` cover compensator
+  symmetry under arbitrary forward sequences, which subsumes the
+  random-injection use case. The Makefile target was removed in the
+  same PR that retired this row.
