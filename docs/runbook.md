@@ -48,12 +48,16 @@ the process env. Defaults target local dev (Postgres on `localhost:5433`).
 | `RESHARE_TENANT`                    | `consortium-a`                                         | Maps to mod-rs `X-Okapi-Tenant`.                           |
 | `RESHARE_USER` / `RESHARE_PASSWORD` | `""`                                                   | HTTP Basic for dev; production needs Okapi token.          |
 | `NCIP_BASE_URL`                     | `""`                                                   | Mock-only today.                                           |
+| `NCIP_AGENCY_ID`                    | `AGORA-DEV`                                            | Agency symbol stamped on NCIP requests.                    |
 | `SRU_LOC_URL`                       | `https://lx2.loc.gov/voyager`                          | Library of Congress SRU.                                   |
 | `SRU_TIMEOUT_SECS`                  | `5.0`                                                  |                                                            |
 | `SAGA_STALL_TIMEOUT_SECS`           | `600`                                                  | Reserved for future stall detection.                       |
 | `OUTBOX_RETRY_MAX_ATTEMPTS`         | `10`                                                   | Beyond this → `dead_letter`.                               |
 | `AGORA_OUTBOX_WORKER_ENABLED`       | `true`                                                 | Set `0` to suppress lifespan-spawned worker (tests, etc.). |
 | `AGORA_OUTBOX_POLL_INTERVAL_SECS`   | `1.0`                                                  | Worker poll interval.                                      |
+| `AGORA_TRACKING_SCANNER_ENABLED`    | `true`                                                 | Set `0` to suppress lifespan-spawned overdue scanner.      |
+| `AGORA_TRACKING_SCAN_INTERVAL_SECS` | `300.0`                                                | Overdue scanner poll interval (5 min default).             |
+| `AGORA_TRACKING_RECALL_AFTER_DAYS`  | `14`                                                   | Days past `due_at` before tier-2 `recall-proposed` fires.  |
 
 `.env.example` in the repo lists the same set with safe defaults.
 
@@ -175,13 +179,17 @@ is intentional — the demo has to be deterministic.
 ### 3.2 What it dispatches
 
 Outbox rows have `(target, idempotency_key, payload, status,
-attempts, scheduled_for, last_error, delivered_at)`. The worker reads
-`status='pending' AND scheduled_for <= now()`, ordered by schedule
-time, in batches of 50.
+attempts, scheduled_for, last_error, delivered_at, claimed_at)`.
+Status is one of `pending | in_flight | delivered | dead_letter`;
+`claimed_at` carries the multi-worker lease (PR #25). The worker
+reads `status='pending' AND scheduled_for <= now()`, ordered by
+schedule time, in batches of 50, claiming each via
+`SELECT ... FOR UPDATE SKIP LOCKED` on Postgres (see § 3.6).
 
-Today the only registered handler is `target='reshare'`, dispatched
-by `make_reshare_handler(client)` to `MockReShareClient` /
-`HttpReShareClient`. Payload shape:
+Registered handlers: `target='reshare'`
+(`make_reshare_handler(client)` → `MockReShareClient` /
+`HttpReShareClient`) and `target='ncip'` (fire-and-forget,
+borrower-side ILS). Payload shape:
 
 ```json
 {
@@ -197,25 +205,32 @@ worker crashes after the wire call but before
 
 ### 3.3 Which saga steps go through the outbox
 
-| Step          | Forward                              | Compensator                          |
-| ------------- | ------------------------------------ | ------------------------------------ |
-| `submit`      | ledger only                          | ledger only                          |
-| `route`       | ledger only                          | ledger only                          |
-| `approve`     | **inline `submit_to_supplier`** ¹    | outbox `cancel_request`              |
-| `ship`        | outbox `confirm_shipment`            | outbox `recall_request` ²            |
-| `return`      | outbox `confirm_return`              | ledger only (DISPUTED)               |
+| Step          | Forward                                                       | Compensator                          |
+| ------------- | ------------------------------------------------------------- | ------------------------------------ |
+| `submit`      | ledger only                                                   | ledger only                          |
+| `route`       | ledger only                                                   | ledger only                          |
+| `approve`     | outbox `send_request` → APPROVING → projection → APPROVED ¹   | outbox `cancel_request` ²            |
+| `ship`        | outbox `confirm_shipment` (+ outbox `check_out` to NCIP)      | outbox `recall_request` ³            |
+| `return`      | outbox `confirm_return` (+ outbox `check_in` to NCIP)         | ledger only (DISPUTED)               |
 
-¹ APPROVE forward calls ReShare inline because the saga ledger needs
-the returned `reshare_id` stamped onto its forward-event payload —
-SHIP/RETURN read it back via `_derive_extras`. Migration to outbox
-needs either an `APPROVING` intermediate state or a worker-written
-observation event. Future ADR. See `CLAUDE.md` known-gaps.
+¹ APPROVE migrated to outbox per ADR-0012 / PR #17. The forward
+returns an `OutboxIntent` for `send_request` and parks the saga in
+`LifecycleState.APPROVING`; the worker drains it, then the
+projection callback (`make_reshare_on_success`) writes an
+OBSERVATION carrying `reshare_id` that advances the saga to
+APPROVED. Projection runs in the same session as
+`outbox_mark_delivered` so OBSERVATION + delivered flag commit
+atomically. SHIP/RETURN read `reshare_id` back via `_derive_extras`,
+which reads APPROVE OBSERVATION events as well as FORWARD events.
 
-² `HttpReShareClient.recall_request` raises `ClientError` until the
+² Compensating during the APPROVING window (ack still pending)
+returns 400 — there is no `reshare_id` to cancel against.
+
+³ `HttpReShareClient.recall_request` raises `ClientError` until the
 mod-rs recall mapping is verified against a live tenant. Under the
 outbox pattern this surfaces as a `dead_letter` row for staff review
 — exactly the signal we want. The mock client succeeds, keeping demo
-+ tests green. See ADR-0011.
++ tests green. See ADR-0011 + ADR-0012.
 
 ### 3.4 Backoff & dead-letter
 
@@ -261,13 +276,16 @@ LIMIT 50;
 
 ### 3.6 Multi-worker safety
 
-The current poll uses no row-level lock. Running two workers in
-parallel against the same DB **will double-deliver**. Postgres can
-fix this with `SELECT ... FOR UPDATE SKIP LOCKED`; SQLite cannot. Out
-of scope for the prototype — flagged in `CLAUDE.md` and the
-`outbox.py` module docstring.
-
-For now: one API process per DB.
+Multi-worker safe on Postgres via `outbox_claim` (PR #25):
+`SELECT ... FOR UPDATE SKIP LOCKED` acquires disjoint row sets,
+flips claimed rows to `status='in_flight'` with `claimed_at=now()`,
+and commits — concurrent workers can't double-deliver. Orphan
+recovery sweeps `in_flight` rows whose `claimed_at` is older than
+`claim_lease_secs` (default 600s) back to `pending` so a crashed
+worker doesn't strand rows. SQLite serializes writers naturally so
+the same code path works in tests; the `with_for_update` hint is
+only emitted on Postgres. Verified by
+`tests/test_outbox_concurrent_postgres.py` (CI service container).
 
 ---
 
@@ -291,18 +309,25 @@ existing row, and the scanner reports `newly_recorded=False`.
 
 ### 4.3 Schedule
 
-There is no built-in cron in the prototype. To run periodically pick
-one of:
+`OverdueScanner.run_forever` runs as a background `asyncio.Task`
+spawned from the FastAPI lifespan in `src/agora/api/app.py` (task
+name `agora.tracking.scanner`), polling at
+`AGORA_TRACKING_SCAN_INTERVAL_SECS` (default 300s). Tier-2 escalation
+fires on the first scan where `days_overdue >=
+AGORA_TRACKING_RECALL_AFTER_DAYS` (default 14) and emits a
+`recall-proposed-{saga_id}` OBSERVATION carrying
+`suggested_action: "compensate_ship"` for the staff console.
+
+Disable for local debugging:
 
 ```bash
-# One-off
-.venv/Scripts/python.exe -c "import asyncio; from sqlalchemy.ext.asyncio import async_sessionmaker; from agora.saga.db import get_engine; from agora.agents.tracking import OverdueScanner; asyncio.run(OverdueScanner(async_sessionmaker(bind=get_engine(), expire_on_commit=False)).scan())"
+AGORA_TRACKING_SCANNER_ENABLED=0 .venv/Scripts/python.exe -m uvicorn agora.api.app:app --reload
+```
 
-# Production placeholder: add a second asyncio.Task in the FastAPI
-# lifespan that loops `scan()` + `asyncio.sleep(interval)`. The
-# interval var (e.g. AGORA_OVERDUE_SCAN_SECS) is not yet defined in
-# config.py — mirror the outbox worker pattern in src/agora/api/app.py
-# when wiring this up. Tracked in CLAUDE.md gaps.
+One-off invocation (without spawning the loop):
+
+```bash
+.venv/Scripts/python.exe -c "import asyncio; from sqlalchemy.ext.asyncio import async_sessionmaker; from agora.saga.db import get_engine; from agora.agents.tracking import OverdueScanner; asyncio.run(OverdueScanner(async_sessionmaker(bind=get_engine(), expire_on_commit=False)).scan())"
 ```
 
 Test coverage lives in `tests/test_tracking.py` (deterministic clock
