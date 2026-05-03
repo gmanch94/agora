@@ -219,6 +219,38 @@ moves to a real ENUM, every state-add needs `ALTER TYPE ... ADD VALUE`.
 
 ## Security tooling
 
+### 2026-05-04 — Audit pass: `# nosec` annotations age, must be re-justified each run
+Smoke-testing the security-audit skill (backlog #6) found 4 nosec'd
+lines: 2 legitimate (mypy narrowing in `clients/sru.py`, dev-default
+`0.0.0.0` bind in `config.py`) and 2 carrying the rationale "ledger.append
+never returns None in practice" at `saga/coordinator.py:175` and `:253`.
+But the `if persisted is not None:` guard 9 lines above (line 166) is
+proof that it *does* return None on idempotency-key collision, and the
+assert crashes the replay path. The nosec was true when written but the
+ADR-0011 outbox commit-then-enqueue work made replay return None and
+nobody re-read the comment. Audit takeaway: **every audit pass should
+grep `nosec` and re-justify each annotation against current code, not
+trust the comment.** This finding is backlog #8 (file an issue / fix in
+its own PR).
+*(PR #26 — see `src/agora/saga/coordinator.py:166-175`, `:241-253`;
+audit run via `.claude/skills/security-audit/`.)*
+
+### 2026-05-04 — Bundled `security_scan.py` runner needs `sys.executable -m`
+Upstream `wdm0006/python-skills/security-audit/scripts/security_scan.py`
+shells out to `["bandit", ...]`, `["pip-audit", ...]`, etc. — bare
+PATH lookup. On a venv-only install (Windows `.venv\Scripts\`, or any
+host where the scanners aren't on system PATH) every check returns
+`FileNotFoundError: bandit not installed` and the skill silently fails
+"clean." Patch: invoke via `[sys.executable, "-m", "bandit", ...]`,
+`[sys.executable, "-m", "pip_audit", ...]`,
+`[sys.executable, "-m", "detect_secrets", ...]`. Same trick worth
+remembering for any other cherry-picked runner. While there: dropped
+the `safety` branch (package unmaintained, pip-audit covers same DB)
+and noted in SKILL.md "Bundled scripts" that the modifications mean
+the upstream "unmodified" framing no longer applies.
+*(PR #26 — see `.claude/skills/security-audit/scripts/security_scan.py`,
+`.claude/skills/security-audit/SKILL.md`.)*
+
 ### 2026-05-02 — Bandit nosec needs the **two-hash** form
 `# nosec B101 - reason` silently parses every word of the reason as a
 test ID and floods stderr with `WARNING Test in comment: <word> is not

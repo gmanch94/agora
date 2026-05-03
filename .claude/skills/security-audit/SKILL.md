@@ -50,8 +50,9 @@ The audit is the once-per-milestone broad sweep.
 # Secrets sweep — generates baseline first run, diff after
 .venv/Scripts/python.exe -m detect_secrets scan --baseline .secrets.baseline
 
-# All four (bandit + pip-audit + safety + detect-secrets) via the
-# bundled script:
+# All three (bandit + pip-audit + detect-secrets) via the bundled
+# script. Invokes scanners via `sys.executable -m <module>`, so the
+# venv interpreter is enough — no PATH munging needed:
 .venv/Scripts/python.exe .claude/skills/security-audit/scripts/security_scan.py .
 ```
 
@@ -189,11 +190,23 @@ Operational:
 
 ## Bundled scripts
 
-- `scripts/security_scan.py` — runs bandit + pip-audit + safety +
-  detect-secrets and produces a unified report. Originally from
-  `wdm0006/python-skills`, MIT-licensed. Cherry-picked into agora
-  rather than installing the full plugin (only this skill applied —
-  most others are PyPI-library shaped, not app shaped).
+- `scripts/security_scan.py` — runs bandit + pip-audit + detect-secrets
+  and produces a unified report. Originally from `wdm0006/python-skills`,
+  MIT-licensed. Cherry-picked into agora rather than installing the full
+  plugin (only this skill applied — most others are PyPI-library shaped,
+  not app shaped). Modified from upstream:
+  * Scanners are invoked via `sys.executable -m <module>` instead of bare
+    PATH lookup, so the script works against a venv-only install
+    (Windows `.venv\Scripts\`, or any layout where the scanners aren't on
+    the system `PATH`).
+  * The `safety` scanner branch was dropped — the package is unmaintained
+    and `pip-audit` covers the same vulnerability database.
+  * Known limitation: the detect-secrets call runs raw `scan` and does
+    NOT diff against `.secrets.baseline`, so it lists everything in the
+    baseline as a "finding." Use `make audit` (or the
+    `detect-secrets-hook --baseline .secrets.baseline` invocation in
+    CI) for the gate-clean answer; the bundled script is a fast
+    "what would a fresh auditor see" view.
 
 ## Provenance
 
