@@ -145,11 +145,11 @@ ISO 18626 message types — see table in `clients/reshare.py`.
     patron's ILS record reflects the loan from the moment they
     physically take custody, not from supplier shipment. Trade-off:
     a saga whose patron never confirms receipt will never have a
-    `check_out` dispatched; staff intervention or a future
-    TrackingAgent tier-3 watch handles that gap. `due_at` still
-    anchors to `shipped_at` (loan-period clock is a supplier-side
-    commitment that starts at shipment, and an unconfirmed-receipt
-    saga still needs an overdue threshold).
+    `check_out` dispatched; the TrackingAgent tier-3 watch
+    (`receipt-unconfirmed-{saga_id}`, see below) surfaces this to
+    staff. `due_at` still anchors to `shipped_at` (loan-period clock
+    is a supplier-side commitment that starts at shipment, and an
+    unconfirmed-receipt saga still needs an overdue threshold).
   - **SHIP compensator emits a single ReShare `recall_request`** in
     either branch (saga at SHIPPED or post-RECEIVE). The
     `current_state` check survives only as state-aware rationale
@@ -172,27 +172,39 @@ ISO 18626 message types — see table in `clients/reshare.py`.
   - The NCIP HTTP/SOAP client itself remains a mock —
     `MockNcipClient` for prototype/tests; real `mod-ncip`
     integration is still future work.
-- TrackingAgent: `OverdueScanner.run_forever` now runs as a background
+- TrackingAgent: `OverdueScanner.run_forever` runs as a background
   task spawned from the FastAPI lifespan (asyncio task name
   `agora.tracking.scanner`; module is `agora.agents.tracking`),
   polling at `AGORA_TRACKING_SCAN_INTERVAL_SECS` (default 300s). Each
-  pass scans shipped sagas past `due_at` and writes deterministic
-  OBSERVATION events — UNIQUE constraint absorbs replay. Two-tier
-  emission, both advisory only (no outbox, no state change, no
-  auto-compensator dispatch — ADR-0005): tier-1 `overdue-{saga_id}`
-  fires on the first scan past `due_at`; tier-2
-  `recall-proposed-{saga_id}` fires on the first scan where
-  `days_overdue >= AGORA_TRACKING_RECALL_AFTER_DAYS` (default 14)
-  and carries `suggested_action: "compensate_ship"` plus the
-  `reshare_id` for the staff console to render as a CTA pointing at
-  `POST /sagas/{id}/compensate`. Recorded `days_overdue` is a
-  point-in-time snapshot — UI computes "currently N days" from
-  `due_at` + render clock. Auto-recall and a dedicated RECALLING
-  lifecycle state are explicit non-goals; staff still clicks.
-  Disable via `AGORA_TRACKING_SCANNER_ENABLED=0`. Multi-scanner safe
-  by construction: the tier-1 (`overdue-{saga_id}`) and tier-2
-  (`recall-proposed-{saga_id}`) keys are deterministic per saga, so
-  two concurrent scanners writing the same key collide on
+  pass scans `current_state == SHIPPED` sagas and writes deterministic
+  OBSERVATION events — UNIQUE constraint absorbs replay. Three-tier
+  emission, all advisory only (no outbox, no state change, no
+  auto-compensator dispatch — ADR-0005):
+    * **Tier-1** `overdue-{saga_id}` fires on the first scan past
+      `due_at` (loan-clock time).
+    * **Tier-2** `recall-proposed-{saga_id}` fires on the first scan
+      where `days_overdue >= AGORA_TRACKING_RECALL_AFTER_DAYS`
+      (default 14) and carries `suggested_action: "compensate_ship"`
+      plus the `reshare_id` for the staff console to render as a CTA
+      pointing at `POST /sagas/{id}/compensate`.
+    * **Tier-3** `receipt-unconfirmed-{saga_id}` fires on the first
+      scan where `now - shipped_at >= AGORA_TRACKING_UNCONFIRMED_RECEIPT_AFTER_DAYS`
+      (default 7) and the saga is still at `SHIPPED` — i.e. the
+      patron never confirmed RECEIVE. Tier-3 keys off transit time
+      rather than loan-clock time and fires *independently* of
+      tier-1/2 (a saga can be flagged "patron forgot to confirm"
+      while `due_at` is still in the future). Carries no
+      `suggested_action` field — staff console surfaces the advisory
+      as a "chase patron" hint without an in-saga CTA. Closes the
+      known-gap that PR #38 documented when re-anchoring NCIP
+      `check_out` from SHIP to RECEIVE.
+
+  Recorded `days_overdue` and `days_since_shipped` are point-in-time
+  snapshots — UI computes "currently N days" from the base timestamp
+  + render clock. Auto-recall and a dedicated RECALLING lifecycle
+  state are explicit non-goals; staff still clicks. Disable via
+  `AGORA_TRACKING_SCANNER_ENABLED=0`. Multi-scanner safe by
+  construction: the three deterministic keys per saga collide on
   `UNIQUE(saga_event.idempotency_key)` and the second invocation gets
   the existing row back from `SagaLedger.append`. No outbox writes,
   no state changes — concurrent scans are wasteful (duplicate work)
