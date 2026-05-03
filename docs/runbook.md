@@ -1,8 +1,8 @@
 # Agora Runbook
 
-> Last reviewed against code: 2026-05-03 (post TrackingAgent tier-3
-> watch — `receipt-unconfirmed-{saga_id}` advisory closes the
-> never-confirmed-receipt gap from PR #38).
+> Last reviewed against code: 2026-05-03 (post CrossRef client PR-A
+> — `CROSSREF_*` env vars added; tier-3 receipt-unconfirmed watch
+> from prior session unchanged).
 
 Operational reference for the Agora ILL prototype. Covers bring-up,
 day-to-day operation (outbox, overdue scan, gate workflow), and
@@ -56,6 +56,9 @@ the process env. Defaults target local dev (Postgres on `localhost:5433`).
 | `NCIP_AGENCY_ID`                    | `AGORA-DEV`                                            | Agency symbol stamped on NCIP requests.                    |
 | `SRU_LOC_URL`                       | `https://lx2.loc.gov/voyager`                          | Library of Congress SRU.                                   |
 | `SRU_TIMEOUT_SECS`                  | `5.0`                                                  |                                                            |
+| `CROSSREF_BASE_URL`                 | `https://api.crossref.org`                             | CrossRef REST API (DOI → bibliographic record). Public, no auth. |
+| `CROSSREF_TIMEOUT_SECS`             | `5.0`                                                  |                                                            |
+| `CROSSREF_MAILTO`                   | `""`                                                   | When set, opts into CrossRef's polite pool with `User-Agent: Agora/0.1 (mailto:<value>)` for better rate limits. |
 | `SAGA_STALL_TIMEOUT_SECS`           | `600`                                                  | Reserved for future stall detection.                       |
 | `OUTBOX_RETRY_MAX_ATTEMPTS`         | `10`                                                   | Beyond this → `dead_letter`.                               |
 | `AGORA_OUTBOX_WORKER_ENABLED`       | `true`                                                 | Set `0` to suppress lifespan-spawned worker (tests, etc.). |
