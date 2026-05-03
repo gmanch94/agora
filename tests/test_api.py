@@ -108,14 +108,16 @@ async def test_submit_creates_saga_in_submitted_state(client: AsyncClient) -> No
 async def test_full_lifecycle_via_approve_endpoints(
     app: FastAPI, client: AsyncClient
 ) -> None:
-    """Submitted -> Routed -> Approving -> Approved -> Shipped -> Returned.
+    """Submitted → Routed → Approving → Approved → Shipped → Received → Returned.
 
     Per ADR-0012 the APPROVE endpoint returns immediately with state
     ``approving``; the supplier round-trip happens off the request
     path via the outbox worker, which writes an OBSERVATION to
     advance the saga to ``approved``. This test drives the worker
     explicitly between APPROVE and SHIP so the saga reaches the
-    state SHIP requires.
+    state SHIP requires. Borrower-side NCIP ``check_out`` is anchored
+    on the RECEIVE forward (re-anchored from SHIP) so the patron's
+    ILS record reflects the loan from physical-receipt.
     """
     saga_id = (await client.post("/requests", json=_request_payload())).json()[
         "saga_id"
@@ -159,8 +161,9 @@ async def test_full_lifecycle_via_approve_endpoints(
     assert approve_obs["payload"]["reshare_id"]
 
     # SHIP — reshare_id derived from APPROVE OBSERVATION via _derive_extras.
-    # SHIP forward fans out to two outbox intents: reshare confirm_shipment
-    # + ncip check_out. Drive the worker so both land on their clients.
+    # Post NCIP-checkout-re-anchor SHIP forward emits a single ReShare
+    # ``confirm_shipment`` intent — borrower-side ``check_out`` moved
+    # to RECEIVE forward.
     r = await client.post(
         f"/sagas/{saga_id}/approve",
         json={"step": "ship", "actor": "staff:test", "rationale": "demo ship"},
@@ -169,7 +172,20 @@ async def test_full_lifecycle_via_approve_endpoints(
     assert r.json()["state_after"] == "shipped"
     await _drive_outbox_worker(app)
 
-    # RETURN — same fan-out (confirm_return + check_in).
+    # RECEIVE — borrower confirms physical receipt. RECEIVE forward
+    # emits a single ``target='ncip'`` ``check_out`` intent (re-anchored
+    # from SHIP); the patron's ILS record opens at this point. Drive
+    # the worker so the call lands on the mock NCIP client.
+    r = await client.post(
+        f"/sagas/{saga_id}/approve",
+        json={"step": "receive", "actor": "staff:test", "rationale": "demo receive"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["state_after"] == "received"
+    await _drive_outbox_worker(app)
+
+    # RETURN — fans out to two outbox intents: reshare confirm_return
+    # + ncip check_in.
     r = await client.post(
         f"/sagas/{saga_id}/approve",
         json={"step": "return", "actor": "staff:test", "rationale": "demo return"},

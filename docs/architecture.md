@@ -1,7 +1,8 @@
 # Agora — Architecture (hand-drawn)
 
 > Last reviewed against code: 2026-05-03 (post PRs #17/#18/#19/#24/
-> #25/#28 + RECEIVED state — APPROVING-via-outbox, NCIP fan-out,
+> #25/#28 + RECEIVED state + state-aware SHIP comp + NCIP-checkout
+> SHIP→RECEIVE re-anchor — APPROVING-via-outbox, NCIP fan-out,
 > TrackingScanner lifespan task, alembic-on-real-postgres CI,
 > multi-worker outbox, borrower-receipt state).
 
@@ -96,15 +97,15 @@ stateDiagram-v2
     Submitted --> Routed: staff approves<br/>routing rec
     Routed --> Approving: staff approves<br/>(APPROVE forward<br/>enqueues outbox)
     Approving --> Approved: outbox worker<br/>delivered + projection<br/>writes reshare_id
-    Approved --> Shipped: lender confirms<br/>SupplierMarkShipped<br/>(+ NCIP check_out fan-out)
-    Shipped --> Received: borrower confirms<br/>physical receipt<br/>(ItemReceived note;<br/>supplier still Loaned)
+    Approved --> Shipped: lender confirms<br/>SupplierMarkShipped<br/>(reshare confirm_shipment only)
+    Shipped --> Received: borrower confirms<br/>physical receipt<br/>(ItemReceived note;<br/>+ NCIP check_out fan-out)
     Received --> Returned: borrower confirms<br/>RequesterMarkReturned<br/>(+ NCIP check_in fan-out)
     Returned --> [*]
 
     Submitted --> Cancelled: submit compensator<br/>(patron withdraw)
     Routed --> Submitted: route compensator<br/>(re-rank suppliers)
     Approved --> Cancelled: approve compensator<br/>(cancel at supplier)
-    Shipped --> Disputed: ship compensator from SHIPPED<br/>(recall + NCIP check_in rollback —<br/>clears false-loan record)
+    Shipped --> Disputed: ship compensator from SHIPPED<br/>(recall only — no ILS loan exists;<br/>RECEIVE forward never ran)
     Received --> Disputed: ship compensator from RECEIVED<br/>(recall only — patron has item;<br/>return flow owns check_in)
     Received --> Disputed: receive compensator<br/>(physical receipt contested —<br/>staff reconciliation)
     Returned --> Disputed: return compensator<br/>(reconciliation case)
@@ -124,23 +125,24 @@ States and compensator targets reflect `LifecycleState` and
   `APPROVED`. Compensate during `APPROVING` returns 400 — there is
   no `reshare_id` to cancel against.
 - No `Recalled` state in the enum — the SHIP compensator transitions
-  to `Disputed` and enqueues a recall outbox intent for staff
-  intervention. The recall is paired with a state-aware NCIP
-  `check_in` rollback (idempotency-key suffix `:ncip-rollback`) when
-  the comp fires from `SHIPPED` — the patron never received the item,
-  so the false ILS loan needs clearing. From `RECEIVED` the comp
-  emits only the reshare recall: the patron physically holds the
-  book, so clearing the ILS loan would lie about custody; the
-  eventual return flow owns that `check_in`.
+  to `Disputed` and enqueues a single ReShare `recall_request` outbox
+  intent for staff intervention. Both branches (saga at `SHIPPED` or
+  post-`RECEIVED`) converge on "just recall" post NCIP-checkout
+  re-anchor: at `SHIPPED` no ILS loan was ever opened (RECEIVE forward
+  never ran), at `RECEIVED` the patron physically holds the book so
+  the loan correctly reflects custody and the eventual return flow
+  owns `check_in`. The `current_state` check survives only as
+  state-aware rationale text on the StepResult.
 - `RECEIVED` is a borrower-side marker between `SHIPPED` and
   `RETURNED`: the saga records the patron's physical-receipt
-  confirmation as a pure ledger write (no outbox, no peer ack — the
-  supplier-side state stays `Loaned`). Compensator lands in
-  `Disputed` because receipt is physically un-undoable. NCIP
-  `check_out` is **not** yet re-anchored from SHIP to RECEIVE — that
-  is tracked separately in CLAUDE.md known-gaps and waits on a
-  follow-up PR.
-- NCIP fan-out on SHIP/RETURN is fire-and-forget (CLAUDE.md
+  confirmation and emits a single NCIP `check_out` outbox intent
+  against the borrower's local ILS (re-anchored from SHIP — patron
+  record reflects the loan from the moment of physical receipt). The
+  supplier-side ISO 18626 state stays `Loaned`. Compensator lands in
+  `Disputed` because receipt is physically un-undoable; the ILS
+  loan recorded by RECEIVE forward is left in place for staff
+  reconciliation rather than blindly cleared.
+- NCIP fan-out on RECEIVE/RETURN is fire-and-forget (CLAUDE.md
   known-gap). NCIP outcomes do not gate saga state — failures
   surface as stuck outbox rows for staff review.
 

@@ -133,16 +133,16 @@ class _StepSpec:
     comp_has_outbox: bool
     extras_seed: tuple[tuple[str, str], ...]  # immutable for @given safety
     # Number of outbox intents emitted by a single forward run. Default 1
-    # for legacy single-target steps (APPROVE → reshare); SHIP and RETURN
-    # emit 2 (reshare + ncip per the NCIP-flow integration).
+    # for single-target steps (APPROVE → reshare; SHIP → reshare;
+    # RECEIVE → ncip post-re-anchor); RETURN emits 2 (reshare + ncip).
     forward_outbox_count: int = 1
     # Number of outbox intents emitted by a single compensator run when
     # the saga is at ``forward_state`` (the state the property tests
     # exercise comp from). Default 1 when ``comp_has_outbox=True``.
-    # SHIP comp emits 2 from SHIPPED (reshare recall + ncip
-    # check_in-rollback per state-aware NCIP rollback) and 1 from any
-    # post-RECEIVE state — the property test runs from SHIPPED so
-    # the spec records 2.
+    # Post NCIP-checkout-re-anchor (SHIP→RECEIVE), SHIP comp emits a
+    # single reshare ``recall_request`` regardless of saga state — no
+    # NCIP rollback in either branch, because no ILS loan has been
+    # opened by SHIP forward.
     comp_outbox_count: int = 1
 
 
@@ -183,17 +183,25 @@ _SPECS: dict[StepName, _StepSpec] = {
         forward_has_outbox=True,
         comp_has_outbox=True,
         extras_seed=(("reshare_id", "rs-prop-1"),),
-        forward_outbox_count=2,  # reshare confirm_shipment + ncip check_out
-        # State-aware NCIP rollback (added with the RECEIVED state work):
-        # comp from SHIPPED emits reshare recall + ncip check_in-rollback.
-        comp_outbox_count=2,
+        # Post NCIP-checkout-re-anchor (SHIP → RECEIVE): SHIP forward
+        # emits only ReShare ``confirm_shipment``; ``check_out`` moved
+        # to RECEIVE forward.
+        forward_outbox_count=1,
+        # SHIP comp emits a single ReShare ``recall_request`` in either
+        # branch — no NCIP rollback now that SHIP forward never opened
+        # an ILS loan.
+        comp_outbox_count=1,
     ),
     StepName.RECEIVE: _StepSpec(
         step=StepName.RECEIVE,
         pre_state=LifecycleState.SHIPPED,
         forward_state=LifecycleState.RECEIVED,
         comp_state=LifecycleState.DISPUTED,
-        forward_has_outbox=False,  # pure ledger write — borrower confirm
+        # RECEIVE forward now anchors NCIP ``check_out`` (re-anchored
+        # from SHIP). Compensator stays ledger-only DISPUTED — receipt
+        # disputes are physically un-undoable, staff resolves the loan
+        # state manually (see flows.py § RECEIVE comment block).
+        forward_has_outbox=True,
         comp_has_outbox=False,
         extras_seed=(("reshare_id", "rs-prop-1"),),
     ),

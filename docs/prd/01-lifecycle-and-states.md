@@ -1,6 +1,6 @@
 # PRD 01 — Lifecycle & State Machine
 
-> Last reviewed against code: 2026-05-03 (post state-aware SHIP-comp NCIP rollback).
+> Last reviewed against code: 2026-05-03 (post NCIP-checkout SHIP→RECEIVE re-anchor).
 
 ## Lifecycle
 
@@ -49,7 +49,7 @@ lands in the follow-up PR.
 | Submit  | `Cancelled`             | Mark withdrawn before any peer contacted (ledger-only). |
 | Route   | `Submitted`             | Revert routing; saga returns to Submitted for re-rank (ledger-only). |
 | Approve | `Cancelled` (terminal)  | Enqueue `cancel_request` outbox intent → mod-rs cancel. |
-| Ship    | `Disputed`              | Enqueue `recall_request` outbox intent **plus** a state-aware NCIP `check_in` rollback (key suffix `:ncip-rollback`) when the comp fires from `SHIPPED`. Skips the `check_in` from `RECEIVED` (patron physically holds the item — the eventual return flow owns the `check_in`). NB: `HttpReShareClient.recall_request` raises today (mod-rs has no first-class recall); surfaces as a `dead_letter` row for staff. |
+| Ship    | `Disputed`              | Enqueue a single `recall_request` outbox intent. Both branches (saga at `SHIPPED` or post-`RECEIVED`) emit only the recall — the NCIP `check_out` re-anchor moved ILS-loan opening to RECEIVE forward, so at `SHIPPED` no loan exists to clear and at `RECEIVED` the patron physically holds the book (loan correctly reflects custody; the eventual return flow owns `check_in`). The `current_state` branch survives only as state-aware rationale text. NB: `HttpReShareClient.recall_request` raises today (mod-rs has no first-class recall); surfaces as a `dead_letter` row for staff. |
 | Receive | `Disputed`              | Receipt is physical — un-undoable. Records the contradiction and routes to staff reconciliation (ledger-only). |
 | Return  | `Disputed`              | Open manual reconciliation case (ledger-only). |
 

@@ -143,20 +143,23 @@ async def test_happy_path_full_lifecycle(session: AsyncSession) -> None:
     extras["reshare_id"] = approve_obs.payload["reshare_id"]
     item_id = extras["reshare_id"]  # NCIP item_id approximation per flows.py
 
-    # SHIP — forward fans out to two intents (reshare confirm_shipment +
-    # ncip check_out). Drain so both land on their respective clients.
+    # SHIP — single intent (reshare confirm_shipment) post NCIP-checkout
+    # re-anchor; ``check_out`` moved to RECEIVE forward. Drain so the
+    # reshare row lands on the mock client.
     await _gate_and_run(session, registry, saga_id, request, StepName.SHIP, extras)
     await _drain_with_projection(session, reshare, ncip)
 
-    # RECEIVE — pure ledger write (no outbox), borrower confirms physical
-    # receipt. State -> RECEIVED. Forward carries reshare_id forward.
+    # RECEIVE — borrower confirms physical receipt; state -> RECEIVED.
+    # Single outbox intent: NCIP ``check_out`` against the borrower's
+    # ILS (re-anchored from SHIP). Forward carries reshare_id forward.
     receive_forward = await _gate_and_run(
         session, registry, saga_id, request, StepName.RECEIVE, extras
     )
     assert receive_forward.state_after == LifecycleState.RECEIVED
     assert receive_forward.payload["reshare_id"] == item_id
+    await _drain_with_projection(session, reshare, ncip)
 
-    # RETURN — same fan-out (confirm_return + check_in).
+    # RETURN — fans out to two intents (confirm_return + check_in).
     await _gate_and_run(
         session, registry, saga_id, request, StepName.RETURN_ITEM, extras
     )
@@ -185,7 +188,13 @@ async def test_happy_path_full_lifecycle(session: AsyncSession) -> None:
         f"statuses={[r.status for r in outbox_rows]}"
     )
     targets = sorted(r.target for r in outbox_rows)
-    # APPROVE: 1 reshare. SHIP: 1 reshare + 1 ncip. RETURN: 1 reshare + 1 ncip.
+    # Post NCIP-checkout-re-anchor (SHIP→RECEIVE):
+    #   APPROVE: 1 reshare (send_request)
+    #   SHIP:    1 reshare (confirm_shipment)
+    #   RECEIVE: 1 ncip    (check_out — re-anchored here from SHIP)
+    #   RETURN:  1 reshare (confirm_return) + 1 ncip (check_in)
+    # Total: 3 reshare + 2 ncip — unchanged from pre-re-anchor; only
+    # the step that emits NCIP ``check_out`` moved.
     assert targets == ["ncip", "ncip", "reshare", "reshare", "reshare"], (
         f"expected 3 reshare + 2 ncip rows, got {targets}"
     )
@@ -314,7 +323,15 @@ async def test_receive_forward_blocked_without_committed_gate(
 
 @pytest.mark.asyncio
 async def test_receive_forward_advances_to_received(session: AsyncSession) -> None:
-    """RECEIVE forward is a pure ledger write — no outbox, state -> RECEIVED."""
+    """RECEIVE forward advances to RECEIVED and enqueues NCIP check_out.
+
+    Post NCIP-checkout-re-anchor (SHIP→RECEIVE): the borrower-side ILS
+    ``check_out`` is dispatched on physical-receipt confirmation, not
+    on supplier-shipped. The forward returns one ``target='ncip'``
+    intent; the worker delivers it asynchronously. ``item_id`` is the
+    ``reshare_id`` per the documented prototype approximation
+    (IllRequest has no real ILS barcode column today).
+    """
     saga_id = uuid4()
     request = _build_request()
     reshare = MockReShareClient()
@@ -341,18 +358,33 @@ async def test_receive_forward_advances_to_received(session: AsyncSession) -> No
     assert forward.state_after == LifecycleState.RECEIVED
     assert forward.payload["reshare_id"] == "rs-receive-1"
 
-    # Pure ledger write — no outbox row.
     async with session.begin():
         rows = (
             (
                 await session.execute(
-                    select(OutboxRow).where(OutboxRow.saga_id == saga_id)
+                    select(OutboxRow)
+                    .where(OutboxRow.saga_id == saga_id)
+                    .order_by(OutboxRow.id)
                 )
             )
             .scalars()
             .all()
         )
-    assert rows == [], "RECEIVE forward must not enqueue any outbox row"
+    assert len(rows) == 1, (
+        "RECEIVE forward must enqueue exactly one NCIP check_out intent"
+    )
+    row = rows[0]
+    assert row.target == "ncip"
+    assert row.payload == {
+        "action": "check_out",
+        "args": {"item_id": "rs-receive-1", "patron_id": request.patron.patron_id},
+    }
+    assert row.idempotency_key.endswith(":ncip"), (
+        "NCIP row must use the :ncip idempotency-key suffix convention "
+        "(matches RETURN forward; preserves room for a future reshare "
+        "intent on RECEIVE without colliding)"
+    )
+    assert row.status == "pending"
 
 
 @pytest.mark.asyncio
@@ -401,18 +433,21 @@ async def test_receive_compensator_lands_in_disputed(session: AsyncSession) -> N
 
 
 @pytest.mark.asyncio
-async def test_ship_compensator_from_shipped_emits_ncip_check_in(
+async def test_ship_compensator_from_shipped_emits_recall_only(
     session: AsyncSession,
 ) -> None:
-    """SHIP comp from SHIPPED state emits both reshare recall and NCIP check_in.
+    """SHIP comp from SHIPPED state emits the reshare recall only.
 
-    Today's SHIP forward fans NCIP ``check_out`` out at supplier-shipped
-    (not borrower-receipt). When the compensator runs while the saga is
-    still at SHIPPED — i.e. the patron never physically received the
-    item — the ILS record is a false positive that the compensator
-    must clear by emitting a ``check_in`` rollback. Idempotency key
-    suffix ``:ncip-rollback`` keeps it disjoint from the SHIP forward's
-    ``:ncip`` row (outbox UNIQUE is global per ADR-0011).
+    Post NCIP-checkout-re-anchor (SHIP→RECEIVE): when the compensator
+    runs while the saga is still at SHIPPED, the RECEIVE forward
+    never ran, so no ILS ``check_out`` was dispatched. There is no
+    loan to roll back. The compensator's only job is to enqueue the
+    consortium-side recall — a single ``target='reshare'`` intent.
+
+    Contrast with the pre-re-anchor state-aware logic (PR #37) where
+    SHIP comp at SHIPPED emitted both recall + check_in-rollback to
+    clear the false ILS loan opened by SHIP forward. The re-anchor
+    obsoleted that branch — see ``docs/lessons.md`` § Saga / ledger.
     """
     saga_id = uuid4()
     request = _build_request()
@@ -429,7 +464,7 @@ async def test_ship_compensator_from_shipped_emits_ncip_check_in(
         )
 
     # SHIP forward → SHIPPED. Skip outbox drain so the SHIP forward's
-    # rows stay pending — we only count the compensator's emissions.
+    # row stays pending — we only count the compensator's emissions.
     await _gate_and_run(
         session,
         registry,
@@ -440,8 +475,8 @@ async def test_ship_compensator_from_shipped_emits_ncip_check_in(
         from_state=LifecycleState.APPROVED,
     )
 
-    # Snapshot pre-comp outbox row count (SHIP forward enqueued 2:
-    # reshare confirm_shipment + ncip check_out).
+    # Snapshot pre-comp outbox row count (SHIP forward enqueued 1:
+    # reshare confirm_shipment).
     async with session.begin():
         before = (
             (
@@ -452,10 +487,12 @@ async def test_ship_compensator_from_shipped_emits_ncip_check_in(
             .scalars()
             .all()
         )
-    assert len(before) == 2
+    assert len(before) == 1, (
+        "SHIP forward should enqueue exactly one row (reshare "
+        "confirm_shipment) post NCIP-checkout-re-anchor"
+    )
 
-    # Run SHIP compensator with current_state=SHIPPED — patron never
-    # physically had the item, so ILS rollback is warranted.
+    # Run SHIP compensator with current_state=SHIPPED.
     async with session.begin():
         coord = Coordinator(session=session, registry=registry)
         ctx = SagaContext(
@@ -485,33 +522,31 @@ async def test_ship_compensator_from_shipped_emits_ncip_check_in(
     assert saga.current_state == LifecycleState.DISPUTED.value
 
     new_rows = rows[len(before):]
-    assert len(new_rows) == 2, (
-        f"SHIP comp from SHIPPED must emit 2 outbox rows "
-        f"(reshare recall + ncip check_in-rollback); got {len(new_rows)}"
+    assert len(new_rows) == 1, (
+        f"SHIP comp from SHIPPED must emit only the reshare recall "
+        f"(no NCIP rollback — no ILS loan exists at this point); "
+        f"got {len(new_rows)} rows"
     )
-    actions = sorted(r.payload["action"] for r in new_rows)
-    assert actions == ["check_in", "recall_request"]
-    targets = sorted(r.target for r in new_rows)
-    assert targets == ["ncip", "reshare"]
-    ncip_rollback = next(r for r in new_rows if r.target == "ncip")
-    assert ncip_rollback.idempotency_key.endswith(":ncip-rollback"), (
-        "rollback row must use :ncip-rollback suffix to avoid colliding "
-        "with the SHIP forward's :ncip check_out row"
-    )
-    assert ncip_rollback.payload["args"]["item_id"] == "rs-ship-1"
+    assert new_rows[0].target == "reshare"
+    assert new_rows[0].payload["action"] == "recall_request"
+    assert new_rows[0].payload["args"]["reshare_id"] == "rs-ship-1"
 
 
 @pytest.mark.asyncio
-async def test_ship_compensator_from_received_skips_ncip_check_in(
+async def test_ship_compensator_from_received_emits_recall_only(
     session: AsyncSession,
 ) -> None:
-    """SHIP comp from RECEIVED state skips the NCIP check_in rollback.
+    """SHIP comp from RECEIVED state also emits the reshare recall only.
 
-    Once the patron has physically received the item (saga at RECEIVED),
-    the ILS loan is correct as a record of current custody. Issuing a
-    compensating ``check_in`` would lie to the ILS while the patron
-    still holds the book; a real return flow is responsible for the
-    eventual check_in. Compensator emits the reshare recall only.
+    The patron physically holds the book, so the ILS loan opened by
+    RECEIVE forward correctly reflects current custody. Issuing a
+    compensating ``check_in`` would lie to the ILS — the eventual
+    return flow (or a manual reconciliation case) owns the real
+    ``check_in``. Compensator emits the reshare recall only.
+
+    Both SHIP-comp branches converge on "just recall" post-re-anchor;
+    the ``current_state`` check survives only as state-aware
+    rationale text on the StepResult.
     """
     saga_id = uuid4()
     request = _build_request()
@@ -527,7 +562,7 @@ async def test_ship_compensator_from_received_skips_ncip_check_in(
             initial_state=LifecycleState.APPROVED,
         )
 
-    # SHIP forward → SHIPPED.
+    # SHIP forward → SHIPPED (1 outbox row: reshare confirm_shipment).
     await _gate_and_run(
         session,
         registry,
@@ -538,7 +573,7 @@ async def test_ship_compensator_from_received_skips_ncip_check_in(
         from_state=LifecycleState.APPROVED,
     )
 
-    # RECEIVE forward → RECEIVED. Pure ledger write; no outbox.
+    # RECEIVE forward → RECEIVED (1 outbox row: ncip check_out).
     await _gate_and_run(
         session,
         registry,
@@ -559,10 +594,11 @@ async def test_ship_compensator_from_received_skips_ncip_check_in(
             .scalars()
             .all()
         )
-    assert len(before) == 2  # SHIP fwd's two rows; RECEIVE fwd has none.
+    assert len(before) == 2, (
+        "expected SHIP forward (1 reshare) + RECEIVE forward (1 ncip)"
+    )
 
-    # Run SHIP compensator with current_state=RECEIVED — patron is
-    # holding the item, so ILS rollback would lie about custody.
+    # Run SHIP compensator with current_state=RECEIVED.
     async with session.begin():
         coord = Coordinator(session=session, registry=registry)
         ctx = SagaContext(
@@ -594,10 +630,12 @@ async def test_ship_compensator_from_received_skips_ncip_check_in(
     new_rows = rows[len(before):]
     assert len(new_rows) == 1, (
         f"SHIP comp from RECEIVED must emit only the reshare recall "
-        f"(no NCIP rollback); got {len(new_rows)} rows"
+        f"(no NCIP rollback — the ILS loan correctly reflects custody "
+        f"and the return flow owns check_in); got {len(new_rows)} rows"
     )
     assert new_rows[0].target == "reshare"
     assert new_rows[0].payload["action"] == "recall_request"
+    assert new_rows[0].payload["args"]["reshare_id"] == "rs-ship-2"
 
 
 async def _drain_with_projection(
@@ -867,7 +905,15 @@ async def test_approve_projection_is_replay_safe(session: AsyncSession) -> None:
 
 @pytest.mark.asyncio
 async def test_ship_forward_enqueues_outbox_row(session: AsyncSession) -> None:
-    """SHIP forward returns an OutboxIntent; coordinator must enqueue it."""
+    """SHIP forward returns a single OutboxIntent; coordinator must enqueue it.
+
+    Post NCIP-checkout-re-anchor (SHIP→RECEIVE), SHIP forward emits
+    only the ReShare ``confirm_shipment`` intent — the borrower-side
+    NCIP ``check_out`` is now anchored on RECEIVE forward, so the
+    patron's ILS record reflects the loan from physical-receipt
+    rather than supplier-shipment. Row stays pending; the worker has
+    not run so the mock client has not received the call.
+    """
     saga_id = uuid4()
     request = _build_request()
     reshare = MockReShareClient()
@@ -893,10 +939,6 @@ async def test_ship_forward_enqueues_outbox_row(session: AsyncSession) -> None:
         from_state=LifecycleState.APPROVED,
     )
 
-    # SHIP forward emits two intents: ReShare confirm_shipment for the
-    # consortium peer, and NCIP check_out against the borrower's local
-    # ILS. Both rows pending; the worker has not run, so neither client
-    # has received the call.
     async with session.begin():
         rows = (
             (
@@ -909,24 +951,17 @@ async def test_ship_forward_enqueues_outbox_row(session: AsyncSession) -> None:
             .scalars()
             .all()
         )
-    assert len(rows) == 2
-    by_target = {r.target: r for r in rows}
-    assert set(by_target) == {"reshare", "ncip"}
-    assert all(r.status == "pending" for r in rows)
-    assert by_target["reshare"].payload == {
+    assert len(rows) == 1, (
+        "SHIP forward should enqueue exactly one row (reshare "
+        "confirm_shipment) post NCIP-checkout-re-anchor"
+    )
+    row = rows[0]
+    assert row.target == "reshare"
+    assert row.status == "pending"
+    assert row.payload == {
         "action": "confirm_shipment",
         "args": {"reshare_id": "rs-test-1"},
     }
-    assert by_target["ncip"].payload == {
-        "action": "check_out",
-        "args": {"item_id": "rs-test-1", "patron_id": request.patron.patron_id},
-    }
-    # idempotency keys must differ across targets (UNIQUE constraint).
-    assert (
-        by_target["reshare"].idempotency_key
-        != by_target["ncip"].idempotency_key
-    )
-    assert by_target["ncip"].idempotency_key.endswith(":ncip")
 
 
 @pytest.mark.asyncio
@@ -992,6 +1027,9 @@ async def test_replayed_forward_does_not_double_enqueue(session: AsyncSession) -
             .scalars()
             .all()
         )
-    # SHIP emits two intents (reshare + ncip); replay must not double either.
-    assert len(rows) == 2, "replayed forward must not enqueue duplicate outbox rows"
-    assert {r.target for r in rows} == {"reshare", "ncip"}
+    # Post NCIP-checkout-re-anchor (SHIP→RECEIVE), SHIP emits a
+    # single ReShare ``confirm_shipment`` intent. Replay must not
+    # double-enqueue.
+    assert len(rows) == 1, "replayed forward must not enqueue duplicate outbox rows"
+    assert rows[0].target == "reshare"
+    assert rows[0].payload["action"] == "confirm_shipment"

@@ -125,35 +125,53 @@ ISO 18626 message types — see table in `clients/reshare.py`.
   backlog #9 PR-C / PR-D. mod-rs does not honour `Idempotency-Key`
   — replay-safety lives in the saga ledger's UNIQUE constraint,
   not the wire.
-- NCIP fan-out is wired on SHIP and RETURN forwards (fire-and-forget,
-  borrower-side ILS): `ship_forward` emits a second `target="ncip"`
-  intent for `check_out`, `return_forward` emits one for `check_in`.
-  NCIP outcomes do **not** gate saga state — failure surfaces as a
-  stuck outbox row for staff review, the saga continues. The two
-  intents per step share a base `ctx.idempotency_key`; the NCIP row
-  is suffixed `:ncip` because `outbox.idempotency_key` is UNIQUE
-  across all targets (see `saga/db.py`). Approximations documented
-  in `saga/flows.py` SHIP comment block: (a) `item_id = reshare_id`
-  because IllRequest has no real ILS barcode today; (b) `check_out`
-  fires on supplier-shipped (NCIP fan-out **still anchored on SHIP**
-  even though `LifecycleState.RECEIVED` now exists). Re-anchoring NCIP
-  `check_out` from SHIP to RECEIVE is intentionally a separate PR — it
-  changes circulation timing (patron record reflects the loan only
-  after physical receipt rather than supplier shipment) and warrants
-  its own validation. Compensator-side NCIP rollback is **wired and
-  state-aware**: SHIP compensator inspects `ctx.current_state` and
-  emits a paired NCIP `check_in` (idempotency-key suffix
-  `:ncip-rollback`) only when the saga is at `SHIPPED` (patron never
-  physically received the item, so the ILS loan is a false positive
-  that needs clearing). From `RECEIVED` (or any post-receipt state)
-  the compensator skips `check_in` because the patron physically
-  holds the book — clearing the ILS loan would lie about custody;
-  the eventual return flow owns that `check_in`. RECEIVE itself has
-  no compensator-side NCIP work (it's a pure ledger-write step;
-  receipt is physically un-undoable, so its compensator records the
-  contradiction and routes to staff via `Disputed`). The NCIP
-  HTTP/SOAP client itself remains a mock — `MockNcipClient` for
-  prototype/tests; real `mod-ncip` integration is still future work.
+- NCIP fan-out is wired on RECEIVE and RETURN forwards
+  (fire-and-forget, borrower-side ILS): `receive_forward` emits a
+  `target="ncip"` `check_out` intent (re-anchored from SHIP — see
+  below), `return_forward` emits a `check_in` intent paired with its
+  reshare `confirm_return`. NCIP outcomes do **not** gate saga state
+  — failure surfaces as a stuck outbox row for staff review, the
+  saga continues. The NCIP row uses idempotency-key suffix `:ncip`
+  on `ctx.idempotency_key` because `outbox.idempotency_key` is
+  UNIQUE across all targets (see `saga/db.py`); RETURN's two intents
+  share a base key with the reshare row taking the bare key and the
+  NCIP row taking the suffix, RECEIVE's single NCIP intent uses the
+  same suffix for convention. Approximations documented in
+  `saga/flows.py` RECEIVE comment block: `item_id = reshare_id`
+  because IllRequest has no real ILS barcode today.
+  - **NCIP `check_out` is anchored on RECEIVE forward** (re-anchored
+    from SHIP). Anchoring at borrower-receipt rather than
+    supplier-shipment is the correct circulation-timing model: the
+    patron's ILS record reflects the loan from the moment they
+    physically take custody, not from supplier shipment. Trade-off:
+    a saga whose patron never confirms receipt will never have a
+    `check_out` dispatched; staff intervention or a future
+    TrackingAgent tier-3 watch handles that gap. `due_at` still
+    anchors to `shipped_at` (loan-period clock is a supplier-side
+    commitment that starts at shipment, and an unconfirmed-receipt
+    saga still needs an overdue threshold).
+  - **SHIP compensator emits a single ReShare `recall_request`** in
+    either branch (saga at SHIPPED or post-RECEIVE). The
+    `current_state` check survives only as state-aware rationale
+    text; functionally both branches enqueue the same recall. At
+    SHIPPED no ILS loan was ever opened (RECEIVE forward never
+    ran), at RECEIVED the patron physically holds the book so the
+    loan correctly reflects current custody and the eventual return
+    flow owns `check_in`. The earlier state-aware NCIP rollback
+    (PR #37, idempotency-key suffix `:ncip-rollback`) compensated
+    for an upstream design tension that the re-anchor removed —
+    see `docs/lessons.md` § Saga / ledger.
+  - **RECEIVE compensator stays ledger-only DISPUTED.** The forward
+    now opens an ILS loan via `check_out`, but the compensator
+    deliberately does *not* emit a paired `check_in` — the saga
+    can't tell whether a receipt dispute is about non-receipt (loan
+    should clear) or condition (loan should stay). Routes to
+    DISPUTED for staff resolution; a future PR may add a
+    state-aware compensator (or a `/sagas/{id}/override` endpoint)
+    once the staff console surfaces the necessary inputs.
+  - The NCIP HTTP/SOAP client itself remains a mock —
+    `MockNcipClient` for prototype/tests; real `mod-ncip`
+    integration is still future work.
 - TrackingAgent: `OverdueScanner.run_forever` now runs as a background
   task spawned from the FastAPI lifespan (asyncio task name
   `agora.tracking.scanner`; module is `agora.agents.tracking`),
