@@ -125,6 +125,21 @@ ISO 18626 message types — see table in `clients/reshare.py`.
   backlog #9 PR-C / PR-D. mod-rs does not honour `Idempotency-Key`
   — replay-safety lives in the saga ledger's UNIQUE constraint,
   not the wire.
+- RoutingAgent uses a deterministic rules-only weighted-sum today
+  (no LLM call). PR-1 of the LLM track shipped only the eval harness
+  + ADR-0014 — `src/agora/evals/routing.py` scores any
+  `RoutingAgent`-shaped object against
+  `evals/routing/scenarios.json` (20 hand-labeled scenarios) on
+  top-1 accuracy + mean Spearman. Committed rules-baseline floor in
+  `evals/routing/baseline.json`: top-1 **0.8000**, mean Spearman
+  **0.5556**. PR-2 (LLM tie-breaker prompt + ADK call + ε threshold +
+  fallback) MUST meet or exceed both numbers before merging — see
+  ADR-0014 for the gating policy. Four scenarios in the set
+  (`routing-013..016`) are deliberate rules-baseline misses encoding
+  metadata-only signals (SLA tier, reciprocity, format affinity,
+  on-time reliability) — that's the surface area the LLM is hired
+  to decide. Run via `make eval-routing` (NOT part of `triple-gate`
+  CI yet — PR-2 will add the regression hook).
 - DiscoveryAgent has CrossRef + SRU client factories
   (`agora.clients.crossref.get_crossref_client`,
   `agora.clients.sru.get_sru_client`) gated on
