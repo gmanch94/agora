@@ -2,8 +2,8 @@
 
 > Last reviewed against code: 2026-05-03 (post tier-2 recall-proposed
 > + tier-3 receipt-unconfirmed scanner emissions and FastAPI-lifespan
-> wiring; CrossRef client landed PR-A, agent integration queued
-> PR-B).
+> wiring; CrossRef integration shipped — PR-A client + PR-B
+> DiscoveryAgent fan-out).
 
 All agents are **advisory** in the prototype: they emit a recommendation
 + reasoning trace into the staff console. Staff commit by clicking
@@ -22,9 +22,16 @@ item + holder list.
 - SRU client (LoC). Implemented (`src/agora/clients/sru.py`).
 - OpenURL parser. Implemented (`src/agora/clients/openurl.py`, KEV only).
 - CrossRef client (DOI → bibliographic identity). Implemented
-  (`src/agora/clients/crossref.py`, PR-A) but not yet wired into
-  `DiscoveryAgent.run`; PR-B fans out the agent to both clients
-  with merge-rank.
+  (`src/agora/clients/crossref.py`, PR-A) AND wired into
+  `DiscoveryAgent.run` (PR-B). When the patron supplies a DOI and
+  a CrossRef client is configured, the agent confirms identity via
+  CrossRef and seeds the SRU search with the confirmed ISBN/ISSN
+  (CrossRef-confirmed values take precedence over the request's
+  own — patron typos for DOI-paste flows). CrossRef hiccups (404 /
+  5xx / network) downgrade to diagnostics; SRU still runs against
+  the request's own identifiers. Sequential pipeline — there is no
+  candidate-list merge because CrossRef returns no holdings. See
+  PRD-04 for the full flow.
 
 **Tools (planned, not yet wired):**
 - WorldCat sandbox (OCLC# → holdings), consortium-union SRU.
