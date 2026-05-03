@@ -92,12 +92,12 @@ the registered step function. No internal state machine, no implicit
 transitions. One method per concern: `open_gate`, `commit_gate`,
 `run_forward`, `run_compensator`, `record_observation`.
 
-**Outbox commit-then-enqueue.** ADR-0011. Every wire-touching step
-(except APPROVE forward — see § 5.3) writes its `OutboxIntent` rows
-in the *same* transaction as the ledger event that produced them.
-The `OutboxWorker` drains rows asynchronously. Replay-safety lives
-in two `UNIQUE` constraints: `saga_event.idempotency_key` and
-`outbox.idempotency_key`.
+**Outbox commit-then-enqueue.** ADR-0011 (extended by ADR-0012 to
+cover APPROVE — see § 5.3). Every wire-touching step writes its
+`OutboxIntent` rows in the *same* transaction as the ledger event
+that produced them. The `OutboxWorker` drains rows asynchronously.
+Replay-safety lives in two `UNIQUE` constraints:
+`saga_event.idempotency_key` and `outbox.idempotency_key`.
 
 ---
 
@@ -214,14 +214,15 @@ inbox                     # webhook dedup
 outbox                    # outbound delivery queue
 ├── id                    BIGINT PK
 ├── saga_id               UUID
-├── target                VARCHAR(64)            # reshare | (future: ncip, ...)
+├── target                VARCHAR(64)            # reshare | ncip
 ├── idempotency_key       VARCHAR(64)  UNIQUE
 ├── payload               JSONB
-├── status                VARCHAR(16)            # pending | delivered | dead_letter
+├── status                VARCHAR(16)            # pending | in_flight | delivered | dead_letter
 ├── attempts              INT
 ├── last_error            VARCHAR(2048)
 ├── scheduled_for         TIMESTAMPTZ
 ├── delivered_at          TIMESTAMPTZ NULL
+├── claimed_at            TIMESTAMPTZ NULL       # multi-worker lease (PR #25)
 ```
 
 ### 4.2 The two UNIQUE constraints that do all the work
@@ -314,16 +315,22 @@ Example: APPROVE compensator transitions `approved → cancelled` and
 enqueues an `outbox(cancel_request)` row. Worker drains; mod-rs gets
 the cancel.
 
-### 5.3 The APPROVE-forward exception
+### 5.3 APPROVE through the outbox (via `APPROVING`)
 
-ADR-0011 migrated every wire-touching step to outbox **except APPROVE
-forward**. APPROVE still calls `tx.submit_to_supplier()` inline
-because the saga ledger needs the returned `reshare_id` stamped onto
-the FORWARD event payload — SHIP and RETURN forwards read it back
-via `_derive_extras` in `api/app.py`. Migration to full outbox needs
-either (a) an `APPROVING` intermediate state, or (b) teaching
-`_derive_extras` to read a worker-written observation event. Future
-ADR. Tracked in `CLAUDE.md` known-gaps.
+ADR-0012 closed the APPROVE-inline gap (PR #17). APPROVE forward is
+now pure: it returns an `OutboxIntent` for `send_request` and
+advances the saga to `LifecycleState.APPROVING`. The outbox worker
+drains the row, calls the supplier, and the projection callback
+(`make_reshare_on_success`) writes an OBSERVATION carrying
+`reshare_id` that advances the saga to `APPROVED`. Downstream
+SHIP/RETURN consume `reshare_id` via `_derive_extras`, which now
+reads APPROVE OBSERVATION events as well as FORWARD events. The
+projection runs **inside the same session** as
+`outbox_mark_delivered`, so the OBSERVATION write and the delivered
+flag commit atomically; a failed projection re-queues the row for
+retry without leaving the saga half-advanced. Hitting `/compensate`
+during the APPROVING window (supplier ack still pending) returns
+400 — there is no `reshare_id` to cancel against.
 
 ---
 
@@ -419,10 +426,11 @@ method call against the ledger.
 
 ### 8.3 Inline wire calls (no outbox)
 
-Rejected (ADR-0011) for every step except APPROVE forward (see
-§ 5.3). Inline calls couple wire failures to the saga's transactional
-boundary: a flaky ReShare could roll back the ledger event that
-already represented a real-world commitment. Outbox decouples them.
+Rejected (ADR-0011, extended by ADR-0012 to cover APPROVE — see
+§ 5.3). Inline calls couple wire failures to the saga's
+transactional boundary: a flaky ReShare could roll back the ledger
+event that already represented a real-world commitment. Outbox
+decouples them.
 
 ### 8.4 LangGraph / LlamaIndex agent framework
 

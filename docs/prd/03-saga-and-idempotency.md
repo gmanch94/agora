@@ -121,24 +121,26 @@ CREATE TABLE inbox (
 
 ### Outbox pattern (outbound) — commit-then-enqueue
 
-Every wire-touching saga step (except APPROVE forward — see § APPROVE
-exception below) returns one or more `OutboxIntent` rows on its
-`StepResult`. The coordinator writes the `saga_event` row **and**
-the outbox rows in the same DB transaction (see ADR-0011). The
-outbox worker drains them onto the wire asynchronously.
+Every wire-touching saga step returns one or more `OutboxIntent`
+rows on its `StepResult`. The coordinator writes the `saga_event`
+row **and** the outbox rows in the same DB transaction (see
+ADR-0011, extended by ADR-0012 to cover APPROVE — see § APPROVE
+through outbox below). The outbox worker drains them onto the wire
+asynchronously.
 
 ```sql
 CREATE TABLE outbox (
     id              BIGINT PRIMARY KEY,           -- _bigint_pk()
     saga_id         UUID NOT NULL,
-    target          VARCHAR(64) NOT NULL,         -- 'reshare' | (future) 'ncip'
+    target          VARCHAR(64) NOT NULL,         -- 'reshare' | 'ncip'
     idempotency_key VARCHAR(64) NOT NULL UNIQUE,
     payload         JSONB NOT NULL,
-    status          VARCHAR(16) NOT NULL,         -- 'pending' | 'delivered' | 'dead_letter'
+    status          VARCHAR(16) NOT NULL,         -- 'pending' | 'in_flight' | 'delivered' | 'dead_letter'
     attempts        INT NOT NULL DEFAULT 0,
     last_error      VARCHAR(2048),
     scheduled_for   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    delivered_at    TIMESTAMPTZ
+    delivered_at    TIMESTAMPTZ,
+    claimed_at      TIMESTAMPTZ                   -- multi-worker lease (PR #25)
 );
 ```
 
@@ -154,19 +156,32 @@ at `AGORA_OUTBOX_POLL_INTERVAL_SECS` (default 1.0s) and cancelled
 on shutdown. Disable with `AGORA_OUTBOX_WORKER_ENABLED=0`. Backoff
 is exponential (`base_backoff_secs=60`, `2**attempts`) and rows that
 hit `OUTBOX_RETRY_MAX_ATTEMPTS` (default 10) are flipped to
-`dead_letter` for staff triage. **Single-drainer-per-DB assumption**
-— no row-level lock today; multi-worker safety needs
-`SELECT … FOR UPDATE SKIP LOCKED` (Postgres-only).
+`dead_letter` for staff triage. **Multi-worker safe on Postgres
+via `outbox_claim`** (PR #25): `SELECT ... FOR UPDATE SKIP LOCKED`
+acquires disjoint row sets, flips claimed rows to
+`status='in_flight'` with `claimed_at=now()`, and commits.
+Orphan recovery sweeps `in_flight` rows whose `claimed_at` is older
+than `claim_lease_secs` (default 600s) back to `pending`. The
+`with_for_update` hint is only emitted on Postgres; SQLite
+serializes writers naturally. Verified by
+`tests/test_outbox_concurrent_postgres.py`.
 
-### APPROVE forward — the inline exception
+### APPROVE through the outbox (via `APPROVING`)
 
-APPROVE forward still calls `TransactionAgent.submit_to_supplier`
-inline because the saga ledger needs the returned `reshare_id`
-stamped onto its forward-event payload — SHIP and RETURN forwards
-read it back via `_derive_extras` in `api/app.py`. Migrating APPROVE
-to full outbox needs either an `APPROVING` intermediate state or a
-worker-written observation event. Future ADR. Tracked in
-`CLAUDE.md` known-gaps.
+ADR-0012 closed the APPROVE-inline gap (PR #17). APPROVE forward is
+now pure: it returns an `OutboxIntent` for `send_request` and
+advances the saga to `LifecycleState.APPROVING`. The outbox worker
+drains the row, calls the supplier, and the projection callback
+(`make_reshare_on_success`) writes an OBSERVATION carrying
+`reshare_id` that advances the saga to `APPROVED`. Downstream
+SHIP/RETURN consume `reshare_id` via `_derive_extras` in
+`api/app.py`, which now reads APPROVE OBSERVATION events as well
+as FORWARD events. The projection runs **inside the same session**
+as `outbox_mark_delivered`, so the OBSERVATION write and the
+delivered flag commit atomically; a failed projection re-queues the
+row for retry without leaving the saga half-advanced. Hitting
+`/compensate` during the APPROVING window (supplier ack still
+pending) returns 400 — there is no `reshare_id` to cancel against.
 
 ## Properties to verify
 
