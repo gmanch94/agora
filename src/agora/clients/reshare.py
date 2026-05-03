@@ -101,6 +101,15 @@ class ReShareClient(Protocol):
 
     async def health(self) -> bool: ...
 
+    async def aclose(self) -> None:
+        """Release any underlying network resources.
+
+        ``HttpReShareClient`` closes its ``httpx.AsyncClient``;
+        ``MockReShareClient`` is a no-op. The FastAPI lifespan calls
+        this on shutdown.
+        """
+        ...
+
 
 class HttpReShareClient:
     """Real HTTP client for FOLIO mod-rs.

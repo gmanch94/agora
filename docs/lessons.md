@@ -126,6 +126,21 @@ human-in-loop invariant without any test failing.
 
 ## Type / lint surface
 
+### 2026-05-03 — pydantic-settings constructor takes ALIASES, not field names
+`Settings(reshare_base_url="x")` returns a Settings object with
+`reshare_base_url == ""` — silently ignored. The field is declared
+`Field(default="", alias="RESHARE_BASE_URL")` and our `model_config`
+sets `extra="ignore"`, so unknown kwargs (the field name) are
+discarded without error. Only the alias works:
+`Settings(RESHARE_BASE_URL="x")`. Tests that construct `Settings`
+directly must use the alias form. Caught while writing the
+`OkapiAuth` integration tests — a quick repl check (`s = Settings(
+reshare_base_url="x"); print(s.reshare_base_url)`) showed the empty
+default coming through. Either add `populate_by_name=True` to
+`model_config` (allows both forms) or always use the alias; for now
+we use the alias because it matches how env vars look in CI logs.
+*(PR #34 — `tests/test_okapi_auth.py::test_reshare_client_picks_okapi_when_url_set`.)*
+
 ### 2026-04-29 — `# type: ignore` markers go stale
 mypy got smarter (or a Protocol got tightened, or an attribute became
 public) and several `# type: ignore[arg-type]` markers on
@@ -157,6 +172,22 @@ merges can't repeat the trick.
 ---
 
 ## Workflow / process
+
+### 2026-05-03 — Verify your concurrency tests actually exercise the lock
+PR #34 added `OkapiAuth` with an `asyncio.Lock` around token
+acquisition + a test asserting "5 parallel requests = 1 login."
+The test passed. But a single-threaded asyncio scheduler can pass
+that assertion *without* the lock under some scheduling — if the
+first task completes login + assigns `self._token` before any
+sibling task even reaches the lock-acquire, the double-checked
+cache hides the bug. Forced contention by adding `await
+asyncio.sleep(0)` inside the login handler, then sanity-verified
+the test by removing the lock from a copy of the auth flow and
+re-running: 5 logins instead of 1. The test catches the
+regression. **Rule:** for any concurrency test, prove the negative
+(temporarily break the primitive) before declaring the positive
+test sound.
+*(PR #34 — `tests/test_okapi_auth.py::test_concurrent_requests_share_single_login`.)*
 
 ### 2026-05-02 — Advisor before substantive work pays for itself
 Two PRs in this session called advisor before writing any code (NCIP

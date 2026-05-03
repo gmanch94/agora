@@ -40,7 +40,8 @@ from agora.api.schemas import (
     SubmitRequestResponse,
 )
 from agora.clients.ncip import MockNcipClient, NcipClient
-from agora.clients.reshare import MockReShareClient, ReShareClient
+from agora.clients.reshare import ReShareClient
+from agora.clients.reshare import get_client as get_reshare_client
 from agora.config import get_settings
 from agora.logging import configure_logging, get_logger
 from agora.models.events import NewSagaEvent, SagaEvent
@@ -236,10 +237,17 @@ def _make_context(
 def create_app() -> FastAPI:
     """Build the FastAPI app. One per process is sufficient.
 
-    The app stashes the saga registry + the underlying ReShare mock on
-    ``app.state`` so request handlers can resolve them via dependency
+    The app stashes the saga registry + the underlying ReShare client
+    on ``app.state`` so request handlers can resolve them via dependency
     without rebuilding closures on every call (which would otherwise
     trip ``StepRegistry.register``'s same-name-different-callable check).
+
+    The ReShare client is selected by :func:`agora.clients.reshare.get_client`
+    based on settings: ``HttpReShareClient`` when ``RESHARE_BASE_URL``
+    is set (with ``OkapiAuth`` if ``OKAPI_URL`` is also set per
+    ADR-0013), otherwise ``MockReShareClient``. The lifespan calls
+    ``aclose()`` on shutdown so the underlying ``httpx.AsyncClient``
+    connection pool is released cleanly.
 
     Startup spawns two background tasks:
     - :class:`OutboxWorker` — polls the ``outbox`` table and dispatches
@@ -255,9 +263,10 @@ def create_app() -> FastAPI:
     configure_logging()
     settings = get_settings()
 
-    # Wire saga step registry. Mock client by default; a future change
-    # can route to ``HttpReShareClient`` when ``settings.reshare_enabled``.
-    reshare = MockReShareClient()
+    # Wire saga step registry. ``get_reshare_client`` honours
+    # ``settings.reshare_enabled`` and returns ``HttpReShareClient``
+    # in production / ``MockReShareClient`` for offline dev + tests.
+    reshare = get_reshare_client()
     # NCIP client is mock-only today (CLAUDE.md known-gap). Constructed
     # here so the handler is wired into the outbox worker once and shares
     # process lifetime with the API.
@@ -339,6 +348,11 @@ def create_app() -> FastAPI:
                 with contextlib.suppress(asyncio.CancelledError):
                     await scanner_task
                 log.info("api.tracking_scanner.stopped")
+            # Release the ReShare client's connection pool. ``aclose``
+            # is a no-op on the mock; on ``HttpReShareClient`` it
+            # closes the underlying ``httpx.AsyncClient``.
+            await reshare.aclose()
+            log.info("api.reshare_client.closed")
 
     app = FastAPI(
         title="Agora ILL",
