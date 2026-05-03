@@ -201,12 +201,13 @@ Operational:
     the system `PATH`).
   * The `safety` scanner branch was dropped — the package is unmaintained
     and `pip-audit` covers the same vulnerability database.
-  * Known limitation: the detect-secrets call runs raw `scan` and does
-    NOT diff against `.secrets.baseline`, so it lists everything in the
-    baseline as a "finding." Use `make audit` (or the
-    `detect-secrets-hook --baseline .secrets.baseline` invocation in
-    CI) for the gate-clean answer; the bundled script is a fast
-    "what would a fresh auditor see" view.
+  * `check_secrets` honours `<project>/.secrets.baseline` when present:
+    runs raw `detect-secrets scan`, then post-filters out any finding
+    whose `hashed_secret` is already in the baseline under the same
+    file path. Same effective behaviour as
+    `detect-secrets-hook --baseline .secrets.baseline` / `make audit`.
+    With no baseline file the script reports every secret it finds
+    (the original behaviour).
 
 ## Provenance
 

@@ -1,5 +1,8 @@
 # Agora Runbook
 
+> Last reviewed against code: 2026-05-04 (post PR #30 — outbox
+> schema sync + APPROVE-via-outbox + env-var backfill).
+
 Operational reference for the Agora ILL prototype. Covers bring-up,
 day-to-day operation (outbox, overdue scan, gate workflow), and
 incident triage. Pair with `CLAUDE.md` for invariants and `docs/adr/`

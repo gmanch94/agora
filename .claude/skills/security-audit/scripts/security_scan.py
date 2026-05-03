@@ -115,32 +115,65 @@ def run_pip_audit() -> ScanResult:
 
 
 def check_secrets(project_path: Path) -> ScanResult:
-    """Check for hardcoded secrets."""
+    """Check for hardcoded secrets, filtering against ``.secrets.baseline``.
+
+    Without baseline-filtering the bundled scanner re-reports every entry
+    already audited into the project's baseline as a "finding" — noise
+    that defeats the purpose of having a baseline. We post-process the
+    raw scan output: load ``<project>/.secrets.baseline`` (if present),
+    build a {file_path -> {hashed_secret, ...}} index, and drop any
+    finding whose hash is already there. This matches the behaviour of
+    ``detect-secrets-hook --baseline .secrets.baseline`` as used by
+    ``make audit`` and CI.
+    """
     try:
         result = subprocess.run(  # nosec B603  # fixed argv, no shell
             [sys.executable, "-m", "detect_secrets", "scan", str(project_path)],
             capture_output=True,
             text=True,
         )
-        if result.stdout:
-            data = json.loads(result.stdout)
-            findings = []
-            for file_path, secrets in data.get("results", {}).items():
-                for secret in secrets:
-                    findings.append({
-                        "file": file_path,
-                        "type": secret.get("type"),
-                        "line": secret.get("line_number"),
-                    })
+        if not result.stdout:
             return ScanResult(
                 tool="detect-secrets",
                 success=True,
-                findings=findings,
+                findings=[],
             )
+
+        data = json.loads(result.stdout)
+        scan_results = data.get("results", {})
+
+        # Build the baseline index. If the baseline is absent or
+        # malformed we treat every finding as new — same behaviour as
+        # before, just no longer the only mode.
+        baseline_path = project_path / ".secrets.baseline"
+        baseline_hashes: dict[str, set[str]] = {}
+        if baseline_path.is_file():
+            try:
+                baseline = json.loads(baseline_path.read_text())
+                for fpath, secrets in baseline.get("results", {}).items():
+                    baseline_hashes[fpath] = {
+                        s["hashed_secret"]
+                        for s in secrets
+                        if s.get("hashed_secret")
+                    }
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        findings = []
+        for file_path, secrets in scan_results.items():
+            known = baseline_hashes.get(file_path, set())
+            for secret in secrets:
+                if secret.get("hashed_secret") in known:
+                    continue
+                findings.append({
+                    "file": file_path,
+                    "type": secret.get("type"),
+                    "line": secret.get("line_number"),
+                })
         return ScanResult(
             tool="detect-secrets",
             success=True,
-            findings=[],
+            findings=findings,
         )
     except FileNotFoundError:
         return ScanResult(

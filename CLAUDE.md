@@ -13,10 +13,10 @@ saga compensators paired to every forward step.
 
 ```bash
 # Setup (one-time)
-.venv/Scripts/python.exe -m pip install -e ".[dev]" aiosqlite
+.venv/Scripts/python.exe -m pip install -e ".[dev]"
 
 # Verify
-.venv/Scripts/python.exe -m pytest tests/ -q              # 71 tests
+.venv/Scripts/python.exe -m pytest tests/ -q              # 76 tests (+6 postgres-only)
 .venv/Scripts/python.exe -m ruff check src tests          # lint
 .venv/Scripts/python.exe -m mypy --strict                 # types
 make audit                                                # bandit + pip-audit + detect-secrets
