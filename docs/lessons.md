@@ -13,6 +13,30 @@ an ADR.
 
 ## Saga / ledger
 
+### 2026-05-03 — Adding an independent scanner tier breaks tests that share fixtures
+PR #39 added tier-3 (`receipt-unconfirmed-{saga_id}`) to
+`OverdueScanner` alongside the existing tier-1 (`overdue`) and
+tier-2 (`recall-proposed`) emissions. The seed helper
+`_seed_shipped_saga(due_at=...)` defaults `shipped_at` to
+`due_at - 28 days`, which means almost every existing test has a
+saga shipped well past tier-3's 7-day threshold. Two tests with
+strict assertions (`records == []` and a sorted-list comparison on
+emitted observation kinds) failed because tier-3 fired alongside
+their tier-1/2 scenarios. Fix wasn't a bug — both tests were
+correct, the new tier was correct; they just happened to share
+fixtures whose default values now triggered an unrelated emission.
+Generalised: **when you add an independent code path that gates on
+a field already populated by shared test fixtures, audit every
+existing test that uses those fixtures.** Either pin the new
+threshold high (`unconfirmed_receipt_after_days=999`) to opt out of
+tier-3, or extend the helper to take the new field as an explicit
+arg (we did both). Caught locally before push by running the
+existing test suite first; the alternative — pushing and watching
+CI catch it — costs an extra round trip.
+*(PR #39 — see `tests/test_tracking.py::_seed_shipped_saga`,
+`test_overdue_scanner_skips_not_yet_due`, and
+`test_overdue_scanner_emits_recall_proposed_past_threshold`.)*
+
 ### 2026-05-03 — Re-anchoring a side effect can obsolete prior state-aware logic
 PR #37 wired a state-aware NCIP rollback into the SHIP compensator
 (emit `check_in` from `SHIPPED`, skip from `RECEIVED`) so the ILS

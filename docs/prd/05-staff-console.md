@@ -1,6 +1,8 @@
 # PRD 05 — Staff Console
 
-> Last reviewed against code: 2026-05-02.
+> Last reviewed against code: 2026-05-03 (post tier-3 tracking watch
+> — `/override` endpoint reframed as future-only; see drift cleanup
+> entry below).
 
 The staff console is the **only UI in the prototype**. It is the
 human-in-the-loop surface for every state transition.
@@ -63,10 +65,17 @@ The `Idempotency-Key` request header is **not currently honoured**
 (safe to retry the same request body without one because the API
 is read-or-mutate based on saga state, not on caller-supplied keys).
 
-**Override endpoint** (`POST /sagas/{id}/override`) for hard-fail
-policy flags: **planned, not yet implemented**. Today PolicyAgent
-flags surface as advisory rationale only; staff judgement is the
-override.
+**Override endpoint** (`POST /sagas/{id}/override`): **future, not
+yet implemented and not actively scoped**. The endpoint was
+sketched for a hypothetical hard-fail flow on PolicyAgent flags;
+today PolicyAgent has no hard-fail mode — every flag surfaces as
+advisory rationale and staff judgement is the override. An
+`/override` endpoint would be solution-without-problem until a
+hard-fail surface lands. Tracked in `NEXT_SESSION.md` backlog;
+revisit only when (a) PolicyAgent gains a hard-fail mode, or (b) a
+RECEIVE-compensator decision needs operator-supplied custody
+ground-truth (deferred from PR #38, see `saga/flows.py` § RECEIVE
+compensator).
 
 **Auth:** none. ADR-0007 (FedRAMP deferred) — assumes a trusted
 network for the prototype.
