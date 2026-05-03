@@ -1,10 +1,12 @@
 # PRD 04 — Discovery
 
 > Last reviewed against code: 2026-05-03 (post CrossRef client PR-A
-> + DiscoveryAgent integration PR-B — DOI input now triggers a
-> CrossRef identity confirmation that re-keys the SRU search;
-> CrossRef errors and 404s downgrade to diagnostics so SRU still
-> runs).
+> + DiscoveryAgent integration PR-B + factory wiring PR-C — DOI input
+> now triggers a CrossRef identity confirmation that re-keys the SRU
+> search; CrossRef errors and 404s downgrade to diagnostics so SRU
+> still runs; both clients now expose ``get_*_client()`` factories
+> selecting mock vs HTTP via ``AGORA_CROSSREF_ENABLED`` /
+> ``AGORA_SRU_ENABLED``).
 
 ## Inputs
 
@@ -81,6 +83,29 @@ https://lx2.loc.gov/voyager?
 Agora's SRU client lives at `src/agora/clients/sru.py`. Returns parsed
 MARCXML records. We do **not** speak Z39.50 binary protocol in the
 prototype — if a target lacks SRU, the holder is excluded.
+
+## Client selection
+
+`get_crossref_client()` and `get_sru_client()` are the production
+factories. Both default to the in-memory mock and switch to the live
+HTTP client when their respective env flag is set:
+
+| Factory | Env flag | Default | URL |
+| ------- | -------- | ------- | --- |
+| `agora.clients.crossref.get_crossref_client` | `AGORA_CROSSREF_ENABLED` | mock | `CROSSREF_BASE_URL` (default `https://api.crossref.org`) |
+| `agora.clients.sru.get_sru_client`           | `AGORA_SRU_ENABLED`      | mock | `SRU_LOC_URL` (default `https://lx2.loc.gov/voyager`)   |
+
+Both factories use **explicit boolean toggles** rather than the
+URL-presence convention `agora.clients.reshare.get_client` uses,
+because both URLs ship with non-empty production defaults — a
+presence check would always select http and break offline workflows.
+The DiscoveryAgent itself takes both clients as constructor kwargs
+(`DiscoveryAgent(sru, *, crossref=None, ...)`) so callers can wire
+the factories at app startup or pass test doubles directly.
+Wiring into `agora.api.app.create_app` (lifespan-managed `app.state`
++ `aclose()` on shutdown) is a separate PR — blocked until the
+staff-console discovery handler shape (sync endpoint vs background
+lifespan task) is decided.
 
 ## OpenURL parsing
 

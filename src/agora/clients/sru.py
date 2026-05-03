@@ -16,6 +16,9 @@ import httpx
 
 from agora.clients.errors import RemoteUnavailableError
 from agora.config import get_settings
+from agora.logging import get_logger
+
+log = get_logger(__name__)
 
 
 @dataclass(slots=True)
@@ -153,3 +156,28 @@ def _subfield(rec: object, tag: str, code: str, ns: dict[str, str]) -> str | Non
         return None
     text = (found.text or "").strip()
     return text or None
+
+
+def get_sru_client() -> SruClient:
+    """Factory: real ``HttpSruClient`` when ``AGORA_SRU_ENABLED`` is set,
+    else empty-record ``MockSruClient``.
+
+    Mirrors :func:`agora.clients.reshare.get_client` in spirit (mock by
+    default for offline dev + tests; opt into http via env). The toggle
+    is an explicit boolean rather than a URL-presence check because
+    ``SRU_LOC_URL`` ships with a non-empty LoC default — a presence
+    check would always select http and break offline workflows.
+
+    The factory returns ``MockSruClient()`` with no seed records, which
+    means every search returns an empty list. Tests that need
+    deterministic candidates should construct ``MockSruClient(records=...)``
+    directly rather than going through the factory; the factory is
+    aimed at production wiring where the http client is the real
+    target. Discovery against the empty mock surfaces "zero holders
+    matched" diagnostics, which is the correct offline-dev signal.
+    """
+    s = get_settings()
+    if s.sru_enabled:
+        return HttpSruClient()
+    log.info("sru.client.using_mock")
+    return MockSruClient()

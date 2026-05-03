@@ -125,6 +125,21 @@ ISO 18626 message types — see table in `clients/reshare.py`.
   backlog #9 PR-C / PR-D. mod-rs does not honour `Idempotency-Key`
   — replay-safety lives in the saga ledger's UNIQUE constraint,
   not the wire.
+- DiscoveryAgent has CrossRef + SRU client factories
+  (`agora.clients.crossref.get_crossref_client`,
+  `agora.clients.sru.get_sru_client`) gated on
+  `AGORA_CROSSREF_ENABLED` / `AGORA_SRU_ENABLED` (default `false` →
+  mock). Explicit boolean toggles rather than ReShare's URL-presence
+  check because both clients ship with non-empty production URL
+  defaults (`api.crossref.org`, `lx2.loc.gov`) — presence-checking
+  would force http and break offline dev. The DiscoveryAgent itself
+  takes both clients as constructor kwargs and is **not** wired into
+  `app.state` today: there's no consumer endpoint yet, so wiring a
+  long-lived agent + httpx pool would be dead state. The follow-on
+  PR (call it 8c) adds `app.state.discovery` + an endpoint
+  (`POST /sagas/{id}/discover` is the leading candidate) — blocked
+  until the staff-console handler shape (sync endpoint vs background
+  lifespan task) is decided.
 - NCIP fan-out is wired on RECEIVE and RETURN forwards
   (fire-and-forget, borrower-side ILS): `receive_forward` emits a
   `target="ncip"` `check_out` intent (re-anchored from SHIP — see

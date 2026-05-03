@@ -53,6 +53,9 @@ import httpx
 
 from agora.clients.errors import RemoteUnavailableError
 from agora.config import get_settings
+from agora.logging import get_logger
+
+log = get_logger(__name__)
 
 
 @dataclass(slots=True)
@@ -274,3 +277,24 @@ def _extract_year(val: Any) -> int | None:
     if isinstance(candidate, str) and candidate.isdigit():
         return int(candidate)
     return None
+
+
+def get_crossref_client() -> CrossrefClient:
+    """Factory: real ``HttpCrossrefClient`` when ``AGORA_CROSSREF_ENABLED``
+    is set, else in-memory ``MockCrossrefClient``.
+
+    Mirrors :func:`agora.clients.reshare.get_client` in spirit (mock by
+    default for offline dev + tests; opt into http via env). The toggle
+    is an explicit boolean rather than a URL-presence check because
+    ``CROSSREF_BASE_URL`` ships with a non-empty production default —
+    a presence check would always select http and break offline
+    workflows. The empty-record mock returns ``None`` for every DOI,
+    which is the same shape the live client returns for an unregistered
+    DOI (404), so DiscoveryAgent's CrossRef-miss path is exercised
+    naturally when discovery runs without seeded fixtures.
+    """
+    s = get_settings()
+    if s.crossref_enabled:
+        return HttpCrossrefClient()
+    log.info("crossref.client.using_mock")
+    return MockCrossrefClient()
