@@ -400,6 +400,206 @@ async def test_receive_compensator_lands_in_disputed(session: AsyncSession) -> N
     assert saga.current_state == LifecycleState.DISPUTED.value
 
 
+@pytest.mark.asyncio
+async def test_ship_compensator_from_shipped_emits_ncip_check_in(
+    session: AsyncSession,
+) -> None:
+    """SHIP comp from SHIPPED state emits both reshare recall and NCIP check_in.
+
+    Today's SHIP forward fans NCIP ``check_out`` out at supplier-shipped
+    (not borrower-receipt). When the compensator runs while the saga is
+    still at SHIPPED — i.e. the patron never physically received the
+    item — the ILS record is a false positive that the compensator
+    must clear by emitting a ``check_in`` rollback. Idempotency key
+    suffix ``:ncip-rollback`` keeps it disjoint from the SHIP forward's
+    ``:ncip`` row (outbox UNIQUE is global per ADR-0011).
+    """
+    saga_id = uuid4()
+    request = _build_request()
+    reshare = MockReShareClient()
+    registry = build_registry(TransactionAgent(reshare))
+
+    async with session.begin():
+        ledger = SagaLedger(session)
+        await ledger.create_saga(
+            saga_id=saga_id,
+            request_id=request.request_id,
+            request_payload=request.model_dump(mode="json"),
+            initial_state=LifecycleState.APPROVED,
+        )
+
+    # SHIP forward → SHIPPED. Skip outbox drain so the SHIP forward's
+    # rows stay pending — we only count the compensator's emissions.
+    await _gate_and_run(
+        session,
+        registry,
+        saga_id,
+        request,
+        StepName.SHIP,
+        {"reshare_id": "rs-ship-1"},
+        from_state=LifecycleState.APPROVED,
+    )
+
+    # Snapshot pre-comp outbox row count (SHIP forward enqueued 2:
+    # reshare confirm_shipment + ncip check_out).
+    async with session.begin():
+        before = (
+            (
+                await session.execute(
+                    select(OutboxRow).where(OutboxRow.saga_id == saga_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(before) == 2
+
+    # Run SHIP compensator with current_state=SHIPPED — patron never
+    # physically had the item, so ILS rollback is warranted.
+    async with session.begin():
+        coord = Coordinator(session=session, registry=registry)
+        ctx = SagaContext(
+            saga_id=saga_id,
+            request=request,
+            current_state=LifecycleState.SHIPPED,
+            idempotency_key=new_idempotency_key(prefix="comp-ship"),
+            actor="agent:reconciliation",
+            extras={"reshare_id": "rs-ship-1"},
+        )
+        await coord.run_compensator(ctx=ctx, step=StepName.SHIP)
+
+    async with session.begin():
+        rows = (
+            (
+                await session.execute(
+                    select(OutboxRow)
+                    .where(OutboxRow.saga_id == saga_id)
+                    .order_by(OutboxRow.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        ledger = SagaLedger(session)
+        saga = await ledger.get_saga(saga_id)
+    assert saga.current_state == LifecycleState.DISPUTED.value
+
+    new_rows = rows[len(before):]
+    assert len(new_rows) == 2, (
+        f"SHIP comp from SHIPPED must emit 2 outbox rows "
+        f"(reshare recall + ncip check_in-rollback); got {len(new_rows)}"
+    )
+    actions = sorted(r.payload["action"] for r in new_rows)
+    assert actions == ["check_in", "recall_request"]
+    targets = sorted(r.target for r in new_rows)
+    assert targets == ["ncip", "reshare"]
+    ncip_rollback = next(r for r in new_rows if r.target == "ncip")
+    assert ncip_rollback.idempotency_key.endswith(":ncip-rollback"), (
+        "rollback row must use :ncip-rollback suffix to avoid colliding "
+        "with the SHIP forward's :ncip check_out row"
+    )
+    assert ncip_rollback.payload["args"]["item_id"] == "rs-ship-1"
+
+
+@pytest.mark.asyncio
+async def test_ship_compensator_from_received_skips_ncip_check_in(
+    session: AsyncSession,
+) -> None:
+    """SHIP comp from RECEIVED state skips the NCIP check_in rollback.
+
+    Once the patron has physically received the item (saga at RECEIVED),
+    the ILS loan is correct as a record of current custody. Issuing a
+    compensating ``check_in`` would lie to the ILS while the patron
+    still holds the book; a real return flow is responsible for the
+    eventual check_in. Compensator emits the reshare recall only.
+    """
+    saga_id = uuid4()
+    request = _build_request()
+    reshare = MockReShareClient()
+    registry = build_registry(TransactionAgent(reshare))
+
+    async with session.begin():
+        ledger = SagaLedger(session)
+        await ledger.create_saga(
+            saga_id=saga_id,
+            request_id=request.request_id,
+            request_payload=request.model_dump(mode="json"),
+            initial_state=LifecycleState.APPROVED,
+        )
+
+    # SHIP forward → SHIPPED.
+    await _gate_and_run(
+        session,
+        registry,
+        saga_id,
+        request,
+        StepName.SHIP,
+        {"reshare_id": "rs-ship-2"},
+        from_state=LifecycleState.APPROVED,
+    )
+
+    # RECEIVE forward → RECEIVED. Pure ledger write; no outbox.
+    await _gate_and_run(
+        session,
+        registry,
+        saga_id,
+        request,
+        StepName.RECEIVE,
+        {"reshare_id": "rs-ship-2"},
+        from_state=LifecycleState.SHIPPED,
+    )
+
+    async with session.begin():
+        before = (
+            (
+                await session.execute(
+                    select(OutboxRow).where(OutboxRow.saga_id == saga_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(before) == 2  # SHIP fwd's two rows; RECEIVE fwd has none.
+
+    # Run SHIP compensator with current_state=RECEIVED — patron is
+    # holding the item, so ILS rollback would lie about custody.
+    async with session.begin():
+        coord = Coordinator(session=session, registry=registry)
+        ctx = SagaContext(
+            saga_id=saga_id,
+            request=request,
+            current_state=LifecycleState.RECEIVED,
+            idempotency_key=new_idempotency_key(prefix="comp-ship"),
+            actor="agent:reconciliation",
+            extras={"reshare_id": "rs-ship-2"},
+        )
+        await coord.run_compensator(ctx=ctx, step=StepName.SHIP)
+
+    async with session.begin():
+        rows = (
+            (
+                await session.execute(
+                    select(OutboxRow)
+                    .where(OutboxRow.saga_id == saga_id)
+                    .order_by(OutboxRow.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        ledger = SagaLedger(session)
+        saga = await ledger.get_saga(saga_id)
+    assert saga.current_state == LifecycleState.DISPUTED.value
+
+    new_rows = rows[len(before):]
+    assert len(new_rows) == 1, (
+        f"SHIP comp from RECEIVED must emit only the reshare recall "
+        f"(no NCIP rollback); got {len(new_rows)} rows"
+    )
+    assert new_rows[0].target == "reshare"
+    assert new_rows[0].payload["action"] == "recall_request"
+
+
 async def _drain_with_projection(
     session: AsyncSession,
     reshare: ReShareClient,

@@ -104,7 +104,8 @@ stateDiagram-v2
     Submitted --> Cancelled: submit compensator<br/>(patron withdraw)
     Routed --> Submitted: route compensator<br/>(re-rank suppliers)
     Approved --> Cancelled: approve compensator<br/>(cancel at supplier)
-    Shipped --> Disputed: ship compensator<br/>(recall enqueued — manual;<br/>NCIP NOT rolled back)
+    Shipped --> Disputed: ship compensator from SHIPPED<br/>(recall + NCIP check_in rollback —<br/>clears false-loan record)
+    Received --> Disputed: ship compensator from RECEIVED<br/>(recall only — patron has item;<br/>return flow owns check_in)
     Received --> Disputed: receive compensator<br/>(physical receipt contested —<br/>staff reconciliation)
     Returned --> Disputed: return compensator<br/>(reconciliation case)
     Cancelled --> [*]
@@ -124,7 +125,13 @@ States and compensator targets reflect `LifecycleState` and
   no `reshare_id` to cancel against.
 - No `Recalled` state in the enum — the SHIP compensator transitions
   to `Disputed` and enqueues a recall outbox intent for staff
-  intervention.
+  intervention. The recall is paired with a state-aware NCIP
+  `check_in` rollback (idempotency-key suffix `:ncip-rollback`) when
+  the comp fires from `SHIPPED` — the patron never received the item,
+  so the false ILS loan needs clearing. From `RECEIVED` the comp
+  emits only the reshare recall: the patron physically holds the
+  book, so clearing the ILS loan would lie about custody; the
+  eventual return flow owns that `check_in`.
 - `RECEIVED` is a borrower-side marker between `SHIPPED` and
   `RETURNED`: the saga records the patron's physical-receipt
   confirmation as a pure ledger write (no outbox, no peer ack — the
@@ -134,9 +141,8 @@ States and compensator targets reflect `LifecycleState` and
   is tracked separately in CLAUDE.md known-gaps and waits on a
   follow-up PR.
 - NCIP fan-out on SHIP/RETURN is fire-and-forget (CLAUDE.md
-  known-gap) and the SHIP compensator does **not** issue a NCIP
-  `check_in` rollback — staff investigates the stuck NCIP outbox row
-  separately.
+  known-gap). NCIP outcomes do not gate saga state — failures
+  surface as stuck outbox rows for staff review.
 
 ## Saga step anatomy (forward + compensator pair)
 

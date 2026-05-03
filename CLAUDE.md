@@ -140,12 +140,16 @@ ISO 18626 message types — see table in `clients/reshare.py`.
   `check_out` from SHIP to RECEIVE is intentionally a separate PR — it
   changes circulation timing (patron record reflects the loan only
   after physical receipt rather than supplier shipment) and warrants
-  its own validation. Compensator-side NCIP rollback is **not** wired:
-  SHIP-step rollback is ambiguous when the patron has not yet hit
-  RECEIVE (item may still be in transit), so a real recall flow needs
-  to inspect the saga's current state — pre- vs post-RECEIVE — to
-  decide whether to issue a compensating `check_in`. RECEIVE itself
-  has no compensator-side NCIP work (it's a pure ledger-write step;
+  its own validation. Compensator-side NCIP rollback is **wired and
+  state-aware**: SHIP compensator inspects `ctx.current_state` and
+  emits a paired NCIP `check_in` (idempotency-key suffix
+  `:ncip-rollback`) only when the saga is at `SHIPPED` (patron never
+  physically received the item, so the ILS loan is a false positive
+  that needs clearing). From `RECEIVED` (or any post-receipt state)
+  the compensator skips `check_in` because the patron physically
+  holds the book — clearing the ILS loan would lie about custody;
+  the eventual return flow owns that `check_in`. RECEIVE itself has
+  no compensator-side NCIP work (it's a pure ledger-write step;
   receipt is physically un-undoable, so its compensator records the
   contradiction and routes to staff via `Disputed`). The NCIP
   HTTP/SOAP client itself remains a mock — `MockNcipClient` for
