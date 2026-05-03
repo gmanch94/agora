@@ -1,0 +1,224 @@
+[
+  {
+    "id": "routing-001",
+    "description": "Single consortium member, available — trivial pick.",
+    "candidates": [
+      {"symbol": "MEM-A", "is_consortium_member": true, "status": "available", "preferred_score": 0.6}
+    ],
+    "expected_chosen": "MEM-A",
+    "expected_ranking": ["MEM-A"],
+    "notes": "Sanity case. Rules + ground truth agree."
+  },
+  {
+    "id": "routing-002",
+    "description": "One consortium member vs one external, both available — consortium wins.",
+    "candidates": [
+      {"symbol": "EXT", "is_consortium_member": false, "status": "available", "preferred_score": 0.7},
+      {"symbol": "MEM-A", "is_consortium_member": true, "status": "available", "preferred_score": 0.5}
+    ],
+    "expected_chosen": "MEM-A",
+    "expected_ranking": ["MEM-A", "EXT"],
+    "notes": "Consortium weight (0.5) dominates preferred-score gap (0.2)."
+  },
+  {
+    "id": "routing-003",
+    "description": "Empty candidate list — no chosen, empty ranking.",
+    "candidates": [],
+    "expected_chosen": null,
+    "expected_ranking": [],
+    "notes": "Edge case; saga goes to Unfilled."
+  },
+  {
+    "id": "routing-004",
+    "description": "Consortium MEM-A on_loan vs MEM-B available — available wins.",
+    "candidates": [
+      {"symbol": "MEM-A", "is_consortium_member": true, "status": "on_loan", "preferred_score": 0.5},
+      {"symbol": "MEM-B", "is_consortium_member": true, "status": "available", "preferred_score": 0.5}
+    ],
+    "expected_chosen": "MEM-B",
+    "expected_ranking": ["MEM-B", "MEM-A"],
+    "notes": "Status weight (0.2) breaks the consortium tie."
+  },
+  {
+    "id": "routing-005",
+    "description": "Two consortium members, MEM-A higher preferred_score — MEM-A wins.",
+    "candidates": [
+      {"symbol": "MEM-A", "is_consortium_member": true, "status": "available", "preferred_score": 0.9},
+      {"symbol": "MEM-B", "is_consortium_member": true, "status": "available", "preferred_score": 0.3}
+    ],
+    "expected_chosen": "MEM-A",
+    "expected_ranking": ["MEM-A", "MEM-B"],
+    "notes": "preferred_score (0.2 weight) breaks the otherwise-identical tie."
+  },
+  {
+    "id": "routing-006",
+    "description": "Two consortium members, MEM-B closer — MEM-B wins on proximity.",
+    "candidates": [
+      {"symbol": "MEM-A", "is_consortium_member": true, "status": "available", "preferred_score": 0.5, "distance_km": 1200.0},
+      {"symbol": "MEM-B", "is_consortium_member": true, "status": "available", "preferred_score": 0.5, "distance_km": 50.0}
+    ],
+    "expected_chosen": "MEM-B",
+    "expected_ranking": ["MEM-B", "MEM-A"],
+    "notes": "Proximity (0.1 weight) breaks the otherwise-identical tie."
+  },
+  {
+    "id": "routing-007",
+    "description": "All on_loan consortium — pick the closest one.",
+    "candidates": [
+      {"symbol": "MEM-A", "is_consortium_member": true, "status": "on_loan", "preferred_score": 0.5, "distance_km": 800.0},
+      {"symbol": "MEM-B", "is_consortium_member": true, "status": "on_loan", "preferred_score": 0.5, "distance_km": 200.0}
+    ],
+    "expected_chosen": "MEM-B",
+    "expected_ranking": ["MEM-B", "MEM-A"],
+    "notes": "Status tied; proximity decides."
+  },
+  {
+    "id": "routing-008",
+    "description": "All external — available beats unknown beats on_loan.",
+    "candidates": [
+      {"symbol": "EXT-A", "is_consortium_member": false, "status": "on_loan", "preferred_score": 0.5},
+      {"symbol": "EXT-B", "is_consortium_member": false, "status": "available", "preferred_score": 0.5},
+      {"symbol": "EXT-C", "is_consortium_member": false, "status": "unknown", "preferred_score": 0.5}
+    ],
+    "expected_chosen": "EXT-B",
+    "expected_ranking": ["EXT-B", "EXT-C", "EXT-A"],
+    "notes": "Status hierarchy in absence of consortium signal."
+  },
+  {
+    "id": "routing-009",
+    "description": "Mixed pool, consortium-available outranks external-available.",
+    "candidates": [
+      {"symbol": "EXT", "is_consortium_member": false, "status": "available", "preferred_score": 0.9, "distance_km": 10.0},
+      {"symbol": "MEM-A", "is_consortium_member": true, "status": "available", "preferred_score": 0.4, "distance_km": 900.0},
+      {"symbol": "MEM-B", "is_consortium_member": true, "status": "unknown", "preferred_score": 0.5, "distance_km": 400.0}
+    ],
+    "expected_chosen": "MEM-A",
+    "expected_ranking": ["MEM-A", "MEM-B", "EXT"],
+    "notes": "Even with EXT's near-distance + high preferred + available, consortium weight + status edges out MEM-B and dominates EXT."
+  },
+  {
+    "id": "routing-010",
+    "description": "Reference-only ranks last regardless of consortium membership.",
+    "candidates": [
+      {"symbol": "MEM-REF", "is_consortium_member": true, "status": "reference_only", "preferred_score": 0.9},
+      {"symbol": "EXT-AVAIL", "is_consortium_member": false, "status": "available", "preferred_score": 0.5}
+    ],
+    "expected_chosen": "MEM-REF",
+    "expected_ranking": ["MEM-REF", "EXT-AVAIL"],
+    "notes": "Rules-baseline picks the consortium ref-only because the consortium 0.5 weight beats EXT's status/preferred contribution. This is a known rules quirk; ADR-0014 flags it as a candidate for the LLM tie-breaker — staff would prefer the available external for a circulating loan. expected_chosen reflects the rules-baseline behavior; if the LLM-augmented agent overrides this in PR-2, the ADR threshold will be revisited."
+  },
+  {
+    "id": "routing-011",
+    "description": "Three external, preferred_score breaks tie.",
+    "candidates": [
+      {"symbol": "EXT-A", "is_consortium_member": false, "status": "available", "preferred_score": 0.2},
+      {"symbol": "EXT-B", "is_consortium_member": false, "status": "available", "preferred_score": 0.7},
+      {"symbol": "EXT-C", "is_consortium_member": false, "status": "available", "preferred_score": 0.5}
+    ],
+    "expected_chosen": "EXT-B",
+    "expected_ranking": ["EXT-B", "EXT-C", "EXT-A"],
+    "notes": "preferred_score sweeps when everything else is equal."
+  },
+  {
+    "id": "routing-012",
+    "description": "Three consortium, status mix — available > unknown > on_loan.",
+    "candidates": [
+      {"symbol": "MEM-A", "is_consortium_member": true, "status": "on_loan", "preferred_score": 0.5},
+      {"symbol": "MEM-B", "is_consortium_member": true, "status": "available", "preferred_score": 0.5},
+      {"symbol": "MEM-C", "is_consortium_member": true, "status": "unknown", "preferred_score": 0.5}
+    ],
+    "expected_chosen": "MEM-B",
+    "expected_ranking": ["MEM-B", "MEM-C", "MEM-A"],
+    "notes": "Status hierarchy decides among consortium peers."
+  },
+  {
+    "id": "routing-013",
+    "description": "[GROUND TRUTH ≠ RULES] Two consortium members tied on every visible feature; raw.sla_tier='A' should win over 'B'.",
+    "candidates": [
+      {"symbol": "MEM-A", "is_consortium_member": true, "status": "available", "preferred_score": 0.5, "raw": {"sla_tier": "B"}},
+      {"symbol": "MEM-B", "is_consortium_member": true, "status": "available", "preferred_score": 0.5, "raw": {"sla_tier": "A"}}
+    ],
+    "expected_chosen": "MEM-B",
+    "expected_ranking": ["MEM-B", "MEM-A"],
+    "notes": "Rules see all-equal and pick by stable-sort input order (MEM-A). Ground truth: SLA tier A is the consortium-policy preference. This is a pure tie-break case where the LLM tie-breaker (PR-2) is expected to win by reading raw metadata."
+  },
+  {
+    "id": "routing-014",
+    "description": "[GROUND TRUTH ≠ RULES] Reciprocity-debt nudges pick away from in-debt member.",
+    "candidates": [
+      {"symbol": "MEM-A", "is_consortium_member": true, "status": "available", "preferred_score": 0.5, "raw": {"reciprocity_balance": -8}},
+      {"symbol": "MEM-B", "is_consortium_member": true, "status": "available", "preferred_score": 0.5, "raw": {"reciprocity_balance": 4}}
+    ],
+    "expected_chosen": "MEM-B",
+    "expected_ranking": ["MEM-B", "MEM-A"],
+    "notes": "Rules tie → stable sort picks MEM-A. Ground truth: MEM-A is in reciprocity debt (we owe them many lends); routing fairly to MEM-B who has lent us less keeps the consortium balance healthy. Tie-break candidate for the LLM."
+  },
+  {
+    "id": "routing-015",
+    "description": "[GROUND TRUTH ≠ RULES] Format match wins over consortium for an article request that requires electronic delivery.",
+    "candidates": [
+      {"symbol": "MEM-A", "is_consortium_member": true, "status": "available", "preferred_score": 0.5, "raw": {"holds_format": "print", "delivery": "physical_only"}},
+      {"symbol": "EXT-DIG", "is_consortium_member": false, "status": "available", "preferred_score": 0.7, "raw": {"holds_format": "digital", "delivery": "electronic"}}
+    ],
+    "expected_chosen": "EXT-DIG",
+    "expected_ranking": ["EXT-DIG", "MEM-A"],
+    "notes": "Rules pick MEM-A on consortium weight. Ground truth: an article request with electronic-delivery affinity should prefer the digital holder, even if external. Rules-baseline cannot read raw.delivery; LLM tie-breaker can. This case INVERTS rules' top-1, so it pushes the rules-baseline floor below 100%."
+  },
+  {
+    "id": "routing-016",
+    "description": "[GROUND TRUTH ≠ RULES] Reliability — consortium MEM-A 60% on-time vs MEM-B 95%.",
+    "candidates": [
+      {"symbol": "MEM-A", "is_consortium_member": true, "status": "available", "preferred_score": 0.5, "raw": {"on_time_rate": 0.60}},
+      {"symbol": "MEM-B", "is_consortium_member": true, "status": "available", "preferred_score": 0.5, "raw": {"on_time_rate": 0.95}}
+    ],
+    "expected_chosen": "MEM-B",
+    "expected_ranking": ["MEM-B", "MEM-A"],
+    "notes": "Rules tie → stable sort picks MEM-A. Ground truth: historical on-time rate is the dominant tie-breaker for routing trust. LLM tie-breaker territory."
+  },
+  {
+    "id": "routing-017",
+    "description": "Far-away consortium beats close external when status is equal.",
+    "candidates": [
+      {"symbol": "EXT", "is_consortium_member": false, "status": "available", "preferred_score": 0.5, "distance_km": 5.0},
+      {"symbol": "MEM-A", "is_consortium_member": true, "status": "available", "preferred_score": 0.5, "distance_km": 1400.0}
+    ],
+    "expected_chosen": "MEM-A",
+    "expected_ranking": ["MEM-A", "EXT"],
+    "notes": "Consortium weight (0.5) far exceeds proximity gap (0.1)."
+  },
+  {
+    "id": "routing-018",
+    "description": "Distance unknown for both — proximity neutralises, status decides.",
+    "candidates": [
+      {"symbol": "MEM-A", "is_consortium_member": true, "status": "unknown", "preferred_score": 0.5},
+      {"symbol": "MEM-B", "is_consortium_member": true, "status": "available", "preferred_score": 0.5}
+    ],
+    "expected_chosen": "MEM-B",
+    "expected_ranking": ["MEM-B", "MEM-A"],
+    "notes": "Both proximities default to 0.5; status breaks the tie."
+  },
+  {
+    "id": "routing-019",
+    "description": "All consortium reference_only — pick most-preferred among them.",
+    "candidates": [
+      {"symbol": "MEM-A", "is_consortium_member": true, "status": "reference_only", "preferred_score": 0.3},
+      {"symbol": "MEM-B", "is_consortium_member": true, "status": "reference_only", "preferred_score": 0.8}
+    ],
+    "expected_chosen": "MEM-B",
+    "expected_ranking": ["MEM-B", "MEM-A"],
+    "notes": "Bad-options case; staff still needs an ordering for review. preferred_score wins."
+  },
+  {
+    "id": "routing-020",
+    "description": "Mixed-status consortium, distance-equipped — overall sanity over 4 candidates.",
+    "candidates": [
+      {"symbol": "EXT-FAR", "is_consortium_member": false, "status": "available", "preferred_score": 0.5, "distance_km": 1400.0},
+      {"symbol": "MEM-A", "is_consortium_member": true, "status": "on_loan", "preferred_score": 0.5, "distance_km": 100.0},
+      {"symbol": "MEM-B", "is_consortium_member": true, "status": "available", "preferred_score": 0.5, "distance_km": 600.0},
+      {"symbol": "MEM-C", "is_consortium_member": true, "status": "unknown", "preferred_score": 0.5, "distance_km": 300.0}
+    ],
+    "expected_chosen": "MEM-B",
+    "expected_ranking": ["MEM-B", "MEM-C", "MEM-A", "EXT-FAR"],
+    "notes": "Available consortium > unknown consortium > on_loan consortium > far external. End-to-end ranking sanity check."
+  }
+]

@@ -3,7 +3,9 @@
 > Last reviewed against code: 2026-05-03 (post tier-2 recall-proposed
 > + tier-3 receipt-unconfirmed scanner emissions and FastAPI-lifespan
 > wiring; CrossRef integration shipped — PR-A client + PR-B
-> DiscoveryAgent fan-out).
+> DiscoveryAgent fan-out; PR-1 of RoutingAgent LLM track shipped —
+> eval harness + ADR-0014, rules-baseline floor committed at
+> top-1 0.8000 / mean Spearman 0.5556).
 
 All agents are **advisory** in the prototype: they emit a recommendation
 + reasoning trace into the staff console. Staff commit by clicking
@@ -50,11 +52,34 @@ consortium policy.
 
 **Outputs:** ordered list of `(supplier_symbol, score, rationale)`.
 
-**Tools:** Postgres consortium policy reads, LLM reasoning over a
-templated prompt for tie-breaking.
+**Tools (today):** rules-only deterministic weighted-sum scoring in
+`src/agora/agents/routing.py` (consortium membership 0.5, discovery
+`preferred_score` 0.2, holding status 0.2, proximity 0.1). No LLM
+call yet. The rules pick is repeatable and offline-runnable; tests
+in `tests/test_agents.py` pin a happy-path regression.
+
+**Tools (planned):** LLM tie-breaker for near-tie cases (top-2 within
+ε), reading consortium-policy fields the rules can't (SLA tier,
+reciprocity balance, format/delivery affinity, historical reliability).
+**Tie-breaker, not replacement** — rules keep deciding the bulk; LLM
+fires only on near-ties. See **ADR-0014** for the decision and the
+gating policy.
+
+**Eval harness:** `src/agora/evals/routing.py` runs any RoutingAgent
+variant against the 20 hand-labeled scenarios in
+`evals/routing/scenarios.json` and scores it on top-1 accuracy +
+mean Spearman rank correlation. Invoke with `make eval-routing`.
+The committed rules-baseline floor in `evals/routing/baseline.json`
+(top-1 0.8000, mean Spearman 0.5556) is what any LLM-augmented PR
+must meet or exceed before merging. Four scenarios
+(`routing-013..016`) are deliberate rules-baseline misses encoding
+metadata-only signals — those are exactly the cases the LLM is
+hired to decide.
 
 **Constraint:** rationale must be human-readable, ≤3 sentences. This
-is what staff will see when approving.
+is what staff will see when approving. The LLM tie-breaker prompt
+will enforce the same 3-sentence limit (ADR-0014); the rules
+baseline already satisfies it.
 
 ## PolicyAgent
 

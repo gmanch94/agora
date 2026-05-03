@@ -1,6 +1,6 @@
 # Agora — common dev commands
 
-.PHONY: help install fmt lint type test test-fast cov audit up down logs db-reset migrate api demo clean
+.PHONY: help install fmt lint type test test-fast cov audit up down logs db-reset migrate api demo eval-routing clean
 
 help:
 	@echo "Common targets:"
@@ -19,6 +19,7 @@ help:
 	@echo "  migrate     alembic upgrade head"
 	@echo "  api         run FastAPI app locally"
 	@echo "  demo        run scripted happy-path demo"
+	@echo "  eval-routing run RoutingAgent eval harness; rewrite evals/routing/baseline.json"
 	@echo "  clean       remove caches"
 
 install:
@@ -75,6 +76,13 @@ api:
 
 demo:
 	python -m agora.demos.happy_path
+
+# Score the rules-baseline RoutingAgent against the committed eval set
+# (evals/routing/scenarios.json) and rewrite evals/routing/baseline.json.
+# See ADR-0014 for the gating policy. Not part of triple-gate CI yet —
+# PR-2 (LLM tie-breaker) will add the regression check.
+eval-routing:
+	python -m agora.evals.routing
 
 clean:
 	rm -rf .pytest_cache .mypy_cache .ruff_cache htmlcov .coverage
