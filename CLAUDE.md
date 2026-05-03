@@ -155,8 +155,14 @@ ISO 18626 message types — see table in `clients/reshare.py`.
   point-in-time snapshot — UI computes "currently N days" from
   `due_at` + render clock. Auto-recall and a dedicated RECALLING
   lifecycle state are explicit non-goals; staff still clicks.
-  Disable via `AGORA_TRACKING_SCANNER_ENABLED=0`. Single drainer
-  assumed (same caveat as outbox worker).
+  Disable via `AGORA_TRACKING_SCANNER_ENABLED=0`. Multi-scanner safe
+  by construction: the tier-1 (`overdue-{saga_id}`) and tier-2
+  (`recall-proposed-{saga_id}`) keys are deterministic per saga, so
+  two concurrent scanners writing the same key collide on
+  `UNIQUE(saga_event.idempotency_key)` and the second invocation gets
+  the existing row back from `SagaLedger.append`. No outbox writes,
+  no state changes — concurrent scans are wasteful (duplicate work)
+  but not incorrect. No row-locking added.
 - Outbox is wired into flows for every ReShare-touching step
   including APPROVE forward (ADR-0011 + ADR-0012). APPROVE forward
   is now pure: it returns an `OutboxIntent` for `send_request` and
@@ -177,9 +183,17 @@ ISO 18626 message types — see table in `clients/reshare.py`.
   `asyncio.Task` from the FastAPI lifespan (`create_app`) via
   `_build_outbox_worker`, polling at
   `AGORA_OUTBOX_POLL_INTERVAL_SECS` (default 1.0s) and cancelled on
-  shutdown. Disable with `AGORA_OUTBOX_WORKER_ENABLED=0`. The
-  worker still assumes a single drainer per DB; multi-worker
-  safety needs `SELECT ... FOR UPDATE SKIP LOCKED` (Postgres-only).
+  shutdown. Disable with `AGORA_OUTBOX_WORKER_ENABLED=0`.
+  Multi-worker safe on Postgres via `outbox_claim` (backlog #5):
+  `SELECT ... FOR UPDATE SKIP LOCKED` acquires disjoint row sets,
+  flips claimed rows to `status='in_flight'` with `claimed_at=now()`,
+  and commits — concurrent workers can't double-deliver. Orphan
+  recovery sweeps `in_flight` rows whose `claimed_at` is older than
+  `claim_lease_secs` (default 600s) back to `pending` so a crashed
+  worker doesn't strand rows. SQLite serializes writers naturally so
+  the same code path works in tests; the `with_for_update` hint is
+  only emitted on Postgres. Verified by
+  `tests/test_outbox_concurrent_postgres.py`.
 - `POST /sagas/{id}/approve` and `POST /sagas/{id}/compensate` are
   wired end-to-end (commit gate + run forward / run compensator in
   one transaction). Step inputs (`chosen_supplier`, `reshare_id`) are

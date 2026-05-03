@@ -66,7 +66,7 @@ _ALEMBIC_INI = _REPO_ROOT / "alembic.ini"
 _ALEMBIC_DIR = _REPO_ROOT / "alembic"
 
 _TEST_DB_URL = os.environ.get("AGORA_TEST_DB_URL")
-_HEAD_REVISION = "20260503_approving_marker"
+_HEAD_REVISION = "20260504_outbox_claimed_at"
 
 requires_pg = pytest.mark.skipif(
     _TEST_DB_URL is None,

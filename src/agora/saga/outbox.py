@@ -40,11 +40,16 @@ callback.
   be in a bad state if the handler did something weird with the
   connection — fresh session is cheap insurance).
 
-**Multi-worker.** This worker assumes a single drainer. Running two
-in parallel against the same table would double-deliver because
-``outbox_pending`` has no row-level lock. Postgres can fix this with
-``SELECT ... FOR UPDATE SKIP LOCKED``; SQLite cannot. Out of scope
-for the prototype — flagged in CLAUDE.md known-gaps.
+**Multi-worker.** Safe on Postgres via :func:`outbox_claim` which uses
+``SELECT ... FOR UPDATE SKIP LOCKED`` to acquire disjoint row sets.
+Each pass: claim N rows (flip ``pending → in_flight``, stamp
+``claimed_at``, release row locks at commit), then dispatch each row
+in its own session. Concurrent workers see different rows on claim and
+ignore each other's ``in_flight`` entries on the next pass. The lease
+(``claim_lease_secs``, default 600s) sweeps abandoned ``in_flight``
+rows back to ``pending`` if a worker crashes mid-dispatch. SQLite
+serializes writers naturally so the same code path works in tests
+without the ``FOR UPDATE`` hint.
 """
 
 from __future__ import annotations
@@ -68,9 +73,10 @@ from agora.models.lifecycle import (
     StepOutcome,
 )
 from agora.saga.idempotency import (
+    outbox_claim,
     outbox_mark_delivered,
     outbox_mark_failed,
-    outbox_pending,
+    outbox_release_claim,
 )
 from agora.saga.ledger import SagaLedger
 
@@ -150,23 +156,42 @@ class OutboxWorker:
         on_success: dict[str, OnSuccess] | None = None,
         max_attempts: int = 10,
         base_backoff_secs: int = 60,
+        claim_lease_secs: int = 600,
     ) -> None:
         self._sessionmaker = sessionmaker
         self._handlers = handlers
         self._on_success = on_success or {}
         self._max_attempts = max_attempts
         self._base_backoff_secs = base_backoff_secs
+        # Lease for ``in_flight`` rows; orphan recovery resets stale
+        # claims back to ``pending`` after this many seconds. Must
+        # exceed the longest plausible handler runtime — too short and
+        # a slow handler races a peer-reclaimed row (handler-level
+        # idempotency keeps it correct, but logs get noisy).
+        self._claim_lease_secs = claim_lease_secs
 
     async def drain_once(self, *, limit: int = 50) -> DrainStats:
-        """Drain up to ``limit`` ready rows. Returns per-row outcomes."""
+        """Drain up to ``limit`` ready rows. Returns per-row outcomes.
+
+        Multi-worker safe: :func:`outbox_claim` flips claimed rows from
+        ``pending`` to ``in_flight`` inside a single transaction (using
+        ``FOR UPDATE SKIP LOCKED`` on Postgres). Concurrent workers see
+        disjoint row sets and won't double-dispatch.
+        """
         stats = DrainStats()
 
-        # Step 1: read pending rows in one session, then close it before
-        # we start dispatching. Keeping the read session open while
-        # making slow HTTP calls to ReShare would hold a DB connection
-        # for the entire dispatch window.
-        async with self._sessionmaker() as read_session:
-            rows = await outbox_pending(read_session, limit=limit)
+        # Step 1: claim ready rows in one short transaction, then close
+        # the session before we start dispatching. Keeping the read
+        # session open while making slow HTTP calls to ReShare would
+        # hold a DB connection for the entire dispatch window. The
+        # claim transaction is brief: a sweep + a SELECT FOR UPDATE +
+        # a same-row UPDATE + commit.
+        async with self._sessionmaker() as read_session, read_session.begin():
+            rows = await outbox_claim(
+                read_session,
+                limit=limit,
+                lease_secs=self._claim_lease_secs,
+            )
             # Snapshot the fields we need so we don't depend on the
             # ORM session staying alive past this block. ``saga_id`` is
             # included so projection callbacks can locate the saga
@@ -192,6 +217,13 @@ class OutboxWorker:
                     target=target,
                     idempotency_key=idem_key,
                 )
+                # Release the claim so the row stays ``pending`` and a
+                # later drain (after a handler is registered) can pick
+                # it up. Without this, the row would sit ``in_flight``
+                # until the orphan-recovery lease expires.
+                async with self._sessionmaker() as release_session:
+                    await outbox_release_claim(release_session, row_id)
+                    await release_session.commit()
                 stats.skipped_no_handler += 1
                 continue
 

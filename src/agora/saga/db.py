@@ -198,6 +198,16 @@ class OutboxRow(Base):
     delivered_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # ``claimed_at`` carries the lease for multi-worker safety. A worker
+    # claiming a row flips ``status`` from ``pending`` to ``in_flight`` and
+    # stamps ``claimed_at = now()``; on success/failure the row exits
+    # ``in_flight`` and the column is cleared. Orphan recovery sweeps
+    # ``in_flight`` rows whose ``claimed_at`` is older than the lease
+    # back to ``pending``. Nullable so existing rows from before the
+    # migration upgrade cleanly. See ``saga/outbox.py::outbox_claim``.
+    claimed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 _engine: AsyncEngine | None = None
