@@ -2,7 +2,8 @@
 
 > Last reviewed against code: 2026-05-03 (post tier-2 recall-proposed
 > + tier-3 receipt-unconfirmed scanner emissions and FastAPI-lifespan
-> wiring).
+> wiring; CrossRef client landed PR-A, agent integration queued
+> PR-B).
 
 All agents are **advisory** in the prototype: they emit a recommendation
 + reasoning trace into the staff console. Staff commit by clicking
@@ -20,9 +21,13 @@ item + holder list.
 **Tools (today):**
 - SRU client (LoC). Implemented (`src/agora/clients/sru.py`).
 - OpenURL parser. Implemented (`src/agora/clients/openurl.py`, KEV only).
+- CrossRef client (DOI → bibliographic identity). Implemented
+  (`src/agora/clients/crossref.py`, PR-A) but not yet wired into
+  `DiscoveryAgent.run`; PR-B fans out the agent to both clients
+  with merge-rank.
 
 **Tools (planned, not yet wired):**
-- WorldCat sandbox lookup, DOI → CrossRef, OCLC# → WorldCat.
+- WorldCat sandbox (OCLC# → holdings), consortium-union SRU.
 
 **Failure modes:** zero holders → `DiscoveryRecommendation.diagnostics`
 records `"zero holders matched; saga will be Unfilled"`; staff sees

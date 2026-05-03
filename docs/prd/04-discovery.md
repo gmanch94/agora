@@ -1,6 +1,8 @@
 # PRD 04 — Discovery
 
-> Last reviewed against code: 2026-05-02.
+> Last reviewed against code: 2026-05-03 (post CrossRef client PR —
+> client + ``MockCrossrefClient`` + tests landed; DiscoveryAgent
+> integration is queued as PR-B).
 
 ## Inputs
 
@@ -20,7 +22,8 @@ OpenURL/citation
   Parse → Item + Citation (KEV fields)
        │
        ▼
-  Identifier lookup (planned: DOI → CrossRef, OCLC# → WorldCat) — not yet
+  Identifier lookup (DOI → CrossRef: client landed in PR-A;
+                     OCLC# → WorldCat: still future, sandbox blocker)
        │
        ▼
   Holdings search (SRU; LoC default; consortium union catalog planned)
@@ -30,8 +33,17 @@ OpenURL/citation
 ```
 
 **Today** `DiscoveryAgent.run` searches by ISBN → ISSN → title (in
-that order of preference) via the SRU client. CrossRef, WorldCat,
-and consortium-union SRU are **not yet implemented**.
+that order of preference) via the SRU client. The CrossRef client
+exists at `src/agora/clients/crossref.py` (PR-A) but is not yet
+wired into the agent — DOI inputs land in `IllRequest.item.doi`
+without a lookup. WorldCat and consortium-union SRU remain
+unimplemented.
+
+**Roles, two clients.** CrossRef confirms *bibliographic identity*
+for a DOI (title, ISSN, year, container, item kind); SRU finds *who
+holds* the item (MARC 852). PR-B will fan out DiscoveryAgent to
+both: CrossRef when a DOI is present, then SRU keyed off the
+confirmed ISBN/ISSN, with merge-rank in the candidate list.
 
 ## SRU usage
 
@@ -82,9 +94,10 @@ class HolderCandidate(BaseModel):
     raw: dict[str, Any] = {}
 ```
 
-The `IllRequest.item` already carries title / author / ISBN / ISSN
-(see `src/agora/models/request.py`). DOI and OCLC#-keyed lookups
-remain out of scope until the CrossRef/WorldCat integrations land.
+The `IllRequest.item` already carries title / author / ISBN / ISSN /
+DOI / OCLC# (see `src/agora/models/request.py`). The CrossRef client
+covers DOI→identity in isolation; OCLC#-keyed WorldCat lookups
+remain out of scope until the WorldCat sandbox integration lands.
 
 ## Failure modes
 

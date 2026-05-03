@@ -47,6 +47,16 @@ class Settings(BaseSettings):
     sru_loc_url: str = Field(default="https://lx2.loc.gov/voyager", alias="SRU_LOC_URL")
     sru_timeout_secs: float = Field(default=5.0, alias="SRU_TIMEOUT_SECS")
 
+    crossref_base_url: str = Field(
+        default="https://api.crossref.org", alias="CROSSREF_BASE_URL"
+    )
+    crossref_timeout_secs: float = Field(default=5.0, alias="CROSSREF_TIMEOUT_SECS")
+    # Polite-pool opt-in: when set, ``HttpCrossrefClient`` sends
+    # ``User-Agent: Agora/0.1 (mailto:<value>)`` per CrossRef's
+    # etiquette guidance, which earns better rate-limit treatment on
+    # the public endpoint. Empty string keeps a plain UA.
+    crossref_mailto: str = Field(default="", alias="CROSSREF_MAILTO")
+
     saga_stall_timeout_secs: int = Field(default=600, alias="SAGA_STALL_TIMEOUT_SECS")
     outbox_retry_max_attempts: int = Field(default=10, alias="OUTBOX_RETRY_MAX_ATTEMPTS")
     outbox_worker_enabled: bool = Field(
