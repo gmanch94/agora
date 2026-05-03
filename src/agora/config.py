@@ -46,6 +46,15 @@ class Settings(BaseSettings):
 
     sru_loc_url: str = Field(default="https://lx2.loc.gov/voyager", alias="SRU_LOC_URL")
     sru_timeout_secs: float = Field(default=5.0, alias="SRU_TIMEOUT_SECS")
+    # Discovery factory toggles. Unlike ``reshare_base_url`` (whose empty
+    # default acts as the mock-vs-http switch), CrossRef and SRU ship with
+    # non-empty production URL defaults — so the URL-presence check that
+    # works for ReShare cannot work here. We instead use explicit booleans
+    # which default to ``False`` (mock client). Set to ``1`` / ``true`` to
+    # opt into the live HTTP client. This matches ReShare's spirit
+    # (mock-by-default for offline dev + tests) while leaving the URL
+    # constants in place for when http is enabled.
+    sru_enabled: bool = Field(default=False, alias="AGORA_SRU_ENABLED")
 
     crossref_base_url: str = Field(
         default="https://api.crossref.org", alias="CROSSREF_BASE_URL"
@@ -56,6 +65,9 @@ class Settings(BaseSettings):
     # etiquette guidance, which earns better rate-limit treatment on
     # the public endpoint. Empty string keeps a plain UA.
     crossref_mailto: str = Field(default="", alias="CROSSREF_MAILTO")
+    # See ``sru_enabled`` above for the rationale on explicit boolean
+    # toggling vs ReShare's URL-presence convention.
+    crossref_enabled: bool = Field(default=False, alias="AGORA_CROSSREF_ENABLED")
 
     saga_stall_timeout_secs: int = Field(default=600, alias="SAGA_STALL_TIMEOUT_SECS")
     outbox_retry_max_attempts: int = Field(default=10, alias="OUTBOX_RETRY_MAX_ATTEMPTS")
