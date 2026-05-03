@@ -288,26 +288,71 @@ def _wire(reg: StepRegistry, tx: TransactionAgent) -> None:
         # surfaces as a dead-letter row for staff review — exactly the
         # signal we want until the recall mapping is verified. The mock
         # client succeeds, which keeps the demo + tests green. See ADR-0011.
+        intents: list[OutboxIntent] = [
+            OutboxIntent(
+                target="reshare",
+                idempotency_key=ctx.idempotency_key,
+                payload={
+                    "action": "recall_request",
+                    "args": {
+                        "reshare_id": reshare_id,
+                        "reason": "ship-step compensator: recall",
+                    },
+                },
+            )
+        ]
+        # State-aware NCIP rollback. Today the SHIP forward fans out a
+        # NCIP ``check_out`` against the borrower's ILS — anchored to
+        # supplier-shipped (not borrower-receipt) per the documented
+        # prototype approximation. That means the patron's record
+        # already shows the loan even before they physically have the
+        # item. The compensator's NCIP rollback decision turns on
+        # whether that record is correct *right now*:
+        #
+        #   * Saga at SHIPPED: the patron never received the item,
+        #     so the ILS loan is a false positive. Emit a compensating
+        #     ``check_in`` to clear it.
+        #   * Saga at RECEIVED (or beyond): the patron physically
+        #     holds the item; the ILS loan is correct *as a record of
+        #     current custody*. Skip ``check_in`` here — clearing the
+        #     loan would lie to the ILS while the patron still has the
+        #     book. The patron will return the recalled item via the
+        #     normal RETURN flow (or a manual reconciliation case),
+        #     which is responsible for the eventual ``check_in``.
+        #
+        # ``ctx.current_state`` is the in-memory snapshot the API /
+        # tests pass at compensator-fire time; trust it as the
+        # authoritative answer here. The outbox row uses an explicit
+        # ``:ncip-rollback`` suffix on ``ctx.idempotency_key`` to avoid
+        # colliding with the SHIP forward's own ``:ncip`` row (the
+        # outbox UNIQUE constraint is global per ADR-0011 / lessons.md).
+        if ctx.current_state == LifecycleState.SHIPPED:
+            intents.append(
+                OutboxIntent(
+                    target="ncip",
+                    idempotency_key=f"{ctx.idempotency_key}:ncip-rollback",
+                    payload={
+                        "action": "check_in",
+                        "args": {"item_id": reshare_id},
+                    },
+                )
+            )
+            rationale = (
+                "Recall enqueued + borrower-side NCIP check-in to clear the "
+                "false loan recorded at supplier-shipped. Saga marked Disputed "
+                "for staff intervention."
+            )
+        else:
+            rationale = (
+                "Recall enqueued; patron currently holds the item, so the "
+                "ILS loan is left in place (the eventual return flow owns "
+                "check-in). Saga marked Disputed for staff intervention."
+            )
         return StepResult(
             state_after=LifecycleState.DISPUTED,
             payload={"reshare_id": reshare_id},
-            rationale=(
-                "Recall enqueued; physical item may already be in transit. "
-                "Saga marked Disputed for staff intervention."
-            ),
-            outbox=[
-                OutboxIntent(
-                    target="reshare",
-                    idempotency_key=ctx.idempotency_key,
-                    payload={
-                        "action": "recall_request",
-                        "args": {
-                            "reshare_id": reshare_id,
-                            "reason": "ship-step compensator: recall",
-                        },
-                    },
-                )
-            ],
+            rationale=rationale,
+            outbox=intents,
         )
 
     reg.register(

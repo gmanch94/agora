@@ -13,6 +13,26 @@ an ADR.
 
 ## Saga / ledger
 
+### 2026-05-03 — Compensator NCIP rollback is state-aware, not boolean
+The first instinct when wiring SHIP-compensator NCIP rollback was
+"emit `check_in` if the SHIP forward emitted `check_out`" — i.e. a
+forward-mirror. That's wrong. The right question is "what does the
+ILS record show *right now*, and is that record correct?" Today's
+SHIP forward anchors `check_out` to supplier-shipped (not
+borrower-receipt — known-gap), so at saga state `SHIPPED` the ILS
+shows a loan that hasn't physically happened — clearing it on recall
+is a true rollback. At `RECEIVED` the ILS shows a loan that *has*
+happened — clearing it would lie about current custody, since the
+patron still holds the book; the eventual return flow owns the
+`check_in`. The compensator branches on `ctx.current_state` and emits
+the rollback only from `SHIPPED`. Generalises: when designing a
+compensator with side effects in another system, ask "what does that
+system believe right now, and what should it believe after the
+recovery?" — not "what was sent forward?"
+*(Backlog #4 — see `saga/flows.py::ship_compensator`,
+`tests/test_coordinator.py::test_ship_compensator_from_*`,
+ADR-0011 + outbox-UNIQUE notes for the `:ncip-rollback` suffix.)*
+
 ### 2026-05-02 — `append()` MUST run inside a savepoint
 A duplicate `idempotency_key` insert raises `IntegrityError` and
 SQLAlchemy marks the **whole** transaction as failed unless the insert

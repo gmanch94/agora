@@ -136,6 +136,14 @@ class _StepSpec:
     # for legacy single-target steps (APPROVE → reshare); SHIP and RETURN
     # emit 2 (reshare + ncip per the NCIP-flow integration).
     forward_outbox_count: int = 1
+    # Number of outbox intents emitted by a single compensator run when
+    # the saga is at ``forward_state`` (the state the property tests
+    # exercise comp from). Default 1 when ``comp_has_outbox=True``.
+    # SHIP comp emits 2 from SHIPPED (reshare recall + ncip
+    # check_in-rollback per state-aware NCIP rollback) and 1 from any
+    # post-RECEIVE state — the property test runs from SHIPPED so
+    # the spec records 2.
+    comp_outbox_count: int = 1
 
 
 _SPECS: dict[StepName, _StepSpec] = {
@@ -176,6 +184,9 @@ _SPECS: dict[StepName, _StepSpec] = {
         comp_has_outbox=True,
         extras_seed=(("reshare_id", "rs-prop-1"),),
         forward_outbox_count=2,  # reshare confirm_shipment + ncip check_out
+        # State-aware NCIP rollback (added with the RECEIVED state work):
+        # comp from SHIPPED emits reshare recall + ncip check_in-rollback.
+        comp_outbox_count=2,
     ),
     StepName.RECEIVE: _StepSpec(
         step=StepName.RECEIVE,
@@ -455,7 +466,7 @@ async def test_compensator_replay_is_idempotent(
         "replayed compensator must produce exactly one COMPENSATOR ledger event"
     )
 
-    expected_extra_rows = 1 if spec.comp_has_outbox else 0
+    expected_extra_rows = spec.comp_outbox_count if spec.comp_has_outbox else 0
     assert len(rows) - forward_outbox_rows_before == expected_extra_rows, (
         f"comp replay enqueued {len(rows) - forward_outbox_rows_before} "
         f"row(s); expected {expected_extra_rows}"

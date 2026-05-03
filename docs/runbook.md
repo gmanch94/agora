@@ -215,7 +215,7 @@ worker crashes after the wire call but before
 | `submit`      | ledger only                                                   | ledger only                          |
 | `route`       | ledger only                                                   | ledger only                          |
 | `approve`     | outbox `send_request` → APPROVING → projection → APPROVED ¹   | outbox `cancel_request` ²            |
-| `ship`        | outbox `confirm_shipment` (+ outbox `check_out` to NCIP)      | outbox `recall_request` ³            |
+| `ship`        | outbox `confirm_shipment` (+ outbox `check_out` to NCIP)      | outbox `recall_request` ³ (+ NCIP `check_in` rollback when comp fires from SHIPPED ⁵) |
 | `receive`     | ledger only (borrower confirms physical receipt) ⁴            | ledger only (DISPUTED)               |
 | `return`      | outbox `confirm_return` (+ outbox `check_in` to NCIP)         | ledger only (DISPUTED)               |
 
@@ -243,6 +243,16 @@ in person, there is no peer ack to enqueue. ISO 18626 names this an
 `ItemReceived` note; the supplier-side state stays `Loaned`. The NCIP
 `check_out` fan-out is **not** yet re-anchored from SHIP to RECEIVE —
 that's a separate follow-up tracked in CLAUDE.md known-gaps.
+
+⁵ SHIP-compensator NCIP rollback is **state-aware** — the comp inspects
+`ctx.current_state` and only emits the paired `check_in`
+(idempotency-key suffix `:ncip-rollback`) when the saga is at SHIPPED:
+the patron never physically received the item, so the ILS loan
+(recorded at supplier-shipped per the prototype anchor) is a false
+positive that the rollback clears. From RECEIVED or beyond, the patron
+holds the book — clearing the ILS loan would lie about custody, so
+the comp emits only the reshare recall and the eventual return flow
+owns the `check_in`.
 
 ### 3.4 Backoff & dead-letter
 
