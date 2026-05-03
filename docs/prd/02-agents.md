@@ -5,7 +5,9 @@
 > wiring; CrossRef integration shipped — PR-A client + PR-B
 > DiscoveryAgent fan-out; PR-1 of RoutingAgent LLM track shipped —
 > eval harness + ADR-0014, rules-baseline floor committed at
-> top-1 0.8000 / mean Spearman 0.5556).
+> top-1 0.8000 / mean Spearman 0.5556; PR-2a seam shipped — pluggable
+> `LlmTiebreaker` Protocol + `MockLlmTiebreaker` test double + ε
+> config via `AGORA_ROUTING_TIEBREAK_EPSILON`).
 
 All agents are **advisory** in the prototype: they emit a recommendation
 + reasoning trace into the staff console. Staff commit by clicking
@@ -54,16 +56,35 @@ consortium policy.
 
 **Tools (today):** rules-only deterministic weighted-sum scoring in
 `src/agora/agents/routing.py` (consortium membership 0.5, discovery
-`preferred_score` 0.2, holding status 0.2, proximity 0.1). No LLM
-call yet. The rules pick is repeatable and offline-runnable; tests
-in `tests/test_agents.py` pin a happy-path regression.
+`preferred_score` 0.2, holding status 0.2, proximity 0.1). The rules
+pick is repeatable and offline-runnable; happy-path regression pinned
+by `tests/test_agents.py::test_routing_picks_consortium_available_first`.
 
-**Tools (planned):** LLM tie-breaker for near-tie cases (top-2 within
-ε), reading consortium-policy fields the rules can't (SLA tier,
-reciprocity balance, format/delivery affinity, historical reliability).
-**Tie-breaker, not replacement** — rules keep deciding the bulk; LLM
-fires only on near-ties. See **ADR-0014** for the decision and the
-gating policy.
+**Tools (seam shipped — PR-2a):** the LLM tie-breaker integration
+point is in place but no LLM is wired yet. `RoutingAgent.__init__`
+takes an optional `llm_tiebreaker: LlmTiebreaker | None = None`
+kwarg; when configured, the agent calls `llm_tiebreaker.resolve()`
+on near-ties (top-2 score gap ≤ ε, default 0.05 via
+`AGORA_ROUTING_TIEBREAK_EPSILON`). `MockLlmTiebreaker` ships in
+the same module for tests. Failure paths (raise / abstain / unknown
+symbol) all fall back to the rules pick + a diagnostic in the
+rationale — `RoutingAgent` never re-raises out to its caller because
+of the LLM (advisory-only invariant per ADR-0005). See
+`tests/test_routing_tiebreaker.py` for the six-case behavioural
+matrix.
+
+**Tools (PR-2b — next):** real ADK-mediated `LlmTiebreaker`
+implementation with its prompt template, `temperature=0`
+determinism, eval rerun against the LLM-augmented agent, and a CI
+hook gating on the committed `baseline.json` (top-1 0.8000, mean
+Spearman 0.5556). PR-2b will lift the rules-baseline floor by
+fixing the three true-tie inversion scenarios (`routing-013`,
+`014`, `016`); `routing-015` is documented as out-of-scope for the
+tie-breaker (rules score gap 0.46 — not a tie), see ADR-0014.
+
+**Tie-breaker, not replacement** — rules keep deciding the bulk;
+LLM fires only on near-ties. See **ADR-0014** for the decision and
+the gating policy.
 
 **Eval harness:** `src/agora/evals/routing.py` runs any RoutingAgent
 variant against the 20 hand-labeled scenarios in
