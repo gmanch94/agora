@@ -2,9 +2,10 @@
 
 > Last reviewed against code: 2026-05-03 (post PRs #17/#18/#19/#24/
 > #25/#28 + RECEIVED state + state-aware SHIP comp + NCIP-checkout
-> SHIP→RECEIVE re-anchor — APPROVING-via-outbox, NCIP fan-out,
-> TrackingScanner lifespan task, alembic-on-real-postgres CI,
-> multi-worker outbox, borrower-receipt state).
+> SHIP→RECEIVE re-anchor + tier-3 receipt-unconfirmed watch —
+> APPROVING-via-outbox, NCIP fan-out, TrackingScanner lifespan task,
+> alembic-on-real-postgres CI, multi-worker outbox,
+> borrower-receipt state).
 
 The diagrams below use Mermaid's hand-drawn (`look: handDrawn`) theme so
 they read like a whiteboard sketch. GitHub renders them inline.
@@ -44,7 +45,7 @@ flowchart TB
 
     subgraph WORKERS["Lifespan tasks (asyncio)"]
         OUTW["OutboxWorker<br/>claim via SKIP LOCKED<br/>→ ReShare / NCIP<br/>→ projection callback"]
-        SCAN["OverdueScanner<br/>tier-1 overdue +<br/>tier-2 recall_proposed"]
+        SCAN["OverdueScanner<br/>tier-1 overdue + tier-2 recall_proposed<br/>+ tier-3 receipt_unconfirmed"]
     end
 
     subgraph RESHARE["FOLIO mod-rs (ReShare)"]
