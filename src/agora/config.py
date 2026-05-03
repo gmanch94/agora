@@ -64,6 +64,17 @@ class Settings(BaseSettings):
     tracking_recall_after_days: int = Field(
         default=14, alias="AGORA_TRACKING_RECALL_AFTER_DAYS"
     )
+    # Tier-3 watch (post NCIP-checkout SHIP→RECEIVE re-anchor): a saga
+    # whose patron never confirms RECEIVE will never have a NCIP
+    # ``check_out`` dispatched (the borrower-side ILS loan only opens
+    # at physical-receipt confirmation under the new anchor). After
+    # this many days past supplier-shipped with no RECEIVE event,
+    # the scanner emits a ``receipt-unconfirmed-{saga_id}`` advisory
+    # OBSERVATION so staff can chase the patron. 7 days picked as a
+    # defensible default for domestic-ILL transit; tune per consortium.
+    tracking_unconfirmed_receipt_after_days: int = Field(
+        default=7, alias="AGORA_TRACKING_UNCONFIRMED_RECEIPT_AFTER_DAYS"
+    )
 
     @property
     def reshare_enabled(self) -> bool:

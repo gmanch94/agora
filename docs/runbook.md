@@ -1,8 +1,8 @@
 # Agora Runbook
 
-> Last reviewed against code: 2026-05-03 (post NCIP-checkout SHIP→RECEIVE
-> re-anchor — RECEIVE forward owns NCIP `check_out`, SHIP comp simplified
-> to single recall in either branch).
+> Last reviewed against code: 2026-05-03 (post TrackingAgent tier-3
+> watch — `receipt-unconfirmed-{saga_id}` advisory closes the
+> never-confirmed-receipt gap from PR #38).
 
 Operational reference for the Agora ILL prototype. Covers bring-up,
 day-to-day operation (outbox, overdue scan, gate workflow), and
@@ -63,6 +63,7 @@ the process env. Defaults target local dev (Postgres on `localhost:5433`).
 | `AGORA_TRACKING_SCANNER_ENABLED`    | `true`                                                 | Set `0` to suppress lifespan-spawned overdue scanner.      |
 | `AGORA_TRACKING_SCAN_INTERVAL_SECS` | `300.0`                                                | Overdue scanner poll interval (5 min default).             |
 | `AGORA_TRACKING_RECALL_AFTER_DAYS`  | `14`                                                   | Days past `due_at` before tier-2 `recall-proposed` fires.  |
+| `AGORA_TRACKING_UNCONFIRMED_RECEIPT_AFTER_DAYS` | `7`                                        | Days past `shipped_at` (with no RECEIVE event) before tier-3 `receipt-unconfirmed` fires. Independent of tier-1/2; tracks transit time. |
 
 `.env.example` in the repo lists the same set with safe defaults.
 
@@ -350,11 +351,25 @@ existing row, and the scanner reports `newly_recorded=False`.
 `OverdueScanner.run_forever` runs as a background `asyncio.Task`
 spawned from the FastAPI lifespan in `src/agora/api/app.py` (task
 name `agora.tracking.scanner`), polling at
-`AGORA_TRACKING_SCAN_INTERVAL_SECS` (default 300s). Tier-2 escalation
-fires on the first scan where `days_overdue >=
-AGORA_TRACKING_RECALL_AFTER_DAYS` (default 14) and emits a
-`recall-proposed-{saga_id}` OBSERVATION carrying
-`suggested_action: "compensate_ship"` for the staff console.
+`AGORA_TRACKING_SCAN_INTERVAL_SECS` (default 300s). Three-tier
+emission per pass (all advisory, no outbox, no state change —
+ADR-0005):
+
+- **Tier-1** `overdue-{saga_id}` on the first scan past `due_at`
+  (loan-clock time).
+- **Tier-2** `recall-proposed-{saga_id}` on the first scan where
+  `days_overdue >= AGORA_TRACKING_RECALL_AFTER_DAYS` (default 14);
+  carries `suggested_action: "compensate_ship"` for the staff
+  console CTA.
+- **Tier-3** `receipt-unconfirmed-{saga_id}` on the first scan where
+  `now - shipped_at >= AGORA_TRACKING_UNCONFIRMED_RECEIPT_AFTER_DAYS`
+  (default 7) and the saga is still at SHIPPED — patron has not
+  confirmed RECEIVE. Tier-3 fires *independently* of tier-1/2 (a
+  saga can be tier-3 only with `due_at` still in the future).
+  Tracks transit time, not loan-clock time. No `suggested_action`
+  field — staff console surfaces it as a "chase patron" hint
+  without an in-saga CTA. Closes the gap that PR #38 documented
+  when re-anchoring NCIP `check_out` from SHIP to RECEIVE.
 
 Disable for local debugging:
 
