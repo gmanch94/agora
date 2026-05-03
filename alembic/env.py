@@ -16,8 +16,11 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Override URL from settings so devs can rely on .env.
-config.set_main_option("sqlalchemy.url", get_settings().db_url)
+# Honor an already-set sqlalchemy.url if the caller injected one
+# (tests programmatically build a Config and call command.upgrade);
+# otherwise fall back to settings so devs can rely on .env.
+if not config.get_main_option("sqlalchemy.url"):
+    config.set_main_option("sqlalchemy.url", get_settings().db_url)
 
 target_metadata = Base.metadata
 
