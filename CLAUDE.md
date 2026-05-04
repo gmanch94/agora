@@ -178,10 +178,9 @@ ISO 18626 message types — see table in `clients/reshare.py`.
   `GOOGLE_GENAI_USE_VERTEXAI=true` the SDK silently falls back to
   public-Gemini API-key auth and 401s every call (the seam catches
   it and runs rules-only — output looks "successful" but with the
-  rules baseline numbers). The default 5s `*_TIMEOUT_SECS` is
-  sometimes too tight for Gemini 2.5 cold-start, and the config
-  default `gemini-2.0-flash` 404s under the current Vertex
-  enablement).
+  rules baseline numbers). Config defaults are now `gemini-2.5-flash`
+  and `AGORA_ROUTING_LLM_TIMEOUT_SECS=30.0` (bumped from 5s which
+  was too tight for Gemini 2.5 cold-start).
   Failure paths in the seam (LLM raises / abstains / returns unknown
   symbol / times out) ALWAYS fall back to the rules pick + diagnostic;
   the agent never re-raises out to its caller (advisory-only invariant
