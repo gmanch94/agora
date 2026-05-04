@@ -1,6 +1,6 @@
 # Agora — common dev commands
 
-.PHONY: help install fmt lint type test test-fast cov audit up down logs db-reset migrate api demo eval-routing eval-routing-llm clean
+.PHONY: help install fmt lint type test test-fast cov audit up down logs db-reset migrate api demo eval-routing eval-routing-llm sync-doc-counts clean
 
 help:
 	@echo "Common targets:"
@@ -21,6 +21,7 @@ help:
 	@echo "  demo        run scripted happy-path demo"
 	@echo "  eval-routing run RoutingAgent eval harness (rules-only); rewrite evals/routing/baseline-rules.json"
 	@echo "  eval-routing-llm  run LLM-augmented eval (--no-write); requires Vertex/ADC env (see CLAUDE.md)"
+	@echo "  sync-doc-counts  rewrite test count + ADR count in docs to match runtime truth"
 	@echo "  clean       remove caches"
 
 install:
@@ -110,6 +111,14 @@ eval-routing-llm:
 		exit 1; \
 	fi
 	python -m agora.evals.routing --llm --no-write
+
+# Rewrite test count + ADR count in docs (README, CLAUDE.md, PRD-00,
+# solution.md) to match runtime truth (pytest --collect-only +
+# `ls docs/adr/`). The pytest gate `tests/test_doc_counts.py` asserts a
+# clean run, so any drift surfaces in CI as a red triple-gate. See
+# `scripts/sync_doc_counts.py` for the registry of doc locations.
+sync-doc-counts:
+	python scripts/sync_doc_counts.py --fix
 
 clean:
 	rm -rf .pytest_cache .mypy_cache .ruff_cache htmlcov .coverage
