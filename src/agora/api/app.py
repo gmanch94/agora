@@ -20,7 +20,7 @@ import secrets
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Any, Optional
+from typing import Any
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
@@ -463,7 +463,7 @@ def create_app() -> FastAPI:
     _console_security = HTTPBasic(auto_error=False)
 
     def _require_console_auth(
-        credentials: Optional[HTTPBasicCredentials] = Depends(_console_security),
+        credentials: HTTPBasicCredentials | None = Depends(_console_security),
         settings: Any = Depends(get_settings),
     ) -> None:
         password = settings.console_password
