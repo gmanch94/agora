@@ -200,6 +200,19 @@ human-in-loop invariant without any test failing.
 
 ## Type / lint surface
 
+### 2026-05-04 — `"".split(",")` is `[""]`, not `[]` — strip-and-filter every CSV env-var
+`AGORA_CONSORTIUM_MEMBERS=""` naively split would mark the empty
+string `""` as an in-consortium symbol — a phantom roster entry that
+matches nothing but is technically present. Same for trailing-comma
+forms (`"A,"` → `["A", ""]`) and pure-comma forms (`","` → `["", ""]`).
+Idiom for any env-var-as-set property: `{tok.strip() for tok in raw.split(",") if tok.strip()}` —
+strip per token, filter empties. Pinned by 5 unit cases in
+`tests/test_factories.py::test_consortium_members_*`, including the
+trailing-comma trap (`",", " , , "`) which is the easy mistake in
+`.env` files. Generalises to any place we tokenize user-supplied
+delimited input — don't trust split alone.
+*(PR #56 — see `Settings.consortium_members` in `src/agora/config.py`.)*
+
 ### 2026-05-04 — Dynamic module load needs a typed alias to pacify mypy
 `scripts/validate_iso18626.py` is loaded by `importlib` so the test
 file isn't bound by package layout. `module.validate` typed as
@@ -266,6 +279,21 @@ merges can't repeat the trick.
 ---
 
 ## Workflow / process
+
+### 2026-05-04 — `.env.example` drifts silently unless the runbook claim is enforced
+The runbook env-var table § Configuration says ".env.example in the
+repo lists the same set." That invariant had been silently broken for
+~13 PRs (OKAPI_URL #34, AGORA_SRU_ENABLED / AGORA_CROSSREF_ENABLED #46,
+all the AGORA_TRACKING_* vars, every AGORA_ROUTING_LLM_* var,
+AGORA_CONSORTIUM_MEMBERS #56) because nobody was checking. Adding env
+vars to `Settings` is part of every feature PR; updating `.env.example`
+is not muscle memory. Fix: PR #57 backfilled the missing 17 rows with
+self-documenting comments and pointed the file's header at the runbook
+table as canonical. **Generalises:** when a doc claims symmetry between
+two artifacts, either wire a CI check (script that diffs `Settings`
+field set vs `.env.example` keys) or expect drift. Symmetry claims
+without enforcement are aspirational, not normative.
+*(PR #57 — see `.env.example` header pointer.)*
 
 ### 2026-05-04 — Quality gates without committed numbers are just vibes
 Initial draft of ADR-0014 (routing eval gate) had only a qualitative
@@ -597,6 +625,29 @@ moves to a real ENUM, every state-add needs `ALTER TYPE ... ADD VALUE`.
 ---
 
 ## Security tooling
+
+### 2026-05-04 — `.secrets.baseline` filenames are platform-shaped; commit them in forward-slash
+The detect-secrets baseline persists filenames in whichever separator
+the generating OS uses. Generated on Windows: `docs\runbook.md`.
+Linux CI's `git ls-files | xargs detect-secrets-hook --baseline` then
+compares those Windows paths against the actual `docs/runbook.md`,
+fails to reconcile, treats every Windows-pathed file as a brand-new
+scan target, finds the same secrets again, and rewrites the baseline
+with forward-slash entries — exiting non-zero with "The baseline file
+was updated. Please `git add .secrets.baseline`." The audit then fails
+on every CI run until somebody catches it. Fix: normalize the baseline
+to forward-slash before commit (one-shot json transform). Same
+mechanism caused PR #55's audit failure on the docs stale-fix sweep
+even though the actual line shift was intended (`docs/runbook.md` env
+table grew). The two effects compound — the path mismatch makes line
+numbers flap on every run regardless of whether content shifted.
+**Generalises:** any tool whose database keys on filenames must be
+normalized to a single separator if the repo is touched on both
+platforms. Don't rely on git's `core.autocrlf` to mask this — content
+endings normalize, but filename storage in third-party JSON does not.
+*(PRs #55, #57 — see `.secrets.baseline` results map; the normalize
+script lived briefly at `scripts/_normalize_baseline.py` before
+deletion.)*
 
 ### 2026-05-04 — Audit pass: `# nosec` annotations age, must be re-justified each run
 Smoke-testing the security-audit skill (backlog #6) found 4 nosec'd
