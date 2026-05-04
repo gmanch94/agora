@@ -1047,6 +1047,62 @@ spooked by the same symptom.
 *(PR #80 — see `src/agora/api/templates/base.html`,
 `src/agora/api/static/theme.css`.)*
 
+### 2026-05-04 — Windows-no-Docker visual smoke needs `create_all` bootstrap, not alembic
+Visually smoking the staff console UI (PR #80) on Windows without
+Docker Desktop running burned through three failed setup attempts:
+
+1. **`docker compose up -d postgres`** — Docker Desktop wasn't
+   running. `Connect call failed ... npipe ... DockerDesktopLinuxEngine`.
+2. **`AGORA_DB_URL=sqlite+aiosqlite:///agora.db; alembic upgrade
+   head`** — alembic still tried to hit Postgres on `:5433`.
+   `alembic.ini:4` hardcodes
+   `sqlalchemy.url = postgresql+asyncpg://agora:agora@localhost:5433/agora`
+   and `alembic/env.py:22` only honours `AGORA_DB_URL` when
+   `sqlalchemy.url` is *not* set in the .ini. So pydantic
+   Settings reading the env var is a no-op for the alembic flow.
+3. **Even if alembic did honour the env var**, the migrations may
+   carry Postgres-only DDL — `tests/conftest.py` sidesteps this
+   by using `Base.metadata.create_all()` for SQLite tests
+   (CLAUDE.md known-gap: "Base.metadata.create_all() for tests,
+   Alembic for production"). So pointing alembic at SQLite is
+   the wrong shape entirely.
+
+**Working recipe** for a one-off Windows visual smoke without
+Docker:
+
+```bash
+export AGORA_DB_URL=sqlite+aiosqlite:///agora.db
+export AGORA_OUTBOX_WORKER_ENABLED=0
+export AGORA_TRACKING_SCANNER_ENABLED=0
+
+.venv/Scripts/python.exe -c "
+import asyncio
+from agora.saga.db import Base
+from sqlalchemy.ext.asyncio import create_async_engine
+async def main():
+    engine = create_async_engine('sqlite+aiosqlite:///agora.db')
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    await engine.dispose()
+asyncio.run(main())
+"
+
+.venv/Scripts/python.exe -m uvicorn agora.api.app:app --reload
+```
+
+The `*_ENABLED=0` env vars suppress the lifespan-spawned outbox
+worker + overdue scanner, which would otherwise fire DB queries
+against the freshly-empty SQLite and litter the logs with retry
+noise. The `create_all` bootstrap matches the test suite's setup
+shape, so the schema is whatever `Base.metadata` knows.
+Generalises: **for any Postgres-pinned alembic flow, the SQLite
+shortcut is `Base.metadata.create_all` direct, not alembic
+against SQLite.** Document this in the runbook the next time we
+touch its bring-up section.
+*(PR #80 visual smoke — see `alembic.ini:4`, `alembic/env.py:22`,
+`tests/conftest.py` engine fixture for the
+`Base.metadata.create_all` precedent.)*
+
 ---
 
 ## Convention reminders (collected here so they don't drift out of CLAUDE.md)
