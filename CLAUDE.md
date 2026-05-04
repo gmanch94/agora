@@ -371,6 +371,14 @@ ISO 18626 message types — see table in `clients/reshare.py`.
   (`LifecycleState` + `StepName`), `saga/flows.py` (forward +
   compensator), `tests/test_coordinator.py` (happy path + gate-required),
   and the ISO 18626 mapping table in PRD `01-lifecycle-and-states.md`.
+- **When adding a new `Settings` field**, three artifacts must agree:
+  the field declaration in `src/agora/config.py`, a row in
+  `.env.example`, and a row in the runbook env-var table at
+  `docs/runbook.md` § 1.2. `tests/test_config.py` enforces the
+  symmetry — six pytest cases cover keys (forward + reverse) and
+  default values for both artifacts (PRs #59, #60, #65, #66). CI fails
+  with the exact missing keys / mismatched defaults so the fix is
+  mechanical.
 - **Preserve advisory-agent contract**: agents return a recommendation
   object with `rationale` field. They never write to the saga ledger
   directly.
