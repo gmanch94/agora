@@ -205,3 +205,65 @@ async def test_ui_compensate_cancels_routed_saga(client: AsyncClient) -> None:
 
     detail = await client.get(f"/sagas/{saga_id}")
     assert detail.json()["saga"]["current_state"] == "submitted"
+
+
+# ---------------------------------------------------------------------------
+# Slice 3 — discover candidates panel
+# ---------------------------------------------------------------------------
+
+
+async def test_discover_panel_returns_html_fragment(client: AsyncClient) -> None:
+    """POST /ui/sagas/{id}/discover returns an HTML fragment (no full page)."""
+    submit = await client.post("/requests", json=_REQUEST_PAYLOAD)
+    saga_id = submit.json()["saga_id"]
+
+    r = await client.post(f"/ui/sagas/{saga_id}/discover")
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"].startswith("text/html")
+    body = r.text
+    # Fragment contains the panel wrapper with the HTMX swap target id.
+    assert 'id="discovery-panel"' in body
+    # No full-page chrome (fragment, not a full page).
+    assert "<html" not in body
+    assert "<title" not in body
+
+
+async def test_discover_panel_shows_empty_state_for_default_mock(
+    client: AsyncClient,
+) -> None:
+    """Default MockSruClient returns no holders — panel shows the empty copy."""
+    submit = await client.post("/requests", json=_REQUEST_PAYLOAD)
+    saga_id = submit.json()["saga_id"]
+
+    r = await client.post(f"/ui/sagas/{saga_id}/discover")
+    assert "No candidates found" in r.text
+
+
+async def test_discover_panel_writes_observation_event(client: AsyncClient) -> None:
+    """Each /ui/…/discover call appends an OBSERVATION event to the ledger."""
+    submit = await client.post("/requests", json=_REQUEST_PAYLOAD)
+    saga_id = submit.json()["saga_id"]
+
+    await client.post(f"/ui/sagas/{saga_id}/discover")
+
+    events = (await client.get(f"/sagas/{saga_id}")).json()["events"]
+    obs = [e for e in events if e["kind"] == "observation"]
+    assert obs, "Expected at least one OBSERVATION event after discover"
+
+
+async def test_discover_panel_404_on_missing_saga(client: AsyncClient) -> None:
+    """Unknown saga UUID returns 404."""
+    r = await client.post("/ui/sagas/00000000-0000-0000-0000-000000000000/discover")
+    assert r.status_code == 404
+
+
+async def test_detail_view_shows_discover_button_for_active_saga(
+    client: AsyncClient,
+) -> None:
+    """Detail view renders the Discover candidates button for non-terminal sagas."""
+    submit = await client.post("/requests", json=_REQUEST_PAYLOAD)
+    saga_id = submit.json()["saga_id"]
+
+    body = (await client.get(f"/sagas/{saga_id}/view")).text
+    assert "Discover candidates" in body
+    assert f"/ui/sagas/{saga_id}/discover" in body
