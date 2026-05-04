@@ -46,8 +46,10 @@ mean Spearman:    0.5556  (18 contributing scenarios; 14 at +1.0, 4 at -1.0)
 ```
 
 These numbers are the floor that any future LLM-augmented routing PR
-has to beat. They live in `evals/routing/baseline.json` so a
-regression shows up in the diff.
+has to beat. They live in `evals/routing/baseline-rules.json` (split
+out from `baseline.json` in #50; the latter now carries the
+LLM-augmented numbers — see PR-2b addendum below) so a regression
+shows up in the diff.
 
 ## Decision
 
@@ -134,9 +136,11 @@ ordering for staff to review (advisory-only — ADR-0005).
   adds scenarios that happen to invert rules picks, the floor
   collapses without a PR explicitly relaxing it. Mitigation: changing
   `scenarios.json` MUST be paired with a re-run + re-commit of
-  `baseline.json`, and the PR description MUST explain why the new
-  baseline is acceptable. The eval-gating CI check (PR-2) will catch
-  silent regressions.
+  `baseline-rules.json` (and `baseline.json` if the LLM is wired in),
+  and the PR description MUST explain why the new baseline is
+  acceptable. The eval-gating CI check
+  (`.github/workflows/routing-eval-floor.yml`, shipped in #47/#50)
+  catches silent regressions on the rules path.
 
 ## Alternatives considered
 
