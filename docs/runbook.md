@@ -1,13 +1,16 @@
 # Agora Runbook
 
-> Last reviewed against code: 2026-05-04 (post PRs #41-#76 — PR-2b
+> Last reviewed against code: 2026-05-04 (post PRs #41-#80 — PR-2b
 > routing-LLM adapter adds `AGORA_ROUTING_LLM_*` env vars + a sibling
 > `routing-eval-floor.yml` CI workflow alongside `triple-gate` /
 > `audit` / `postgres-tests`; ε retuned to 0.03 (#51); DiscoveryAgent
 > wired with `POST /sagas/{id}/discover` endpoint (#46/#53); ISO
 > 18626 XSD validation harness shipped (#52); Vertex env-routing
 > rows added for `eval-routing --llm` and silent-fallback failure
-> mode noted on `AGORA_ROUTING_LLM_ENABLED` (#75)).
+> mode noted on `AGORA_ROUTING_LLM_ENABLED` (#75); RoutingAgent
+> format-affinity feature in #79 closes `routing-015` and bumps
+> the LLM-augmented baseline to 20/20; staff console UI first slice
+> ships in #80 — `GET /` inbox via HTMX + Jinja2, ADR-0015).
 
 Operational reference for the Agora ILL prototype. Covers bring-up,
 day-to-day operation (outbox, overdue scan, gate workflow), and

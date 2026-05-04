@@ -1,12 +1,14 @@
 # Agora — Solution Design Document
 
-> Last reviewed against code: 2026-05-04 (post PRs #41-#76 — outbox
+> Last reviewed against code: 2026-05-04 (post PRs #41-#80 — outbox
 > schema sync + APPROVE-via-outbox + runbook env-var backfill +
 > DiscoveryAgent endpoint wiring (#46/#53) + routing-LLM tie-breaker
 > tuned (#51) + ISO 18626 XSD validation harness (#52) + Vertex
 > env-routing requirement for `eval-routing --llm` (#75) +
 > `sync-doc-counts` script + pytest gate as single source of truth
-> for test/ADR counts (#76)).
+> for test/ADR counts (#76) + RoutingAgent format-affinity feature
+> (#79 closes routing-015, baseline 20/20) + staff console UI first
+> slice via HTMX + Jinja2 (#80, ADR-0015)).
 
 Single-narrative design doc. Stitches together what the PRDs say
 should exist, what the ADRs decided, what the code does today, and
@@ -407,7 +409,7 @@ during the APPROVING window (supplier ack still pending) returns
 
 ### 7.5 Test strategy
 
-- 220 tests across unit, property (Hypothesis on compensator
+- 222 tests across unit, property (Hypothesis on compensator
   symmetry), and end-to-end (FastAPI + ASGITransport + in-memory
   SQLite), plus 6 postgres-only tests gated behind
   `AGORA_TEST_DB_URL` / the `postgres-tests.yml` CI service container.
@@ -517,7 +519,7 @@ All gaps are tracked in `CLAUDE.md`.
 - `docs/runbook.md` — operational reference (bring-up, gate workflow, outbox, dead-letter triage)
 - `docs/architecture.md` — Mermaid diagrams (layer cake, lifecycle state machine, idempotency model)
 - `docs/prd/00-overview.md` … `06-non-functional.md` — product requirements (7 docs)
-- `docs/adr/0001-…` … `0014-routing-llm-tiebreaker.md` — architecture decisions (14 docs; latest: 0013 Okapi auth, 0014 routing-LLM tie-breaker)
+- `docs/adr/0001-…` … `0014-routing-llm-tiebreaker.md` — architecture decisions (15 docs; latest: 0013 Okapi auth, 0014 routing-LLM tie-breaker)
 - `src/agora/api/app.py` — FastAPI factory + lifespan
 - `src/agora/saga/coordinator.py` — coordinator
 - `src/agora/saga/flows.py` — forward+compensator pairs

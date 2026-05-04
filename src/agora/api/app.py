@@ -18,10 +18,14 @@ import asyncio
 import contextlib
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -128,6 +132,36 @@ def _to_summary(saga: Saga) -> SagaSummary:
         title=str(item.get("title") or ""),
         requesting_library=str(requesting.get("symbol") or ""),
     )
+
+
+def _to_inbox_row(saga: Saga) -> dict[str, Any]:
+    """Render a Saga ORM row as a dict for the inbox.html template.
+
+    Kept distinct from ``_to_summary`` (which serialises to JSON for
+    the ``GET /sagas`` API consumer) so the UI can evolve its column
+    set without dragging the API schema with it.
+    """
+    raw = saga.request_payload or {}
+    item = raw.get("item") or {}
+    patron = raw.get("patron") or {}
+    requesting = raw.get("requesting_library") or {}
+    patron_id = str(patron.get("patron_id") or "")
+    library = str(requesting.get("symbol") or patron.get("library_symbol") or "")
+    patron_label = (
+        f"{patron_id} @ {library}" if patron_id and library else (patron_id or library or "")
+    )
+    state = saga.current_state
+    try:
+        is_terminal = LifecycleState(state) in TERMINAL_STATES
+    except ValueError:
+        is_terminal = False
+    return {
+        "saga_id_short": str(saga.id)[:8],
+        "patron_label": patron_label,
+        "item_title": str(item.get("title") or ""),
+        "current_state": state,
+        "is_terminal": is_terminal,
+    }
 
 
 def _parse_step(name: str) -> StepName:
@@ -408,6 +442,38 @@ def create_app() -> FastAPI:
     app.state.outbox_worker_task = None
     app.state.tracking_scanner = None
     app.state.tracking_scanner_task = None
+
+    # Staff console UI (HTMX + Jinja2 — see ADR-0015). Templates are
+    # colocated with the API package so they ship inside the wheel
+    # alongside the routes that render them.
+    _ui_root = Path(__file__).resolve().parent
+    app.mount(
+        "/static",
+        StaticFiles(directory=str(_ui_root / "static")),
+        name="static",
+    )
+    templates = Jinja2Templates(directory=str(_ui_root / "templates"))
+
+    @app.get("/", response_class=HTMLResponse, include_in_schema=False)
+    async def staff_console_inbox(
+        request: Request,
+        session: AsyncSession = Depends(_get_session),
+    ) -> HTMLResponse:
+        """Staff console inbox — HTML view over recent sagas.
+
+        First UI slice (ADR-0015): read-only table. Approve / Reject /
+        Compensate land in a follow-up PR; today the JSON endpoints
+        remain the only state-changing surface.
+        """
+        async with session.begin():
+            stmt = select(Saga).order_by(Saga.updated_at.desc()).limit(200)
+            rows = (await session.execute(stmt)).scalars().all()
+            ctx_sagas = [_to_inbox_row(saga) for saga in rows]
+        return templates.TemplateResponse(
+            request,
+            "inbox.html",
+            {"sagas": ctx_sagas},
+        )
 
     @app.get("/health", response_model=HealthResponse)
     async def health() -> HealthResponse:

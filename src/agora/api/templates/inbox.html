@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+
+{% block title %}Inbox &middot; Agora{% endblock %}
+
+{% block content %}
+<h1 class="page__title">Inbox</h1>
+<p class="page__hint">
+  Sagas awaiting staff action. Approve, reject, or compensate from the detail view (coming next).
+</p>
+
+<section class="card-base">
+  {% if sagas %}
+  <table class="inbox-table" aria-label="Pending sagas">
+    <thead>
+      <tr>
+        <th scope="col">Saga</th>
+        <th scope="col">Patron</th>
+        <th scope="col">Item</th>
+        <th scope="col">State</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for saga in sagas %}
+      <tr>
+        <td class="saga-id">{{ saga.saga_id_short }}</td>
+        <td>{{ saga.patron_label }}</td>
+        <td class="item-title">{{ saga.item_title }}</td>
+        <td>
+          <span class="state{% if saga.is_terminal %} state--terminal{% endif %}">
+            {{ saga.current_state }}
+          </span>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">
+    <p class="empty__title">No sagas yet</p>
+    <p>Submit a request via <code>POST /requests</code> to populate the inbox.</p>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

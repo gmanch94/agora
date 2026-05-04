@@ -3,10 +3,12 @@
 > Research prototype. Multi-library consortium. Agents over FOLIO/ReShare.
 > Saga + idempotency. Human-approval at every state transition.
 
-> Last reviewed against code: 2026-05-04 (post PRs #41-#76 — adds
+> Last reviewed against code: 2026-05-04 (post PRs #41-#80 — adds
 > Vertex env-routing requirement for `eval-routing --llm`,
 > `sync-doc-counts` script + pytest gate as the single source of
-> truth for test/ADR counts).
+> truth for test/ADR counts, RoutingAgent format-affinity feature
+> (#79 closes routing-015), staff console UI first slice with
+> HTMX + Jinja2 (ADR-0015, #80)).
 
 ## What this is
 
@@ -25,7 +27,7 @@ reimplement them.
 ## Status
 
 **Working prototype.** End-to-end demo runs via `make demo`
-(`agora.demos.happy_path`). **220 tests** green (+6 postgres-only in CI).
+(`agora.demos.happy_path`). **222 tests** green (+6 postgres-only in CI).
 Saga + outbox + APPROVING-via-outbox (ADR-0012), multi-worker outbox
 safety (`SELECT … FOR UPDATE SKIP LOCKED`), TrackingAgent three-tier
 overdue scanner (overdue / recall-proposed / receipt-unconfirmed) wired
@@ -73,7 +75,7 @@ agora/
 │   ├── evals/           # Routing eval harness (run via make eval-routing)
 │   ├── models/          # pydantic schemas (ISO 18626 subset)
 │   ├── config.py / cli.py / logging.py / py.typed
-├── tests/               # 220 unit + property + e2e (+6 postgres-only)
+├── tests/               # 222 unit + property + e2e (+6 postgres-only)
 ├── .github/workflows/   # audit.yml, postgres-tests.yml, triple-gate.yml,
 │                        #   routing-eval-floor.yml
 ├── docker-compose.yml   # Postgres-only sandbox today
