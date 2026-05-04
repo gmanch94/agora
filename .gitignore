@@ -55,3 +55,14 @@ logs/
 # Claude Code runtime state (hooks scratch files, session locks)
 .claude/state/
 .claude/scheduled_tasks.lock
+# Local user-only Claude settings (project-scoped, varies per dev).
+.claude/settings.local.json
+
+# Session-scratch planning artifacts. These are written by the agent
+# during a working session as ephemeral notes — never committed.
+# Living in the repo root makes them easy to grep but also easy to
+# accidentally `git add .`; gitignore both belt-and-braces.
+NEXT_SESSION.md
+RECOMMENDATION.md
+DOCS_STALE_PUNCHLIST.md
+DESIGN.md
