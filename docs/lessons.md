@@ -998,6 +998,55 @@ failure class**; let the listing UI do the grouping.
 `postgres-tests.yml`, `routing-eval-floor.yml`,
 `triple-gate.yml`.)*
 
+### 2026-05-04 — Scheduled remote routine ≠ run-now routine; CCR auto-disables on transient repo-access failure
+Set up a `run_once_at` remote routine to ship the staff console UI
+slice while stepping out of the session (the precedent that
+already lives in `feedback_overnight_autonomy.md`). Two distinct
+failure modes hit:
+
+**(a) Auto-disable on first scheduled fire.** First fire at
+2026-05-04T17:01Z came back with `ended_reason:
+auto_disabled_repo_access` ~3 minutes after the fire time even
+though the GitHub App had been installed before stepping out. The
+runner couldn't see the repo at fire-time and the routine flipped
+to `enabled: false` rather than retrying. Re-arming via API
+(`update` with a fresh `run_once_at`) re-enabled it but didn't
+fix the underlying issue.
+
+**(b) `run` action returns 400 + UI shows "failed to start run."**
+Manual triggering via `RemoteTrigger.run` returned
+`invalid_request_error: trigger_id: Extra inputs are not
+permitted`. The claude.ai web UI's run-now button surfaced as
+"failed to start run" with no detail. Same backend.
+
+The remote routine path is convenient when the user is genuinely
+unavailable, but the path is fragile enough that a session-burning
+2.5-hour wait can still terminate with nothing shipped. Pragmatic
+default: **if the user is around, do the work locally; reserve
+remote routines for truly-async scenarios** (e.g. nightly
+maintenance, scheduled benchmarks). When using a routine, plan a
+fallback path where the local session can pick up the slack.
+*(PR #80 attempt — see scheduled-routine attempt logs in the
+session transcript;
+`memory/project_staff_console_handoff.md`.)*
+
+### 2026-05-04 — Preview-panel HTML renders unstyled when `<link href="/static/...">` is absolute
+The `Claude Preview` panel that auto-displays new HTML files
+renders them standalone — there's no FastAPI process serving
+`/static/theme.css`, so the absolute path resolves to nothing and
+the browser falls back to defaults (white-on-black or
+black-on-gray depending on system theme). User flagged "can
+barely see black text on gray background" while inspecting
+`base.html` in the preview. The runtime view (served via FastAPI
++ `StaticFiles`) renders the full theme correctly; the preview
+artifact is a panel limitation, not a CSS bug. Don't bloat
+`base.html` with inline-style fallbacks for a preview-only
+issue — the absolute path is correct for runtime. Mention the
+preview limitation in the PR description so reviewers don't get
+spooked by the same symptom.
+*(PR #80 — see `src/agora/api/templates/base.html`,
+`src/agora/api/static/theme.css`.)*
+
 ---
 
 ## Convention reminders (collected here so they don't drift out of CLAUDE.md)

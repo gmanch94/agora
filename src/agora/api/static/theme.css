@@ -1,0 +1,219 @@
+/* Agora staff console — theme tokens.
+ *
+ * Subset of DESIGN.md (Mistral-AI alpha) transcribed as CSS custom
+ * properties. ADR-0015 documents the framework choice + the visual
+ * gaps relative to the full brand kit (no atmospheric gradients, no
+ * paid display font, no sunset-stripe footer — workflow-first).
+ */
+
+:root {
+  /* Brand & accent */
+  --color-primary: #fa520f;
+  --color-primary-deep: #cc3a05;
+  --color-on-primary: #ffffff;
+  --color-sunshine-500: #ffb83e;
+
+  /* Cream / neutral warm */
+  --color-cream: #fff8e0;
+  --color-cream-light: #fffaeb;
+  --color-beige-deep: #e6d5a8;
+
+  /* Surfaces */
+  --color-canvas: #ffffff;
+  --color-surface: #fafafa;
+
+  /* Text */
+  --color-ink: #1f1f1f;
+  --color-slate: #4a4a4a;
+  --color-steel: #6a6a6a;
+  --color-muted: #a8a8a8;
+
+  /* Hairlines */
+  --color-hairline: #e5e5e5;
+  --color-hairline-soft: #ededed;
+  --color-hairline-strong: #c7c7c7;
+
+  /* Spacing scale */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 24px;
+  --space-xxl: 32px;
+  --space-xxxl: 48px;
+
+  /* Radii */
+  --rounded-sm: 4px;
+  --rounded-md: 8px;
+  --rounded-lg: 12px;
+
+  /* Typography stacks. PP Editorial Old is paid (Pangram Pangram);
+   * staff console falls back to Georgia / serif until a license is
+   * sourced — see ADR-0015. Inter loads from Google Fonts. */
+  --font-display: "PP Editorial Old", "Cormorant Garamond", Georgia, "Times New Roman", serif;
+  --font-ui: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+}
+
+/* Reset (light, no bloat) */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font-family: var(--font-ui);
+  font-size: 16px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Header bar */
+.header {
+  background: var(--color-canvas);
+  border-bottom: 1px solid var(--color-hairline-soft);
+  padding: var(--space-lg) var(--space-xxl);
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-xl);
+}
+
+.header__brand {
+  font-family: var(--font-display);
+  font-size: 28px;
+  font-weight: 400;
+  letter-spacing: -0.5px;
+  color: var(--color-ink);
+}
+
+.header__sub {
+  color: var(--color-steel);
+  font-size: 14px;
+}
+
+/* Page wrapper */
+.page {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: var(--space-xxl) var(--space-xxl);
+}
+
+.page__title {
+  font-family: var(--font-display);
+  font-size: 36px;
+  font-weight: 400;
+  letter-spacing: -0.5px;
+  margin: 0 0 var(--space-sm) 0;
+}
+
+.page__hint {
+  color: var(--color-steel);
+  margin: 0 0 var(--space-xl) 0;
+}
+
+/* Card container */
+.card-base {
+  background: var(--color-canvas);
+  border: 1px solid var(--color-hairline-soft);
+  border-radius: var(--rounded-lg);
+  padding: var(--space-xl);
+}
+
+/* Inbox table */
+.inbox-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.inbox-table th,
+.inbox-table td {
+  padding: var(--space-md) var(--space-lg);
+  text-align: left;
+  border-bottom: 1px solid var(--color-hairline-soft);
+}
+
+.inbox-table th {
+  font-weight: 500;
+  color: var(--color-steel);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.inbox-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.inbox-table .saga-id {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-steel);
+}
+
+.inbox-table .item-title {
+  color: var(--color-ink);
+  font-weight: 500;
+}
+
+/* State pill */
+.state {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  background: var(--color-cream);
+  color: var(--color-ink);
+  border: 1px solid var(--color-beige-deep);
+}
+
+.state--terminal {
+  background: var(--color-hairline-soft);
+  color: var(--color-steel);
+  border-color: var(--color-hairline);
+}
+
+/* Buttons */
+.button-primary {
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  font-weight: 500;
+  padding: 10px 20px;
+  border: 0;
+  border-radius: var(--rounded-md);
+  cursor: pointer;
+}
+
+.button-primary:active {
+  background: var(--color-primary-deep);
+}
+
+/* Empty state */
+.empty {
+  text-align: center;
+  padding: var(--space-xxxl) var(--space-xl);
+  color: var(--color-steel);
+}
+
+.empty__title {
+  font-family: var(--font-display);
+  font-size: 22px;
+  color: var(--color-ink);
+  margin: 0 0 var(--space-sm) 0;
+}
+
+/* Footer */
+.footer {
+  margin-top: var(--space-xxxl);
+  padding: var(--space-xl) var(--space-xxl);
+  color: var(--color-muted);
+  font-size: 12px;
+  text-align: center;
+}

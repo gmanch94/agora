@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% block title %}Agora{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    rel="stylesheet"
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Cormorant+Garamond:wght@400;500&display=swap"
+  />
+  <link rel="stylesheet" href="/static/theme.css" />
+</head>
+<body>
+  <header class="header">
+    <span class="header__brand">Agora</span>
+    <span class="header__sub">Staff console &mdash; ILL prototype</span>
+  </header>
+
+  <main class="page">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="footer">
+    Agora research prototype &middot; FedRAMP alignment-noted only
+  </footer>
+</body>
+</html>
