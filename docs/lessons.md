@@ -356,6 +356,45 @@ https://cloud.google.com/vertex-ai/generative-ai/docs/learn/model-versions
 *(Cost: ~10 minutes of trying Studio labels against the API and
 getting 404s before pivoting to standard IDs.)*
 
+### 2026-05-03 — Prompt polarity bugs survive happy-path tests; only the eval set catches them
+PR-2b shipped a tie-breaker prompt with **reciprocity polarity
+backwards**: it told the LLM "positive number = consortium owes
+this lender, prefer the more-negative balance" while the
+`evals/routing/scenarios.json` convention labels NEGATIVE balances
+as the consortium owing the lender (i.e. the lender we should
+AVOID re-borrowing from). Every `test_routing_*` happy-path /
+contract test passed because they mock the LLM at the
+`_invoke_model` boundary — they never check that the prompt
+actually says the right thing. The bug only surfaced in the LLM
+eval rerun, where `routing-014` came back picking MEM-A (the
+in-debt member, expected MEM-B). #7c flipped the polarity in
+`src/agora/agents/routing_tiebreak_prompt.py`; eval lifted to
+**0.9500 / 0.8889** (was 0.8500 / 0.6944). **Two takeaways:**
+(1) prompt semantics must align 1:1 with scenario labelling
+conventions — describe the convention in the prompt body so a
+future scenario author can sanity-check both halves at once;
+(2) for any tunable prompt, the eval set is the only test that
+catches semantic drift. Mock-based unit tests verify wiring, not
+content. *(Cost: shipped one cycle of regression in PR-2b that
+#7c had to recover.)*
+
+### 2026-05-03 — Tighten ε *only* after computing gaps for ALL scenarios
+PR-2b's first-cut ε=0.05 silently fired the LLM on `routing-009`
+(rules top-2 gap 0.0467) — rules picked correctly, LLM picked
+worse. The instinct was to leave ε generous "in case the LLM
+helps." The right move is the opposite: tighten ε to the smallest
+value that still admits the scenarios the LLM is hired to
+disambiguate. #7c dropped 0.05 → 0.03 after a one-liner that
+computed gaps for all 20 scenarios; this excluded 007 (gap 0.04),
+009 (0.0467), 011 (0.04) — all of which rules already get right —
+and kept 013 / 014 / 016 (all true ties at gap 0.0). **Run this
+gap-blast-radius check before any ε change.** The advisor
+flagged this exact omission pre-flight; without that pass we
+would have shipped an ε that tried to "be permissive" and instead
+let the LLM dilute correct rules picks. *(See
+`src/agora/config.py` — `routing_tiebreak_epsilon` default
+documents the pin.)*
+
 ### 2026-05-03 — `gemini-2.5-flash` cold-start exceeds 5s default timeout
 First call against `gemini-2.5-flash` from the smoke test hit
 `AGORA_ROUTING_LLM_TIMEOUT_SECS=5` (the documented default) and

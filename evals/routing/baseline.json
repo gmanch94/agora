@@ -1,7 +1,7 @@
 {
   "total": 20,
-  "top1_accuracy": 0.85,
-  "mean_spearman": 0.6944,
+  "top1_accuracy": 0.95,
+  "mean_spearman": 0.8889,
   "results": [
     {
       "scenario_id": "routing-001",
@@ -119,20 +119,20 @@
     },
     {
       "scenario_id": "routing-009",
-      "chosen_match": false,
-      "actual_chosen": "EXT",
+      "chosen_match": true,
+      "actual_chosen": "MEM-A",
       "expected_chosen": "MEM-A",
       "actual_ranking": [
-        "EXT",
         "MEM-A",
-        "MEM-B"
+        "MEM-B",
+        "EXT"
       ],
       "expected_ranking": [
         "MEM-A",
         "MEM-B",
         "EXT"
       ],
-      "spearman": -0.5
+      "spearman": 1.0
     },
     {
       "scenario_id": "routing-010",
@@ -200,18 +200,18 @@
     },
     {
       "scenario_id": "routing-014",
-      "chosen_match": false,
-      "actual_chosen": "MEM-A",
+      "chosen_match": true,
+      "actual_chosen": "MEM-B",
       "expected_chosen": "MEM-B",
       "actual_ranking": [
-        "MEM-A",
-        "MEM-B"
+        "MEM-B",
+        "MEM-A"
       ],
       "expected_ranking": [
         "MEM-B",
         "MEM-A"
       ],
-      "spearman": -1.0
+      "spearman": 1.0
     },
     {
       "scenario_id": "routing-015",

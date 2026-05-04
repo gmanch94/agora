@@ -1,10 +1,10 @@
 # ADR 0014 — RoutingAgent LLM-augmented tie-breaker
 
 **Status:** Accepted
-**Date:** 2026-05-03 (revised post LLM-augmented eval rerun —
-`baseline.json` lifted from top-1 0.8000 / Spearman 0.5556 to
-0.8500 / 0.6944 against `gemini-2.5-flash`; new misses + regressions
-documented as prompt-iteration follow-ups)
+**Date:** 2026-05-03 (revised post #7c — prompt polarity fix +
+ε tuning lifts `baseline.json` to top-1 **0.9500** / Spearman
+**0.8889** against `gemini-2.5-flash`. Only `routing-015` still
+misses, which is documented out-of-scope by score-gap.)
 
 ## Context
 
@@ -244,34 +244,38 @@ correct API model id was used (`gemini-2.5-flash` — the standard
 1st-party id, NOT the Studio display label `gemini-3.1-flash-lite-preview`
 which 404s through the API), the eval ran cleanly.
 
-**Committed baseline numbers** (`evals/routing/baseline.json`):
+**Committed baseline numbers** (`evals/routing/baseline.json`,
+post-#7c prompt + ε tuning):
 
-- top-1 accuracy: **0.8500** (17/20) — up from 0.8000 floor (+0.05)
-- mean Spearman: **0.6944** — up from 0.5556 floor (+0.139)
+- top-1 accuracy: **0.9500** (19/20) — up from 0.8000 rules floor
+  (+0.15) and from 0.8500 PR-2b first-cut (+0.10)
+- mean Spearman: **0.8889** — up from 0.5556 floor (+0.333) and
+  from 0.6944 first-cut (+0.195)
 
-**Per-scenario diff vs rules baseline:**
+**Per-scenario diff vs rules baseline (post-#7c):**
 
 - ✅ `routing-013` (SLA tier): rules picked MEM-A, LLM correctly
   flipped to MEM-B
+- ✅ `routing-014` (reciprocity balance): rules picked MEM-A,
+  LLM correctly flipped to MEM-B. **Recovered in #7c** — the
+  PR-2b prompt had reciprocity polarity backwards (it said "prefer
+  more-negative balance" while scenarios label negative balance
+  as the consortium owing the lender, i.e. the lender we should
+  AVOID re-borrowing from). #7c flipped the polarity; LLM now
+  correctly avoids the in-debt member.
 - ✅ `routing-016` (on-time rate): rules picked MEM-A, LLM
   correctly flipped to MEM-B
-- ❌ `routing-014` (reciprocity balance): LLM kept MEM-A; expected
-  MEM-B. Prompt does not weight reciprocity strongly enough — the
-  signal is in `raw.reciprocity_balance` but the LLM is not
-  consistently treating in-debt = avoid. Prompt-iteration follow-up.
-- ❌ `routing-009` (regression): rules-baseline correctly picked
-  MEM-A; the LLM fired (apparently within ε) and returned EXT.
-  Either ε is too generous (LLM intercepting a clear rules win)
-  or the prompt over-weights non-consortium signals. Prompt /
-  ε-tuning follow-up.
+- ✅ `routing-009` (regression recovered): rules-baseline correctly
+  picks MEM-A. **#7c tightened ε from 0.05 → 0.03** so the LLM no
+  longer fires here (rules top-2 gap is 0.0467, now above the new
+  threshold). Rules pick wins; the LLM never sees this scenario.
+  013 / 014 / 016 (true ties, gap 0.0) remain comfortably in scope.
 - ❌ `routing-015` (format affinity): out-of-scope per scope
-  finding below — gap 0.46, LLM never fires.
+  finding below — gap 0.46, LLM never fires. Only baseline miss.
 
-**Net: +1 pick over rules.** Below the 19/20 ceiling expected
-in PR-2a's analysis. The miss + regression are honest signals
-that the prompt + ε are not yet fully tuned; both are next-PR
-territory per ADR-0014's "prompt design is the iterative part"
-stance.
+**Net: +3 picks over rules** (013, 014, 016) with no regressions —
+matches the 19/20 ceiling PR-2a's analysis predicted. The single
+miss (015) is the documented score-gap-out-of-scope case.
 
 ### Scope finding from PR-2a: scenario `routing-015` is out-of-scope
 
@@ -317,8 +321,9 @@ evals/routing/baseline-rules.json --check-floor`.
   this file only when scoring weights legitimately change; the PR
   must explain why the rules floor moved.
 - `evals/routing/baseline.json` — current canonical agent numbers
-  (LLM-augmented, top-1 0.8500 / Spearman 0.6944). PR-review reads
-  the diff of this file to evaluate prompt / ε / model changes.
+  (LLM-augmented, top-1 0.9500 / Spearman 0.8889 post-#7c).
+  PR-review reads the diff of this file to evaluate prompt / ε /
+  model changes.
 
 CI catches rules-engine regressions; PR-review catches
 LLM-quality regressions.
