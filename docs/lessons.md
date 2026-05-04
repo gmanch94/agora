@@ -804,6 +804,36 @@ ls-files)` in make recipes (whitespace-splits). Cheap insurance;
 do it the first time.
 *(PR #21 — see `Makefile::audit`, `.github/workflows/audit.yml`.)*
 
+### 2026-05-03 — Windows cp1252 console can't print Unicode; ruff RUF002 also flags ambiguous chars
+First eval-harness CLI run died on the `✓` / `✗` check marks, then
+on Greek `ρ` for Spearman's rho — `UnicodeEncodeError` from the
+default Windows console code page (cp1252). Even after surviving
+the terminal, ruff `RUF002` flags `ρ` in docstrings as
+ambiguous-with-Latin `p` and trips `--strict` lint. Fix:
+`OK`/`--` for the marks, `rho` spelled out, `mean Spearman` in
+prose. Math symbols inside math-context docstrings (`Σ`, `²`)
+stay readable and ruff lets them through; printed output should
+be ASCII-only. Generalises: **anything that crosses the CLI
+boundary on Windows OR appears as an identifier-shaped char in
+a docstring should default to ASCII** — emoji and Greek letters
+look great in markdown and break in two different ways outside
+it.
+*(PR #47 — see `src/agora/evals/routing.py` CLI summary block.)*
+
+### 2026-05-03 — `output_schema` on ADK `LlmAgent` is the structured-output primitive; don't fight it
+ADK's `LlmAgent(output_schema=Foo)` automatically derives
+`response_mime_type="application/json"` and `response_schema=Foo`
+on the underlying `GenerateContentConfig`. Setting them again in
+`generate_content_config=` was the first instinct — and the SDK
+silently lets you, but the second setter wins and you get to
+debug why structured output stopped behaving. Pin
+`temperature=0` in `generate_content_config` (the schema layer
+doesn't expose it), and let `output_schema` own everything else.
+Generalises: **when a high-level SDK primitive maps onto a
+lower-level config, treat the lower level as private** — the
+boundary the SDK exposes is the boundary you own.
+*(PR #49 — see `src/agora/agents/routing_llm_adk.py::AdkLlmTiebreaker.__init__`.)*
+
 ---
 
 ## Convention reminders (collected here so they don't drift out of CLAUDE.md)
