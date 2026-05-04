@@ -197,10 +197,15 @@ ISO 18626 message types — see table in `clients/reshare.py`.
   Idempotency keys are fresh ULIDs (`discovery-{ULID}`) so each
   invocation produces a distinct event — re-runs are intentional
   (citation edits, SRU index refresh). Returns 404 on unknown saga,
-  409 on terminal state. `consortium_members` is hard-coded to an
-  empty set today; populating it from settings is a known gap (no
-  consortium-roster source yet). WorldCat sandbox still unimplemented
-  (paid API, future).
+  409 on terminal state. `consortium_members` is sourced from
+  `AGORA_CONSORTIUM_MEMBERS` (comma-separated agency symbols) via
+  `Settings.consortium_members` (#56) — empty default preserves the
+  pre-PR behaviour where no candidate was flagged in-consortium.
+  Tokenization strips whitespace, de-dupes, and tolerates trailing
+  commas. The env-var is the prototype's stand-in until a real
+  consortium-roster source-of-truth lands; structured shape (per-tenant
+  rosters, time-bounded membership) is a future migration. WorldCat
+  sandbox still unimplemented (paid API, future).
 - NCIP fan-out is wired on RECEIVE and RETURN forwards
   (fire-and-forget, borrower-side ILS): `receive_forward` emits a
   `target="ncip"` `check_out` intent (re-anchored from SHIP — see

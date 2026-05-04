@@ -295,12 +295,16 @@ def create_app() -> FastAPI:
     # so ASGI-transport tests (which skip the lifespan) can still hit
     # ``POST /sagas/{id}/discover``. Both clients honour their
     # ``AGORA_*_ENABLED`` toggles — mock by default for offline dev,
-    # http when explicitly opted-in. ``consortium_members`` defaults to
-    # an empty set; populating it from settings is parked as a known
-    # gap (no consortium-roster source today).
+    # http when explicitly opted-in. ``consortium_members`` is parsed
+    # from ``AGORA_CONSORTIUM_MEMBERS`` (comma-separated agency symbols)
+    # via ``Settings.consortium_members``; empty default preserves the
+    # pre-PR behaviour where every candidate's ``in_consortium`` flag
+    # was false.
     crossref: CrossrefClient = get_crossref_client()
     sru: SruClient = get_sru_client()
-    discovery = DiscoveryAgent(sru, crossref=crossref, consortium_members=set())
+    discovery = DiscoveryAgent(
+        sru, crossref=crossref, consortium_members=settings.consortium_members
+    )
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
