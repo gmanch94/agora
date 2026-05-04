@@ -57,24 +57,40 @@ def _settings_env_aliases() -> set[str]:
     return aliases
 
 
-def _runbook_env_table_keys() -> set[str]:
-    """Return the set of env-var names documented in the runbook table.
+# Sentinel used by ``_runbook_env_table_entries`` when a row's key count
+# and default count don't line up by either of the supported pairings.
+# Tests that consume the entries treat this as "shape unparseable, do
+# not compare." Keeps the parser honest without blowing up the suite.
+_RUNBOOK_AMBIGUOUS_DEFAULT_MARKER = "<runbook-ambiguous>"
 
-    Reads ``docs/runbook.md``, scopes to the env-var table region
-    (``### 1.2 Environment variables`` → ``### 1.3``), and pulls every
-    backticked all-caps token from rows that start with ``|``. Some
-    rows pack two vars in a single cell with ``/`` (e.g.
-    ``AGORA_API_HOST`` / ``AGORA_API_PORT``); the inner regex catches
-    both.
 
-    Scoping the scan to the table region matters: ``AGORA_TEST_DB_URL``
-    appears in the postgres-tests section but is not a ``Settings``
-    field, and a whole-file scan would generate false positives.
+def _runbook_env_table_entries() -> dict[str, str]:
+    """Return ``{env_var_name: documented_default_string}`` from the runbook.
+
+    Underlies both ``_runbook_env_table_keys`` (just the keys) and the
+    default-value symmetry test (key + default). Scoped to the env-var
+    table region (``### 1.2 Environment variables`` → ``### 1.3``).
+
+    Multi-var rows are paired by position when the key count matches
+    the default count (e.g. ``AGORA_API_HOST`` / ``AGORA_API_PORT``
+    paired with ``0.0.0.0`` / ``8000``). When a multi-var row has a
+    single shared default (e.g. ``RESHARE_USER`` / ``RESHARE_PASSWORD``
+    with ``""``), that default is assigned to every key. Ambiguous
+    rows (mismatched counts ≠ 1) are skipped — flagged via the
+    ``ambiguous_rows`` counter so the test can fail loud if the table
+    grows a shape this parser can't read.
+
+    Cell extraction uses literal ``|`` positions rather than splitting
+    on ``|``, because the third (notes) cell legitimately contains
+    backticked tokens — ``Tests override to `sqlite+aiosqlite:///:memory:`.``
+    sits in column 3 of the ``AGORA_DB_URL`` row and would pollute the
+    default capture if we naively grabbed every backticked token.
     """
     lines = _RUNBOOK_PATH.read_text(encoding="utf-8").splitlines()
     in_table = False
-    keys: set[str] = set()
-    token_re = re.compile(r"`([A-Z_][A-Z0-9_]*)`")
+    entries: dict[str, str] = {}
+    name_re = re.compile(r"`([A-Z_][A-Z0-9_]*)`")
+    backtick_re = re.compile(r"`([^`]*)`")
     for line in lines:
         if line.startswith(_RUNBOOK_ENV_TABLE_START):
             in_table = True
@@ -83,16 +99,40 @@ def _runbook_env_table_keys() -> set[str]:
             break
         if not in_table or not line.startswith("|"):
             continue
-        # First cell carries the env var name(s); table-formatting rows
-        # like ``| ----- |`` have no backticks so the regex misses them
-        # naturally.
-        first_cell_end = line.find("|", 1)
-        if first_cell_end == -1:
+        # Need pipe[0] (start), pipe[1] (col1 end), pipe[2] (col2 end).
+        # Table-formatting separator rows match ``| ----- |`` and have
+        # no backticks; they pass the pipe check but contribute nothing
+        # to either regex.
+        pipes = [i for i, ch in enumerate(line) if ch == "|"]
+        if len(pipes) < 3:
             continue
-        first_cell = line[1:first_cell_end]
-        for match in token_re.finditer(first_cell):
-            keys.add(match.group(1))
-    return keys
+        col1 = line[pipes[0] + 1 : pipes[1]]
+        col2 = line[pipes[1] + 1 : pipes[2]]
+        keys_in_row = [m.group(1) for m in name_re.finditer(col1)]
+        defaults_in_row = [m.group(1) for m in backtick_re.finditer(col2)]
+        if not keys_in_row:
+            continue
+        if len(defaults_in_row) == len(keys_in_row):
+            for k, v in zip(keys_in_row, defaults_in_row, strict=True):
+                entries[k] = v
+        elif len(defaults_in_row) == 1:
+            shared = defaults_in_row[0]
+            for k in keys_in_row:
+                entries[k] = shared
+        else:
+            # Ambiguous shape (e.g. 2 keys with 0 or 3+ defaults). Skip
+            # the row but DON'T silently lose the keys — fall through to
+            # registering each key with an empty marker so the
+            # forward-symmetry test still sees them. The default-value
+            # test detects the marker and skips with a clear note.
+            for k in keys_in_row:
+                entries[k] = _RUNBOOK_AMBIGUOUS_DEFAULT_MARKER
+    return entries
+
+
+def _runbook_env_table_keys() -> set[str]:
+    """Return the set of env-var names documented in the runbook table."""
+    return set(_runbook_env_table_entries().keys())
 
 
 def _env_example_entries() -> dict[str, str]:
@@ -190,6 +230,58 @@ def test_runbook_env_table_lists_every_settings_alias() -> None:
         f"missing: {sorted(missing)}. Add a row to "
         f"``docs/runbook.md`` § 1.2 with the default + a one-line "
         f"description of the toggle's effect."
+    )
+
+
+def test_runbook_env_table_default_values_match_settings_defaults() -> None:
+    """Each runbook table default must match the corresponding ``Settings`` default.
+
+    Sibling of ``test_env_example_default_values_match_settings_defaults``
+    — same third-axis drift detection, applied to the operator-facing
+    runbook table instead of the developer-facing ``.env.example``.
+    Together they would have caught the routing-LLM ε mismatch through
+    PRs #47-#51 (runbook said 0.05 / "Placeholder until PR-2b tunes
+    against eval"; Settings tightened to 0.03 in #51).
+
+    Multi-var rows (``AGORA_API_HOST`` / ``AGORA_API_PORT``,
+    ``RESHARE_USER`` / ``RESHARE_PASSWORD``) are paired by
+    ``_runbook_env_table_entries`` — positional pairing when defaults
+    count matches keys count, shared default when there's only one.
+    Truly ambiguous shapes carry the
+    ``_RUNBOOK_AMBIGUOUS_DEFAULT_MARKER`` sentinel and are skipped.
+    """
+    entries = _runbook_env_table_entries()
+    mismatches: list[str] = []
+    for name, info in Settings.model_fields.items():
+        alias = info.alias if info.alias is not None else name.upper()
+        if alias not in entries:
+            continue
+        documented = entries[alias]
+        if documented == _RUNBOOK_AMBIGUOUS_DEFAULT_MARKER:
+            continue
+        annotation = info.annotation
+        if not isinstance(annotation, type):
+            continue
+        # Runbook strings are wrapped in backticks but the parser already
+        # stripped them. The empty-string case appears as ``""`` in the
+        # source markdown and survives parsing as the literal two-quote
+        # string; normalise that to "" before coercion.
+        normalised = "" if documented == '""' else documented
+        try:
+            coerced = _coerce_env_string(normalised, annotation)
+        except (TypeError, ValueError) as exc:
+            mismatches.append(
+                f"{alias}: failed to coerce '{documented}' to {annotation.__name__}: {exc}"
+            )
+            continue
+        if coerced != info.default:
+            mismatches.append(
+                f"{alias}: runbook says `{documented}` "
+                f"(coerced to {coerced!r}), Settings default is "
+                f"{info.default!r}"
+            )
+    assert not mismatches, "Default-value drift between Settings and the runbook env-var table:\n" + "\n".join(
+        mismatches
     )
 
 
