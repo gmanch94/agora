@@ -1,7 +1,9 @@
 # Agora — Solution Design Document
 
-> Last reviewed against code: 2026-05-04 (post PR #30 — outbox
-> schema sync + APPROVE-via-outbox + runbook env-var backfill).
+> Last reviewed against code: 2026-05-04 (post PRs #41-#54 — outbox
+> schema sync + APPROVE-via-outbox + runbook env-var backfill +
+> DiscoveryAgent endpoint wiring (#46/#53) + routing-LLM tie-breaker
+> tuned (#51) + ISO 18626 XSD validation harness (#52)).
 
 Single-narrative design doc. Stitches together what the PRDs say
 should exist, what the ADRs decided, what the code does today, and
@@ -121,6 +123,7 @@ lifespan that spawns `OutboxWorker.run_forever` as an
 | `POST /sagas/{id}/approve`           | Commit gate **and** run forward in one transaction.        |
 | `POST /sagas/{id}/reject`            | Mark a pending gate `failed`; no forward runs.             |
 | `POST /sagas/{id}/compensate`        | Run compensator for a previously committed forward.        |
+| `POST /sagas/{id}/discover`          | Run DiscoveryAgent against the saga's stored request; writes a ROUTE-anchored OBSERVATION (#53). Saga state unchanged. |
 
 `_APPROVABLE_STEPS = {ROUTE, APPROVE, SHIP, RETURN_ITEM}`. SUBMIT is
 not gated (commits inside `POST /requests`); compensator-only steps
@@ -152,7 +155,7 @@ console commits the gate.
 
 | Agent                  | Status              | Inputs                            | Output                                 |
 | ---------------------- | ------------------- | --------------------------------- | -------------------------------------- |
-| `DiscoveryAgent`       | implemented         | citation / OpenURL ctx            | candidate holders + rationale          |
+| `DiscoveryAgent`       | implemented + wired (#46/#53) | citation / OpenURL ctx + DOI    | candidate holders + DOI→CrossRef bib confirmation + rationale; staff invokes via `POST /sagas/{id}/discover` |
 | `RoutingAgent`         | implemented         | candidates + consortium policy    | ranked supplier list + chosen          |
 | `PolicyAgent`          | implemented         | request + patron + history        | hard/soft flags (CONTU, eligibility)   |
 | `TransactionAgent`     | implemented         | wraps `ReShareClient`             | `submit_to_supplier()` returns reshare_id |
@@ -166,7 +169,8 @@ console commits the gate.
 | `MockReShareClient`   | In-process default. Returns deterministic `reshare_id` strings.                        |
 | `HttpReShareClient`   | Real HTTP wrapper for mod-rs. Endpoint paths verified against UrlMappings.groovy / PatronRequestController.groovy / Actions.groovy / ModuleDescriptor-template.json (see module docstring). Auth = HTTP Basic; production needs Okapi token. mod-rs ignores `Idempotency-Key` headers — replay-safety lives in the saga ledger UNIQUE. |
 | `MockNcipClient`      | Mock-only. NCIP is on the roadmap but not yet implemented.                             |
-| SRU client            | Implemented; talks to LoC by default.                                                  |
+| SRU client            | Implemented; talks to LoC by default. `get_sru_client()` factory selects mock vs HTTP via `AGORA_SRU_ENABLED` (default mock). |
+| CrossRef client       | Implemented (#46); DOI → bibliographic identity (title, ISSN, ISBN, container, year). `get_crossref_client()` factory selects mock vs HTTP via `AGORA_CROSSREF_ENABLED` (default mock). |
 | OpenURL parser        | Implemented; KEV format only.                                                          |
 
 ### 3.5 Models (`src/agora/models/`)
@@ -352,6 +356,9 @@ during the APPROVING window (supplier ack still pending) returns
 | Docker compose for local sandbox                            | 0009   | Postgres only today; FOLIO/ReShare brought up on demand from upstream recipe.                |
 | Saga **coordinator**, not state-machine engine              | 0010   | Explicit > implicit. One method per concern. Restart and replay are trivially correct.       |
 | Outbox commit-then-enqueue                                  | 0011   | Atomic `(ledger event, outbox row)` write. Replay-safe via `outbox.idempotency_key` UNIQUE.  |
+| APPROVE forward via outbox + `APPROVING` waypoint state      | 0012   | Closes the inline-wire-call gap on APPROVE; supplier ack lands as a projection that writes `reshare_id`. |
+| FOLIO Okapi token auth for `HttpReShareClient`               | 0013   | HTTP Basic for dev; setting `OKAPI_URL` switches to the FOLIO Okapi token flow for production. |
+| Routing LLM tie-breaker (rules-first, LLM on near-ties only) | 0014   | Default-off seam + ADK Gemini Flash adapter; rules pick stays the bulk decision, LLM fires only when top-2 score gap ≤ ε. |
 
 ---
 
@@ -386,8 +393,6 @@ during the APPROVING window (supplier ack still pending) returns
   scope for prototype.
 - API is async-first but has not been load-tested.
 - No connection pooling tuning beyond `db_pool_size=10`.
-- Alembic migration only exercised on SQLite. First run against
-  Postgres is still pending.
 
 ### 7.4 Type safety
 
@@ -399,13 +404,19 @@ during the APPROVING window (supplier ack still pending) returns
 
 ### 7.5 Test strategy
 
-- 53 tests across unit, property (Hypothesis on compensator
+- 76 tests across unit, property (Hypothesis on compensator
   symmetry), and end-to-end (FastAPI + ASGITransport + in-memory
-  SQLite).
+  SQLite), plus 6 postgres-only tests gated behind
+  `AGORA_TEST_DB_URL` / the `postgres-tests.yml` CI service container.
 - `pytest-asyncio` in `asyncio_mode = "auto"`.
 - Demo (`agora.demos.happy_path`) is the user-visible smoke test.
-- ADK eval harness referenced in PRD-04 but not yet wired (agent
-  quality not gated).
+- Routing eval harness wired (#47/#50): `make eval-routing` runs the
+  rules-baseline; `python -m agora.evals.routing --llm` runs the
+  LLM-augmented variant. CI gates the rules floor via
+  `.github/workflows/routing-eval-floor.yml` (`--rules-only
+  --check-floor` against `evals/routing/baseline-rules.json`); the
+  LLM-augmented baseline (`evals/routing/baseline.json`) is read by
+  PR review for quality regressions.
 
 ---
 
@@ -457,7 +468,7 @@ catalogs publish SRU anyway. SRU covers the prototype scope.
 | Auth                          | HTTP Basic only. Production needs Okapi token flow.                                                                       |
 | ReconciliationAgent           | Thin wrapper today; lacks failure-classification policy (when to run which compensator automatically).                     |
 | NCIP client                   | Mock-only.                                                                                                                |
-| ISO 18626 XSD validation      | Delegated entirely to mod-rs. Not independently validated.                                                                |
+| ISO 18626 XSD validation      | Validation harness (`scripts/validate_iso18626.py`) + minimal XSD/XML fixtures shipped #52; CI exercises plumbing on every PR. The real ISO 18626 v1.3 XSD is an opt-in cache step at `docs/standards/iso18626/` — not bundled. Wire-level conformance still delegated to mod-rs. |
 | Observability (traces)        | structlog only. No OpenTelemetry yet.                                                                                     |
 | PRD/architecture drift        | Stale-check pass ran 2026-05-04 (post PRs #25/#27/#28); 26 drift candidates across 6 files captured for follow-up PRs.    |
 | Python version                | CI gates on 3.11 (`triple-gate.yml` + `audit.yml` + `postgres-tests.yml`); local dev on 3.14.3. No 3.12/3.13 matrix.       |
@@ -503,7 +514,7 @@ All gaps are tracked in `CLAUDE.md`.
 - `docs/runbook.md` — operational reference (bring-up, gate workflow, outbox, dead-letter triage)
 - `docs/architecture.md` — Mermaid diagrams (layer cake, lifecycle state machine, idempotency model)
 - `docs/prd/00-overview.md` … `06-non-functional.md` — product requirements (7 docs)
-- `docs/adr/0001-…` … `0012-approve-via-outbox.md` — architecture decisions (12 docs)
+- `docs/adr/0001-…` … `0014-routing-llm-tiebreaker.md` — architecture decisions (14 docs; latest: 0013 Okapi auth, 0014 routing-LLM tie-breaker)
 - `src/agora/api/app.py` — FastAPI factory + lifespan
 - `src/agora/saga/coordinator.py` — coordinator
 - `src/agora/saga/flows.py` — forward+compensator pairs

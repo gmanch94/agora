@@ -1,8 +1,10 @@
 # Agora — Architecture
 
-> Last reviewed against code: 2026-05-03 (post PRs #17/#18/#19/#24/
-> #25/#28 + RECEIVED state + state-aware SHIP comp + NCIP-checkout
-> SHIP→RECEIVE re-anchor + tier-3 receipt-unconfirmed watch —
+> Last reviewed against code: 2026-05-04 (post PRs #17/#18/#19/#24/
+> #25/#28/#41-#54 + RECEIVED state + state-aware SHIP comp + NCIP-checkout
+> SHIP→RECEIVE re-anchor + tier-3 receipt-unconfirmed watch +
+> DiscoveryAgent endpoint wiring (#46/#53) + routing-LLM tie-breaker
+> tuned (#51) + ISO 18626 XSD validation harness (#52) —
 > APPROVING-via-outbox, NCIP fan-out, TrackingScanner lifespan task,
 > alembic-on-real-postgres CI, multi-worker outbox,
 > borrower-receipt state).
@@ -31,10 +33,11 @@ flowchart TB
         UI_REQ["POST /requests"]
         UI_SAGA["GET /sagas/:id"]
         UI_APPROVE["POST /sagas/:id/approve"]
+        UI_DISCOVER["POST /sagas/:id/discover"]
     end
 
     subgraph AGENTS["Advisory agents (Google ADK style)"]
-        DISC["DiscoveryAgent<br/>SRU + OpenURL"]
+        DISC["DiscoveryAgent<br/>SRU + CrossRef + OpenURL"]
         ROUTE["RoutingAgent<br/>weighted scorer"]
         POL["PolicyAgent<br/>CONTU / eligibility / budget"]
         TX["TransactionAgent<br/>builds ReShare intents"]
@@ -63,11 +66,13 @@ flowchart TB
         PEERS(["Peer libraries<br/>ISO 18626"])
         ILS(["Local ILS<br/>NCIP"])
         CAT(["Catalogs<br/>SRU / OpenURL"])
+        XREF(["CrossRef<br/>DOI → bib identity"])
     end
 
     UI_REQ --> COORD
     UI_APPROVE --> COORD
     UI_SAGA --> SAGAS
+    UI_DISCOVER --> DISC
 
     COORD --> LEDGER
     COORD --> SAGAS
@@ -87,6 +92,7 @@ flowchart TB
     SCAN --> LEDGER
 
     DISC --> CAT
+    DISC --> XREF
     RESHARE --> PEERS
     MODNCIP --> ILS
 ```

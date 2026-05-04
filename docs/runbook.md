@@ -1,9 +1,11 @@
 # Agora Runbook
 
-> Last reviewed against code: 2026-05-03 (PR-2b routing-LLM adapter
-> adds `AGORA_ROUTING_LLM_*` env vars + a sibling
+> Last reviewed against code: 2026-05-04 (post PRs #41-#54 — PR-2b
+> routing-LLM adapter adds `AGORA_ROUTING_LLM_*` env vars + a sibling
 > `routing-eval-floor.yml` CI workflow alongside `triple-gate` /
-> `audit` / `postgres-tests`).
+> `audit` / `postgres-tests`; ε retuned to 0.03 (#51); DiscoveryAgent
+> wired with `POST /sagas/{id}/discover` endpoint (#46/#53); ISO
+> 18626 XSD validation harness shipped (#52)).
 
 Operational reference for the Agora ILL prototype. Covers bring-up,
 day-to-day operation (outbox, overdue scan, gate workflow), and
@@ -55,8 +57,10 @@ the process env. Defaults target local dev (Postgres on `localhost:5433`).
 | `OKAPI_URL`                         | `""`                                                   | When set, `HttpReShareClient` authenticates via FOLIO Okapi token flow (`POST {OKAPI_URL}/authn/login`) instead of HTTP Basic. See ADR-0013. |
 | `NCIP_BASE_URL`                     | `""`                                                   | Mock-only today.                                           |
 | `NCIP_AGENCY_ID`                    | `AGORA-DEV`                                            | Agency symbol stamped on NCIP requests.                    |
+| `AGORA_SRU_ENABLED`                 | `false`                                                | Opt-in for `agora.clients.sru.get_sru_client()`. `false` → factory returns the in-memory mock; `true` → live HTTP client against `SRU_LOC_URL`. Explicit boolean rather than URL-presence (the default URL is non-empty). |
 | `SRU_LOC_URL`                       | `https://lx2.loc.gov/voyager`                          | Library of Congress SRU.                                   |
 | `SRU_TIMEOUT_SECS`                  | `5.0`                                                  |                                                            |
+| `AGORA_CROSSREF_ENABLED`            | `false`                                                | Opt-in for `agora.clients.crossref.get_crossref_client()`. `false` → factory returns the in-memory mock; `true` → live HTTP client against `CROSSREF_BASE_URL`. Explicit boolean rather than URL-presence (the default URL is non-empty). |
 | `CROSSREF_BASE_URL`                 | `https://api.crossref.org`                             | CrossRef REST API (DOI → bibliographic record). Public, no auth. |
 | `CROSSREF_TIMEOUT_SECS`             | `5.0`                                                  |                                                            |
 | `CROSSREF_MAILTO`                   | `""`                                                   | When set, opts into CrossRef's polite pool with `User-Agent: Agora/0.1 (mailto:<value>)` for better rate limits. |
@@ -68,9 +72,9 @@ the process env. Defaults target local dev (Postgres on `localhost:5433`).
 | `AGORA_TRACKING_SCAN_INTERVAL_SECS` | `300.0`                                                | Overdue scanner poll interval (5 min default).             |
 | `AGORA_TRACKING_RECALL_AFTER_DAYS`  | `14`                                                   | Days past `due_at` before tier-2 `recall-proposed` fires.  |
 | `AGORA_TRACKING_UNCONFIRMED_RECEIPT_AFTER_DAYS` | `7`                                        | Days past `shipped_at` (with no RECEIVE event) before tier-3 `receipt-unconfirmed` fires. Independent of tier-1/2; tracks transit time. |
-| `AGORA_ROUTING_TIEBREAK_EPSILON`    | `0.05`                                                 | RoutingAgent LLM tie-breaker activation threshold. When the rules-baseline scoring puts the top-2 candidates within this gap, `RoutingAgent` consults the configured `LlmTiebreaker` (if any). Placeholder until PR-2b tunes against eval — see ADR-0014. |
+| `AGORA_ROUTING_TIEBREAK_EPSILON`    | `0.03`                                                 | RoutingAgent LLM tie-breaker activation threshold. When the rules-baseline scoring puts the top-2 candidates within this gap, `RoutingAgent` consults the configured `LlmTiebreaker` (if any). Tuned against eval in #51 (tightened from 0.05 → 0.03 so `routing-009` skips the LLM — rules already get it right) — see ADR-0014. |
 | `AGORA_ROUTING_LLM_ENABLED`         | `false`                                                | Opt-in for `agora.agents.factories.get_llm_tiebreaker()`. `false` → factory returns `None` (rules-only path). `true` → factory builds `AdkLlmTiebreaker`. Requires bound GCP ADC + Vertex AI API enabled. |
-| `AGORA_ROUTING_LLM_MODEL`           | `gemini-2.0-flash`                                     | Vertex/Gemini model id for the routing tie-breaker. Flash chosen for tie-break-only one-shot judgments (cheap, fast, JSON-mode reliable). |
+| `AGORA_ROUTING_LLM_MODEL`           | `gemini-2.0-flash`                                     | Vertex/Gemini model id for the routing tie-breaker. Flash chosen for tie-break-only one-shot judgments (cheap, fast, JSON-mode reliable). **Caveat**: the config default `gemini-2.0-flash` 404s under the current Vertex enablement; live use needs `AGORA_ROUTING_LLM_MODEL=gemini-2.5-flash` (the LLM-augmented baseline in #51 ran against 2.5-flash). |
 | `AGORA_ROUTING_LLM_TIMEOUT_SECS`    | `5.0`                                                  | Per-call timeout. Stuck LLM raises; the seam catches and falls back to the rules pick + diagnostic. |
 | `AGORA_ROUTING_LLM_LOCATION`        | `us-central1`                                          | Vertex AI region for the `LlmAgent` runtime.               |
 
@@ -142,6 +146,7 @@ commits the gate.
 | `POST /sagas/{id}/approve`       | Commit gate **and** run the forward step in one transaction.   |
 | `POST /sagas/{id}/reject`        | Mark a pending gate `failed` (no forward runs).                |
 | `POST /sagas/{id}/compensate`    | Run compensator for a previously committed forward.            |
+| `POST /sagas/{id}/discover`      | Run DiscoveryAgent against the saga's stored request; writes a ROUTE-anchored OBSERVATION (#53). Saga state unchanged. |
 
 ### 2.3 What `/approve` derives vs requires
 
@@ -418,6 +423,7 @@ Conventions used today:
 | `comp-`      | compensator events                                |
 | `gate-`      | open/commit gate events                           |
 | `overdue-`   | overdue observation (deterministic, no ULID)      |
+| `discovery-` | discovery observation from `POST /sagas/{id}/discover` (#53; fresh ULID per call) |
 
 ### 5.2 Where uniqueness lives
 
