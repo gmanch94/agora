@@ -804,6 +804,60 @@ ls-files)` in make recipes (whitespace-splits). Cheap insurance;
 do it the first time.
 *(PR #21 — see `Makefile::audit`, `.github/workflows/audit.yml`.)*
 
+### 2026-05-03 — Windows cp1252 console can't print Unicode; ruff RUF002 also flags ambiguous chars
+First eval-harness CLI run died on the `✓` / `✗` check marks, then
+on Greek `ρ` for Spearman's rho — `UnicodeEncodeError` from the
+default Windows console code page (cp1252). Even after surviving
+the terminal, ruff `RUF002` flags `ρ` in docstrings as
+ambiguous-with-Latin `p` and trips `--strict` lint. Fix:
+`OK`/`--` for the marks, `rho` spelled out, `mean Spearman` in
+prose. Math symbols inside math-context docstrings (`Σ`, `²`)
+stay readable and ruff lets them through; printed output should
+be ASCII-only. Generalises: **anything that crosses the CLI
+boundary on Windows OR appears as an identifier-shaped char in
+a docstring should default to ASCII** — emoji and Greek letters
+look great in markdown and break in two different ways outside
+it.
+*(PR #47 — see `src/agora/evals/routing.py` CLI summary block.)*
+
+### 2026-05-03 — `output_schema` on ADK `LlmAgent` is the structured-output primitive; don't fight it
+ADK's `LlmAgent(output_schema=Foo)` automatically derives
+`response_mime_type="application/json"` and `response_schema=Foo`
+on the underlying `GenerateContentConfig`. Setting them again in
+`generate_content_config=` was the first instinct — and the SDK
+silently lets you, but the second setter wins and you get to
+debug why structured output stopped behaving. Pin
+`temperature=0` in `generate_content_config` (the schema layer
+doesn't expose it), and let `output_schema` own everything else.
+Generalises: **when a high-level SDK primitive maps onto a
+lower-level config, treat the lower level as private** — the
+boundary the SDK exposes is the boundary you own.
+*(PR #49 — see `src/agora/agents/routing_llm_adk.py::AdkLlmTiebreaker.__init__`.)*
+
+### 2026-05-04 — `google-genai` defaults to API-key auth; Vertex routing needs `GOOGLE_GENAI_USE_VERTEXAI=true`
+ADC bound + `aiplatform.googleapis.com` enabled + Studio
+click-through done + `gcloud auth application-default
+set-quota-project` correct — and the eval rerun still failed every
+LLM call with `No API key was provided. ... ai.google.dev/gemini-api/docs/api-key`.
+The `google-genai` SDK that ADK builds on routes through the
+public Gemini API by default; Vertex/ADC only kicks in when
+`GOOGLE_GENAI_USE_VERTEXAI=true` is set in the process env (with
+`GOOGLE_CLOUD_PROJECT` + `GOOGLE_CLOUD_LOCATION`). All four pieces
+are required: enablement on the project, ADC + quota project,
+Vertex env flag, and project/location env. Miss any one and the
+adapter falls back to API-key auth and 401s every call — but
+because `RoutingAgent`'s seam catches the failure and falls back to
+rules, the whole eval looks "successful" with rules-only
+numbers. Fix: pass the Vertex env explicitly when invoking
+`agora.evals.routing --llm`. Generalises: **when an SDK has two
+auth modes (API key vs ADC), assume the safest default is the
+public one — and that switching to the privileged mode is a
+positive flag, not the absence of an API key**. Don't trust an
+"empty" env to mean "use ADC."
+*(2026-05-04 LLM eval reverification — see CLAUDE.md known-gaps
+routing block; `src/agora/agents/routing_llm_adk.py` adapter does
+not set the env flag itself, so callers must.)*
+
 ---
 
 ## Convention reminders (collected here so they don't drift out of CLAUDE.md)

@@ -1,6 +1,7 @@
 # Agora — common dev commands
 
 .PHONY: help install fmt lint type test test-fast cov audit up down logs db-reset migrate api demo eval-routing sync-doc-counts clean
+.PHONY: help install fmt lint type test test-fast cov audit up down logs db-reset migrate api demo eval-routing eval-routing-llm clean
 
 help:
 	@echo "Common targets:"
@@ -21,6 +22,7 @@ help:
 	@echo "  demo        run scripted happy-path demo"
 	@echo "  eval-routing run RoutingAgent eval harness (rules-only); rewrite evals/routing/baseline-rules.json"
 	@echo "  sync-doc-counts  rewrite test count + ADR count in docs to match runtime truth"
+	@echo "  eval-routing-llm  run LLM-augmented eval (--no-write); requires Vertex/ADC env (see CLAUDE.md)"
 	@echo "  clean       remove caches"
 
 install:
@@ -84,8 +86,7 @@ demo:
 # See ADR-0014 for the gating policy. CI runs the floor check via
 # .github/workflows/routing-eval-floor.yml; PR-2 (LLM tie-breaker)
 # shipped in #48-#51 with top-1 0.9500 / mean Spearman 0.8889 against
-# gemini-2.5-flash. For LLM-augmented runs invoke the module directly:
-#   python -m agora.evals.routing --llm
+# gemini-2.5-flash. Re-verified 2026-05-04 against committed baseline.
 eval-routing:
 	python -m agora.evals.routing
 
@@ -96,6 +97,28 @@ eval-routing:
 # `scripts/sync_doc_counts.py` for the registry of doc locations.
 sync-doc-counts:
 	python scripts/sync_doc_counts.py --fix
+# Score the LLM-augmented RoutingAgent. Requires Vertex/ADC plumbing —
+# without GOOGLE_GENAI_USE_VERTEXAI=true the google-genai SDK silently
+# falls back to public-Gemini API-key auth and 401s every call (the seam
+# catches it and runs rules-only — looks successful with the wrong
+# numbers). See CLAUDE.md known-gaps routing block for the full
+# checklist (ADC + quota project + API enablement + Studio
+# click-through). This target asserts the four env vars exist and
+# passes --no-write so a misconfigured run can't overwrite the
+# committed baseline. Drop --no-write only after a clean run.
+eval-routing-llm:
+	@if [ -z "$$GOOGLE_GENAI_USE_VERTEXAI" ] || [ -z "$$GOOGLE_CLOUD_PROJECT" ] || [ -z "$$GOOGLE_CLOUD_LOCATION" ] || [ -z "$$AGORA_ROUTING_LLM_ENABLED" ]; then \
+		echo "ERROR: missing env. Required:"; \
+		echo "  GOOGLE_GENAI_USE_VERTEXAI=true"; \
+		echo "  GOOGLE_CLOUD_PROJECT=<project-id>"; \
+		echo "  GOOGLE_CLOUD_LOCATION=us-central1"; \
+		echo "  AGORA_ROUTING_LLM_ENABLED=1"; \
+		echo "Recommended also:"; \
+		echo "  AGORA_ROUTING_LLM_MODEL=gemini-2.5-flash"; \
+		echo "  AGORA_ROUTING_LLM_TIMEOUT_SECS=30"; \
+		exit 1; \
+	fi
+	python -m agora.evals.routing --llm --no-write
 
 clean:
 	rm -rf .pytest_cache .mypy_cache .ruff_cache htmlcov .coverage

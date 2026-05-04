@@ -286,16 +286,19 @@ def test_runbook_env_table_default_values_match_settings_defaults() -> None:
 
 
 def test_runbook_env_table_only_documents_known_keys() -> None:
-    """Every runbook env-var row maps to a current ``Settings`` field.
+    """Every runbook env-var row maps to a current ``Settings`` field
+    (or to a known downstream-tooling env var documented for operators).
 
     Catches the inverse drift: a row left behind for a removed
-    ``Settings`` field. The runbook table only documents Agora's own
-    config (no Google ADK / Anthropic SDK rows like ``.env.example``
-    has), so the comparison is strict — no allowlist needed.
+    ``Settings`` field. Mirrors the ``.env.example`` side — the runbook
+    is allowed to carry rows for Google ADK / Anthropic SDK env vars
+    that are not part of ``Settings`` (see ``_NON_AGORA_TOOLING_VARS``).
+    Anything else in the runbook table that isn't a current ``Settings``
+    alias is drift.
     """
     settings_keys = _settings_env_aliases()
     runbook_keys = _runbook_env_table_keys()
-    extras = runbook_keys - settings_keys
+    extras = runbook_keys - settings_keys - _NON_AGORA_TOOLING_VARS
     assert not extras, (
         f"Runbook env-var table documents env vars that Settings does "
         f"not honour: {sorted(extras)}. Either remove the row or "
