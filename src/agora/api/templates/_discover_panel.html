@@ -1,0 +1,53 @@
+<div id="discovery-panel" class="card-base discover-panel">
+  <h2 class="action-section__title">Discovery results</h2>
+
+  {% if candidates %}
+  <table class="inbox-table" aria-label="Candidate holders">
+    <thead>
+      <tr>
+        <th scope="col">Symbol</th>
+        <th scope="col">Name</th>
+        <th scope="col">Status</th>
+        <th scope="col">Distance</th>
+        <th scope="col">Consortium</th>
+        {% if can_route %}<th scope="col">Action</th>{% endif %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in candidates %}
+      <tr>
+        <td class="saga-id">{{ c.symbol }}</td>
+        <td>{{ c.name or "&mdash;" }}</td>
+        <td>
+          <span class="status-badge status-badge--{{ c.status }}">{{ c.status }}</span>
+        </td>
+        <td>{{ c.distance_km ~ " km" if c.distance_km != "" else "&mdash;" }}</td>
+        <td>{{ "✓" if c.in_consortium else "" }}</td>
+        {% if can_route %}
+        <td>
+          <form method="post" action="/ui/sagas/{{ saga_id }}/approve" class="inline-approve">
+            <input type="hidden" name="step" value="route" />
+            <input type="hidden" name="chosen_supplier" value="{{ c.symbol }}" />
+            <input type="hidden" name="rationale" value="Selected {{ c.symbol }} via discovery." />
+            <button type="submit" class="button-sm">Select &amp; approve</button>
+          </form>
+        </td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% if diagnostics %}
+  <p class="discover-panel__diag">{{ diagnostics | join(" · ") }}</p>
+  {% endif %}
+
+  {% else %}
+  <div class="empty">
+    <p class="empty__title">No candidates found</p>
+    {% if diagnostics %}
+    <p>{{ diagnostics | join(" · ") }}</p>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
