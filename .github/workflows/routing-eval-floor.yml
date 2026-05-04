@@ -43,8 +43,16 @@ jobs:
           pip install -e ".[dev]"
 
       - name: routing eval — rules-only floor
-        # --rules-only: explicit (and matches the default); no LLM
-        # --check-floor: read baseline.json, compare, exit 1 on regression
-        # Implies --no-write so a failing run can't quietly overwrite the
-        # baseline it's checking against.
-        run: python -m agora.evals.routing --rules-only --check-floor
+        # CI runs the rules-only path and checks against
+        # ``baseline-rules.json`` (frozen rules-only floor: top-1
+        # 0.8000 / Spearman 0.5556). The main ``baseline.json``
+        # reflects the LLM-augmented numbers — CI can't reproduce
+        # those without GCP secrets, so it doesn't try.
+        # --check-floor: read --baseline, compare, exit 1 on regression.
+        # Implies --no-write so a failing run can't quietly overwrite
+        # the baseline it's checking against.
+        run: |
+          python -m agora.evals.routing \
+            --rules-only \
+            --baseline evals/routing/baseline-rules.json \
+            --check-floor

@@ -148,8 +148,12 @@ ISO 18626 message types — see table in `clients/reshare.py`.
   CI) — catches rules-engine regressions vs the committed
   `evals/routing/baseline.json`. PR-review catches LLM-quality
   regressions by reading the new baseline numbers in the diff. Floor
-  numbers: top-1 **0.8000**, mean Spearman **0.5556** (rules
-  baseline). Four scenarios (`routing-013..016`) are deliberate
+  numbers (post-LLM-augmented rerun, `gemini-2.5-flash`): top-1
+  **0.8500** (17/20), mean Spearman **0.6944**. The CI gate runs
+  rules-only, so the floor it enforces is the *rules* floor (0.8000 /
+  0.5556) — anything that pushes rules numbers below that fails CI;
+  changes that lift the LLM-augmented numbers are observable only
+  in the `baseline.json` diff at PR-review time. Four scenarios (`routing-013..016`) are deliberate
   rules-baseline misses encoding metadata-only signals (SLA tier,
   reciprocity, format affinity, on-time reliability). Three (013,
   014, 016) have rules score gap 0.0 — true ties — and are in scope
@@ -157,15 +161,14 @@ ISO 18626 message types — see table in `clients/reshare.py`.
   documented in ADR-0014 as **out of scope for the tie-breaker
   mechanism**. Eval harness via `make eval-routing` (rules) or
   `python -m agora.evals.routing --llm` (LLM-augmented; needs ADC
-  bound + `aiplatform.googleapis.com` enabled + Gemini publisher-model
-  access in the bound project). PR-2b's `--llm` rerun was attempted
-  end-to-end and every call returned **Vertex 404 NOT_FOUND** on
-  `gemini-2.0-flash` / `gemini-1.5-flash` — ADC + Vertex API
-  enablement are necessary but **not** sufficient for publisher-model
-  access. The seam's exception-fallback path fired on every scenario
-  as designed (validating the wire end-to-end), so PR-2b shipped with
-  `evals/routing/baseline.json` byte-identical to master. A follow-on
-  pass reruns once publisher-model access is confirmed.
+  bound + `aiplatform.googleapis.com` enabled + **Vertex AI Studio
+  click-through enablement** on the project + the correct API model
+  id — the Studio display label is NOT the API id; e.g. Studio
+  shows "gemini-3.1-flash-lite-preview" but the public API takes
+  `gemini-2.5-flash`. LLM-augmented baseline now committed against
+  `gemini-2.5-flash` at top-1 0.8500 / Spearman 0.6944 (rerun with
+  `AGORA_ROUTING_LLM_TIMEOUT_SECS=30` — the default 5s is sometimes
+  too tight for Gemini 2.5 cold-start).
   Failure paths in the seam (LLM raises / abstains / returns unknown
   symbol / times out) ALWAYS fall back to the rules pick + diagnostic;
   the agent never re-raises out to its caller (advisory-only invariant
