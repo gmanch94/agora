@@ -896,6 +896,51 @@ earns a manual fix; the second earns infrastructure.
 place" — see `scripts/sync_doc_counts.py`,
 `tests/test_doc_counts.py`, `Makefile::sync-doc-counts`.)*
 
+### 2026-05-04 — Two compounding detect-secrets gotchas: line drift + Windows filter drop
+PR #77's audit failed twice in a row on the same docs/runbook.md
+secret. Two distinct mechanisms compounded:
+
+**Mechanism A: line-number drift.** A freshness-header bump in
+the same PR added 2 lines above the `AGORA_DB_URL` dev-default
+credential row, shifting it from line 52 to line 54. detect-secrets
+keys baseline entries on (file, hash, line_number), so a same-hash
+shift fails the hook. Worse: the gate fails on line shift even
+when the secret content is byte-identical, so any doc edit ABOVE a
+tracked secret risks audit failure.
+
+**Mechanism B: platform filter drop.** Trying to refresh the
+baseline locally with `detect-secrets scan --baseline
+.secrets.baseline` on Windows + Python 3.14 silently drops the
+runbook entry — the rescan returns zero findings because of a
+filter heuristic that fires differently on this platform than on
+CI's Linux + Python 3.11. So the "fix" (rebaseline locally)
+quietly removes real entries that CI then rediscovers as
+"new secrets" → audit fails again.
+
+Mitigations adopted in PR #77:
+
+1. **Prefer `<!-- pragma: allowlist secret -->` over baseline
+   tracking for documented dev-defaults.** The `agora:agora` URL
+   is documented in 4+ places (README, runbook, CLAUDE.md,
+   `.env.example`); hash-pinning its baseline entry is theatre,
+   not security — a credential rotation would update each
+   recitation independently. Pragma makes the line inert to
+   line-shift drift.
+2. **Don't `detect-secrets scan --baseline` on Windows.**
+   `Makefile::audit` now carries the warning. If a real
+   rebaseline is needed, do it on Linux/WSL.
+3. **Keep `scripts/normalize_secrets_baseline.py`** for the
+   path-separator fix (forward slash everywhere) — that's
+   orthogonal to (1) and (2).
+
+Generalises: **for "must be in this file forever as a documented
+default" credentials, pragma is the right primitive; for real
+secrets the baseline hash-pin is the right primitive**. Don't
+over-track.
+*(PR #77 — see `docs/runbook.md` AGORA_DB_URL row;
+`Makefile::audit` warning block;
+`scripts/normalize_secrets_baseline.py`.)*
+
 ---
 
 ## Convention reminders (collected here so they don't drift out of CLAUDE.md)

@@ -58,6 +58,14 @@ audit:
 	# Scan for new secrets vs the committed baseline. Update baseline with:
 	#   detect-secrets scan --baseline .secrets.baseline
 	# NUL-delimited so filenames with spaces survive xargs splitting.
+	# WARNING: do NOT run `detect-secrets scan --baseline ...` on Windows.
+	# v1.5.0 + Python 3.14 silently drops entries (e.g. docs/runbook.md
+	# Basic-Auth Credentials) that Linux CI keeps — the rescan returns
+	# zero findings due to a platform filter difference and the baseline
+	# round-trip loses real entries. For doc edits that shift secret line
+	# numbers, prefer adding `<!-- pragma: allowlist secret -->` on the
+	# offending line over rebaselining. See docs/lessons.md 2026-05-04
+	# entry. If you must regenerate the baseline, do it on Linux/WSL.
 	git ls-files -z | xargs -0 detect-secrets-hook --baseline .secrets.baseline
 
 up:
