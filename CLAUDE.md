@@ -362,7 +362,14 @@ ISO 18626 message types — see table in `clients/reshare.py`.
 - **Standards conformance is non-negotiable on the wire**: any code
   that produces ISO 18626 XML must validate against the published XSD
   before we go live with real peers. Today we delegate this to ReShare
-  — keep it that way unless an ADR says otherwise.
+  — keep it that way unless an ADR says otherwise. The harness for
+  ad-hoc + future-CI validation lives at
+  `scripts/validate_iso18626.py` (PR #52); pair it with the
+  `iso18626-validate` skill. Self-test fixtures under
+  `tests/fixtures/iso18626/` exercise the validator on every PR; the
+  real ISO 18626 v1.3 XSD is an opt-in cache step at
+  `docs/standards/iso18626/iso18626-v1_3.xsd` (see that directory's
+  README — the test path skips cleanly when absent).
 - **Track lessons learned in `docs/lessons.md`.** When a PR finishes,
   ask: *did anything bite me that wasn't obvious from the spec?* If
   yes, append a dated paragraph to the relevant section, citing the

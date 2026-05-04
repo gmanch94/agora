@@ -39,19 +39,36 @@ the user before fetching.** Use `WebFetch`. Pin the version in a
 
 ### Step 2 — validate
 
-Use `lxml` (already a project dependency):
+Use the bundled CLI (PR #52 — wraps `lxml` with consistent exit codes
+and error format):
 
-```python
-from lxml import etree
-
-xsd_doc = etree.parse("docs/standards/iso18626/iso18626-v1_3.xsd")
-schema = etree.XMLSchema(xsd_doc)
-xml_doc = etree.parse("<payload-path>")  # or etree.fromstring(<bytes>)
-schema.assertValid(xml_doc)  # raises etree.DocumentInvalid on failure
+```
+.venv/Scripts/python.exe scripts/validate_iso18626.py \
+    --xsd docs/standards/iso18626/iso18626-v1_3.xsd \
+    --xml path/to/payload.xml
 ```
 
-Run via `.venv/Scripts/python.exe -c "..."` or a small script in
-`scripts/validate_iso18626.py`.
+Exit codes: `0` valid, `1` invalid (errors with line/col on stderr),
+`2` setup error (XSD or XML file missing). The companion test suite
+`tests/test_iso18626_validation.py` exercises the validator end-to-end
+on every PR using hand-rolled minimal fixtures, so the plumbing path
+is already CI-verified — your job during ad-hoc validation is just to
+point it at the real XSD + payload.
+
+For programmatic use (importing into a script):
+
+```python
+from pathlib import Path
+import importlib.util
+
+spec = importlib.util.spec_from_file_location(
+    "_validate", Path("scripts/validate_iso18626.py")
+)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+ok, errors = module.validate(Path("...xsd"), Path("...xml"))
+```
 
 ### Step 3 — report
 

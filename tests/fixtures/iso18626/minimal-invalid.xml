@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Invalid against tests/fixtures/iso18626/minimal.xsd:
+   - missing required <header> child
+   - <body> contains a <nested> element where xs:string is expected
+   - <timestamp> would be in the wrong format if it were present at all
+
+  Used by test_iso18626_validation.py::test_validator_rejects_a_malformed_payload
+  to prove the harness reports failure with line/column detail.
+-->
+<message xmlns="http://example.test/agora/minimal">
+  <body><nested>not a string</nested></body>
+</message>

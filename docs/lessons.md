@@ -410,6 +410,30 @@ target. Subsequent calls in the same process were fast (under
 Future ADR may bump the default once we have production warm-pool
 data.
 
+### 2026-05-03 — Defensive standards harness ships with self-test fixtures, not the real schema
+PR #52 (#10 ISO 18626 XSD validation in CI) wanted to add CI-level
+schema validation. Two complications: (a) the project doesn't emit
+ISO 18626 XML today (mod-rs handles wire); (b) the canonical XSD
+on illtransactions.org was unreachable from the dev environment
+(TLS cert mismatch on the public host). Shipping with a real-XSD
+hard requirement would have made every CI run depend on a third-party
+fetch that may or may not work, and would have forced a license/
+redistribution call we hadn't made. The clean answer was to **split
+the harness from the schema**: ship the validator
+(`scripts/validate_iso18626.py`), ship hand-rolled minimal fixtures
+under `tests/fixtures/iso18626/` (`minimal.xsd` +
+`minimal-valid.xml` + `minimal-invalid.xml`) using a private
+namespace `http://example.test/agora/minimal`, and gate the
+real-XSD test on `docs/standards/iso18626/iso18626-v1_3.xsd` being
+cached locally (skips with a clear pointer to the cache step
+otherwise). Net: **8 always-on tests prove the lxml plumbing works,
+2 tests skip cleanly until staff caches the XSD.** When the cache
+lands, the same harness picks up real-schema fixtures
+(`iso18626-*.xml`) automatically. **Generalises to any defensive
+standards work where the spec lives behind a third-party fetch:**
+make the framework ship-ready, make the data opt-in, document the
+opt-in step in a README colocated with the cache directory.
+
 ---
 
 ## Schema / migrations

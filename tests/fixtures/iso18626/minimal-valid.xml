@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Valid against tests/fixtures/iso18626/minimal.xsd. Used by
+  test_iso18626_validation.py::test_validator_passes_a_valid_payload to
+  prove the harness reports OK on a well-formed payload.
+-->
+<message xmlns="http://example.test/agora/minimal">
+  <header>
+    <id>msg-001</id>
+    <timestamp>2026-05-03T12:00:00Z</timestamp>
+  </header>
+  <body>hello</body>
+</message>
