@@ -55,7 +55,7 @@ whether the branches still earn their keep — don't preserve them
 out of habit. PR #37's logic was correct given its anchor; this
 PR's deletion is also correct given the new anchor. Both versions
 shipped in the same week.
-*(Backlog item: NCIP `check_out` re-anchor SHIP→RECEIVE — see
+*(Refs — re-anchor shipped in PR #38; see
 `saga/flows.py::receive_forward` + `ship_compensator`,
 `tests/test_coordinator.py::test_ship_compensator_from_{shipped,received}_emits_recall_only`,
 `tests/test_coordinator.py::test_receive_forward_advances_to_received`.)*
