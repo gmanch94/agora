@@ -941,6 +941,63 @@ over-track.
 `Makefile::audit` warning block;
 `scripts/normalize_secrets_baseline.py`.)*
 
+### 2026-05-04 — `lru_cache` on `get_settings()` leaks Settings snapshots across tests
+`agora.config.get_settings()` is `@lru_cache`'d so the FastAPI
+lifespan + every call site gets the same `Settings` instance. The
+side effect: a test that flips an `AGORA_*` env var via
+`monkeypatch` sees its `Settings()` snapshot ignored if a prior
+test already cached one — the env var rewinds, but the cached
+instance carrying the old value persists for the rest of the
+process. Symptom: tests pass in isolation, fail in suite (or vice
+versa) depending on collection order; or a feature flag flip
+silently has no effect inside the test. Fix idiom is an autouse
+fixture that wraps the yield in a clear-before / clear-after
+pair: `get_settings.cache_clear()` once before the test runs and
+once after. `tests/test_factories.py::_clear_settings_cache` is
+the canonical example; copy it verbatim into any test module
+that flips `AGORA_*` env vars (e.g. `test_routing_tiebreaker.py`
+copies it for `AGORA_ROUTING_TIEBREAK_EPSILON`). Generalises:
+**any module-level cache combined with env-var-driven config is
+test-leaky** — `lru_cache`, `functools.cache`, module-level
+`_X = expensive()` lazy globals, all the same shape.
+*(PR #46 + PR #48 — see `tests/test_factories.py::_clear_settings_cache`,
+`tests/test_routing_tiebreaker.py`.)*
+
+### 2026-05-04 — When an ADR pre-emptively names follow-ups, schedule them in the same session
+ADR-0014 (RoutingAgent LLM tie-breaker) documented the
+`routing-014` miss + `routing-009` regression as "next-PR
+territory." PR #7c then closed both follow-ups in a 6-file diff
+(3 code, 3 docs) and bumped the LLM-augmented baseline to 19/20
+top-1. Lesson: **when an ADR's "Open questions" or
+"Implementation notes" section names a concrete follow-up, ship
+it in the same session if the data is ready** — don't lose
+context to compaction or the next morning. The hand-off cost
+(re-reading the ADR + re-orienting on the prompt + re-running
+the eval to confirm a fix) is steep, and the fixes are usually
+small once the prior PR's machinery is fresh. Scheduling
+discipline ≠ scope creep; the ADR explicitly carved the work.
+*(PR #51 — see ADR-0014 implementation notes,
+`evals/routing/baseline.json` 19/20 top-1.)*
+
+### 2026-05-04 — One concern per CI workflow file (sibling-job pattern)
+Agora ships four sibling workflows: `audit.yml` (security),
+`postgres-tests.yml` (alembic + ORM parity on real Postgres),
+`routing-eval-floor.yml` (rules-baseline floor regression check),
+`triple-gate.yml` (pytest + ruff + mypy --strict). Each is a
+single job per file. Tempting alternative: one mega-pipeline
+`ci.yml` with stages. Don't. The sibling-file shape pays off in
+two places: (a) the GitHub PR check listing attributes failures
+to a specific concern (red `audit` ≠ red `triple-gate`); (b)
+adding a new concern (e.g. `routing-eval-floor.yml` in #47)
+doesn't touch the existing files at all, so reviewers see the
+new gate as an additive PR with no unrelated diff. Bundling
+would have hidden the new gate's introduction in a noisy
+multi-file mega-diff. Generalises: **one workflow file per
+failure class**; let the listing UI do the grouping.
+*(PR #28 + #47 — see `.github/workflows/audit.yml`,
+`postgres-tests.yml`, `routing-eval-floor.yml`,
+`triple-gate.yml`.)*
+
 ---
 
 ## Convention reminders (collected here so they don't drift out of CLAUDE.md)
