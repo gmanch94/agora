@@ -201,3 +201,51 @@ def test_llm_tiebreaker_factory_falsy_env_returns_none(
 
     monkeypatch.setenv("AGORA_ROUTING_LLM_ENABLED", falsy)
     assert get_llm_tiebreaker() is None
+
+
+# --- Consortium roster (AGORA_CONSORTIUM_MEMBERS) -------------------------
+#
+# ``Settings.consortium_members`` parses a comma-separated env var into a
+# de-duped, whitespace-stripped ``set[str]``. The empty default keeps the
+# pre-PR behaviour where ``DiscoveryAgent.consortium_members`` was
+# hard-coded to ``set()`` at app build time. These tests pin the
+# tokenization invariants so a misconfigured env (trailing commas,
+# whitespace, repeated entries) doesn't silently mark random candidates
+# in-consortium.
+
+
+def test_consortium_members_default_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unset env → empty set (pre-PR default preserved)."""
+    monkeypatch.delenv("AGORA_CONSORTIUM_MEMBERS", raising=False)
+    assert get_settings().consortium_members == set()
+
+
+def test_consortium_members_single_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A single token roundtrips."""
+    monkeypatch.setenv("AGORA_CONSORTIUM_MEMBERS", "MEMBER1")
+    assert get_settings().consortium_members == {"MEMBER1"}
+
+
+def test_consortium_members_csv_strips_whitespace(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Spaces around commas are stripped — common copy-paste shape."""
+    monkeypatch.setenv("AGORA_CONSORTIUM_MEMBERS", "A, B , C")
+    assert get_settings().consortium_members == {"A", "B", "C"}
+
+
+def test_consortium_members_dedupes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Duplicate tokens collapse — set semantics."""
+    monkeypatch.setenv("AGORA_CONSORTIUM_MEMBERS", "A,B,A,B,C")
+    assert get_settings().consortium_members == {"A", "B", "C"}
+
+
+@pytest.mark.parametrize("raw", ["", "   ", ",", " , , "])
+def test_consortium_members_whitespace_or_empty_returns_empty(
+    monkeypatch: pytest.MonkeyPatch, raw: str
+) -> None:
+    """Empty / whitespace-only / comma-only strings parse to empty set.
+
+    Trailing commas in env files are easy to leave by mistake; they
+    must NOT mark a phantom empty-string symbol as in-consortium.
+    """
+    monkeypatch.setenv("AGORA_CONSORTIUM_MEMBERS", raw)
+    assert get_settings().consortium_members == set()

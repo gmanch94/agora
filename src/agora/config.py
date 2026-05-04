@@ -67,6 +67,17 @@ class Settings(BaseSettings):
     # toggling vs ReShare's URL-presence convention.
     crossref_enabled: bool = Field(default=False, alias="AGORA_CROSSREF_ENABLED")
 
+    # Consortium roster used by ``DiscoveryAgent`` to flag candidates
+    # whose ``agency_symbol`` is in-network (boosts ``in_consortium``,
+    # downstream weight in RoutingAgent's rules-baseline). CSV form
+    # rather than a structured shape because the prototype has no
+    # consortium-roster source-of-truth yet — env-var lets ops seed
+    # whichever symbols matter for a given deployment without a
+    # schema migration. Empty default keeps prior behaviour (no
+    # candidate flagged in-consortium). Tokens are stripped and
+    # de-duped via ``consortium_members``.
+    consortium_members_csv: str = Field(default="", alias="AGORA_CONSORTIUM_MEMBERS")
+
     saga_stall_timeout_secs: int = Field(default=600, alias="SAGA_STALL_TIMEOUT_SECS")
     outbox_retry_max_attempts: int = Field(default=10, alias="OUTBOX_RETRY_MAX_ATTEMPTS")
     outbox_worker_enabled: bool = Field(default=True, alias="AGORA_OUTBOX_WORKER_ENABLED")
@@ -134,6 +145,19 @@ class Settings(BaseSettings):
         When false, the in-process mock is used.
         """
         return bool(self.reshare_base_url)
+
+    @property
+    def consortium_members(self) -> set[str]:
+        """Parsed roster of in-consortium agency symbols.
+
+        Splits ``AGORA_CONSORTIUM_MEMBERS`` on commas, strips whitespace
+        per token, and drops empties. Returns an empty set when the
+        env-var is unset or whitespace-only — preserving the pre-PR
+        behaviour where ``DiscoveryAgent.consortium_members`` defaulted
+        to ``set()`` at app build time.
+        """
+        raw = self.consortium_members_csv
+        return {token.strip() for token in raw.split(",") if token.strip()}
 
 
 @lru_cache(maxsize=1)

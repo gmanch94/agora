@@ -529,6 +529,28 @@ async def test_discover_on_terminal_saga_returns_409(
     assert "terminal" in r.json()["detail"]
 
 
+async def test_create_app_threads_consortium_members_from_settings(
+    monkeypatch: pytest.MonkeyPatch, engine: AsyncEngine
+) -> None:
+    """``AGORA_CONSORTIUM_MEMBERS`` env → ``app.state.discovery._members``.
+
+    Pinning the wiring at integration scope (not just at the Settings
+    property) so a future refactor of ``create_app`` that drops the
+    ``settings.consortium_members`` lookup is caught.
+    """
+    from agora.config import get_settings
+
+    monkeypatch.setenv("AGORA_CONSORTIUM_MEMBERS", "MEMBER1, MEMBER2 ,MEMBER1")
+    get_settings.cache_clear()
+    try:
+        fresh_app = create_app()
+        # Internal attribute is the cleanest assertion target —
+        # DiscoveryAgent has no public roster accessor today.
+        assert fresh_app.state.discovery._members == {"MEMBER1", "MEMBER2"}
+    finally:
+        get_settings.cache_clear()
+
+
 async def test_reject_records_failed_gate(client: AsyncClient) -> None:
     """Sanity check that the existing /reject endpoint still records a gate."""
     saga_id = (await client.post("/requests", json=_request_payload())).json()[
