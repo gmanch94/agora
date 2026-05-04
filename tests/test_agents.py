@@ -92,6 +92,53 @@ async def test_routing_picks_consortium_available_first() -> None:
 
 
 @pytest.mark.asyncio
+async def test_routing_format_affinity_flips_article_to_digital() -> None:
+    """ADR-0014 addendum: for article requests, electronic-delivery
+    candidates should beat consortium-but-physical-only.
+
+    Pre-feature: rules pick MEM-A on consortium weight (gap 0.46).
+    Post-feature: format-affinity (+0.3 for electronic, -0.3 for
+    physical_only when item_kind in {article, chapter}) flips the
+    pick to EXT-DIG. Pinned to prevent regression of the 7e fix.
+    """
+    from agora.models.request import ItemMetadata
+
+    candidates = [
+        HolderCandidate(
+            symbol="MEM-A",
+            is_consortium_member=True,
+            status="available",
+            preferred_score=0.5,
+            raw={"holds_format": "print", "delivery": "physical_only"},
+        ),
+        HolderCandidate(
+            symbol="EXT-DIG",
+            is_consortium_member=False,
+            status="available",
+            preferred_score=0.7,
+            raw={"holds_format": "digital", "delivery": "electronic"},
+        ),
+    ]
+    article = ItemMetadata(title="Some article", item_kind="article")
+    rec = await RoutingAgent().run(candidates, item=article)
+    assert rec.chosen is not None
+    assert rec.chosen.symbol == "EXT-DIG"
+
+    # Same candidates, book request → no affinity adjustment, rules
+    # default wins (consortium beats external).
+    book = ItemMetadata(title="Some book", item_kind="book")
+    rec = await RoutingAgent().run(candidates, item=book)
+    assert rec.chosen is not None
+    assert rec.chosen.symbol == "MEM-A"
+
+    # No item kwarg at all → backward-compatible behaviour, also rules
+    # default (consortium wins).
+    rec = await RoutingAgent().run(candidates)
+    assert rec.chosen is not None
+    assert rec.chosen.symbol == "MEM-A"
+
+
+@pytest.mark.asyncio
 async def test_policy_blocks_contu_violation() -> None:
     issn = "12345678"
     ledger = [

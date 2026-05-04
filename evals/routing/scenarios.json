@@ -156,13 +156,14 @@
   {
     "id": "routing-015",
     "description": "[GROUND TRUTH ≠ RULES] Format match wins over consortium for an article request that requires electronic delivery.",
+    "item": {"title": "Some article", "item_kind": "article"},
     "candidates": [
       {"symbol": "MEM-A", "is_consortium_member": true, "status": "available", "preferred_score": 0.5, "raw": {"holds_format": "print", "delivery": "physical_only"}},
       {"symbol": "EXT-DIG", "is_consortium_member": false, "status": "available", "preferred_score": 0.7, "raw": {"holds_format": "digital", "delivery": "electronic"}}
     ],
     "expected_chosen": "EXT-DIG",
     "expected_ranking": ["EXT-DIG", "MEM-A"],
-    "notes": "Rules pick MEM-A on consortium weight. Ground truth: an article request with electronic-delivery affinity should prefer the digital holder, even if external. Rules-baseline cannot read raw.delivery; LLM tie-breaker can. This case INVERTS rules' top-1, so it pushes the rules-baseline floor below 100%."
+    "notes": "Article request (item.item_kind='article') with electronic-delivery affinity. Post-PR for ADR-0014 addendum: rules baseline now reads item.item_kind + candidate.raw.delivery and applies a +/-0.3 format-affinity adjustment, so rules pick EXT-DIG. Pre-PR: rules picked MEM-A on consortium weight (gap 0.46), LLM never fired because gap > ε."
   },
   {
     "id": "routing-016",

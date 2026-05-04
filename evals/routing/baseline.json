@@ -1,7 +1,7 @@
 {
   "total": 20,
-  "top1_accuracy": 0.95,
-  "mean_spearman": 0.8889,
+  "top1_accuracy": 1.0,
+  "mean_spearman": 1.0,
   "results": [
     {
       "scenario_id": "routing-001",
@@ -215,18 +215,18 @@
     },
     {
       "scenario_id": "routing-015",
-      "chosen_match": false,
-      "actual_chosen": "MEM-A",
+      "chosen_match": true,
+      "actual_chosen": "EXT-DIG",
       "expected_chosen": "EXT-DIG",
       "actual_ranking": [
-        "MEM-A",
-        "EXT-DIG"
+        "EXT-DIG",
+        "MEM-A"
       ],
       "expected_ranking": [
         "EXT-DIG",
         "MEM-A"
       ],
-      "spearman": -1.0
+      "spearman": 1.0
     },
     {
       "scenario_id": "routing-016",
