@@ -16,14 +16,16 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import secrets
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any, Optional
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
@@ -455,10 +457,40 @@ def create_app() -> FastAPI:
     )
     templates = Jinja2Templates(directory=str(_ui_root / "templates"))
 
+    # HTTP Basic auth guard for the HTML console.
+    # When AGORA_CONSOLE_PASSWORD is empty (default) the check is skipped —
+    # no credentials required in local dev. Set both vars to enable.
+    _console_security = HTTPBasic(auto_error=False)
+
+    def _require_console_auth(
+        credentials: Optional[HTTPBasicCredentials] = Depends(_console_security),
+        settings: Any = Depends(get_settings),
+    ) -> None:
+        password = settings.console_password
+        if not password:
+            return  # auth disabled
+        if credentials is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required",
+                headers={"WWW-Authenticate": "Basic realm='Agora staff console'"},
+            )
+        user_ok = secrets.compare_digest(
+            credentials.username.encode(), settings.console_username.encode()
+        )
+        pass_ok = secrets.compare_digest(credentials.password.encode(), password.encode())
+        if not (user_ok and pass_ok):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid credentials",
+                headers={"WWW-Authenticate": "Basic realm='Agora staff console'"},
+            )
+
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
     async def staff_console_inbox(
         request: Request,
         session: AsyncSession = Depends(_get_session),
+        _auth: None = Depends(_require_console_auth),
     ) -> HTMLResponse:
         """Staff console inbox — HTML view over recent sagas.
 
@@ -505,6 +537,7 @@ def create_app() -> FastAPI:
         saga_id: UUID,
         request: Request,
         session: AsyncSession = Depends(_get_session),
+        _auth: None = Depends(_require_console_auth),
     ) -> HTMLResponse:
         """Staff console detail view — full ledger timeline + action forms."""
         async with session.begin():
@@ -533,6 +566,35 @@ def create_app() -> FastAPI:
             }
             for ev in events
         ]
+
+        # Last discovery OBSERVATION for the panel pre-render (item 4).
+        cached_discovery: dict[str, Any] | None = None
+        for ev in reversed(events):
+            if (
+                ev.kind == EventKind.OBSERVATION
+                and ev.step == StepName.ROUTE
+                and isinstance(ev.payload, dict)
+                and ev.payload.get("kind") == "discovery"
+            ):
+                raw = ev.payload.get("candidates", [])
+                cached_discovery = {
+                    "candidates": [
+                        {
+                            "symbol": c["symbol"],
+                            "name": c.get("name") or "",
+                            "status": c.get("status", "unknown"),
+                            "distance_km": round(c["distance_km"], 1) if c.get("distance_km") is not None else "",
+                            "in_consortium": c.get("is_consortium_member", False),
+                        }
+                        for c in raw
+                    ],
+                    "diagnostics": ev.payload.get("diagnostics", []),
+                    "rationale": ev.rationale or "",
+                    "observed_at": ev.payload.get("observed_at", "")[:10],
+                }
+                break
+
+        can_route = state == LifecycleState.SUBMITTED.value
         return templates.TemplateResponse(
             request,
             "detail.html",
@@ -541,6 +603,9 @@ def create_app() -> FastAPI:
                 "events": event_rows,
                 "approve_step": approve_step,
                 "compensate_step": compensate_step,
+                "cached_discovery": cached_discovery,
+                "can_route": can_route,
+                "saga_id": str(saga_id),
             },
         )
 
@@ -549,6 +614,7 @@ def create_app() -> FastAPI:
         saga_id: UUID,
         session: AsyncSession = Depends(_get_session),
         registry: StepRegistry = Depends(_get_registry),
+        _auth: None = Depends(_require_console_auth),
         step: str = Form(...),
         rationale: str = Form("Staff approved."),
         chosen_supplier: str = Form(""),
@@ -599,6 +665,7 @@ def create_app() -> FastAPI:
         saga_id: UUID,
         http_request: Request,
         session: AsyncSession = Depends(_get_session),
+        _auth: None = Depends(_require_console_auth),
     ) -> HTMLResponse:
         """HTMX partial: run DiscoveryAgent, return candidate list as HTML fragment.
 
@@ -672,6 +739,7 @@ def create_app() -> FastAPI:
     async def ui_saga_reject(
         saga_id: UUID,
         session: AsyncSession = Depends(_get_session),
+        _auth: None = Depends(_require_console_auth),
         step: str = Form(...),
         rationale: str = Form("Staff rejected."),
     ) -> RedirectResponse:
@@ -705,6 +773,7 @@ def create_app() -> FastAPI:
         saga_id: UUID,
         session: AsyncSession = Depends(_get_session),
         registry: StepRegistry = Depends(_get_registry),
+        _auth: None = Depends(_require_console_auth),
         step: str = Form(...),
         rationale: str = Form("Staff compensated."),
     ) -> RedirectResponse:

@@ -1,5 +1,21 @@
 <div id="discovery-panel" class="card-base discover-panel">
-  <h2 class="action-section__title">Discovery results</h2>
+  <div class="discover-panel__header">
+    <h2 class="action-section__title">Discovery results</h2>
+    {% if show_rerun is defined and show_rerun %}
+    <div class="discover-panel__rerun">
+      {% if cached_discovery is defined and cached_discovery.observed_at %}
+      <span class="discover-panel__ts">Last run: {{ cached_discovery.observed_at }}</span>
+      {% endif %}
+      <button
+        class="button-sm"
+        hx-post="/ui/sagas/{{ saga_id }}/discover"
+        hx-target="#discovery-panel"
+        hx-swap="outerHTML"
+        hx-indicator="#discovery-panel"
+      >Run again</button>
+    </div>
+    {% endif %}
+  </div>
 
   {% if candidates %}
   <table class="inbox-table" aria-label="Candidate holders">

@@ -267,3 +267,93 @@ async def test_detail_view_shows_discover_button_for_active_saga(
     body = (await client.get(f"/sagas/{saga_id}/view")).text
     assert "Discover candidates" in body
     assert f"/ui/sagas/{saga_id}/discover" in body
+
+
+# ---------------------------------------------------------------------------
+# Item 4 — cached discovery results
+# ---------------------------------------------------------------------------
+
+
+async def test_detail_view_shows_cached_discovery_after_run(
+    client: AsyncClient,
+) -> None:
+    """After running discover once, reloading the detail page shows cached results."""
+    submit = await client.post("/requests", json=_REQUEST_PAYLOAD)
+    saga_id = submit.json()["saga_id"]
+
+    # Run discovery — writes OBSERVATION event.
+    await client.post(f"/ui/sagas/{saga_id}/discover")
+
+    # Reload detail page — panel should be pre-rendered from the cached event.
+    body = (await client.get(f"/sagas/{saga_id}/view")).text
+    # Cached panel renders the results div, not the "Discover candidates" button.
+    assert 'id="discovery-panel"' in body
+    assert "Discovery results" in body
+    # "Run again" button replaces the initial trigger.
+    assert "Run again" in body
+    assert "Discover candidates" not in body
+
+
+async def test_detail_view_no_cached_discovery_shows_button(
+    client: AsyncClient,
+) -> None:
+    """Fresh saga (no prior discover run) shows the Discover candidates button."""
+    submit = await client.post("/requests", json=_REQUEST_PAYLOAD)
+    saga_id = submit.json()["saga_id"]
+
+    body = (await client.get(f"/sagas/{saga_id}/view")).text
+    assert "Discover candidates" in body
+    assert "Run again" not in body
+
+
+# ---------------------------------------------------------------------------
+# Item 5 — HTTP Basic auth
+# ---------------------------------------------------------------------------
+
+
+async def test_console_auth_disabled_by_default(client: AsyncClient) -> None:
+    """With no AGORA_CONSOLE_PASSWORD set, all console routes are open."""
+    # Default engine fixture has no password — this should still return 200.
+    r = await client.get("/")
+    assert r.status_code == 200
+
+
+async def test_console_auth_blocks_unauthenticated(app: FastAPI) -> None:
+    """When AGORA_CONSOLE_PASSWORD is set, unauthenticated requests get 401."""
+    import os
+
+    from agora.config import get_settings
+
+    get_settings.cache_clear()
+    os.environ["AGORA_CONSOLE_PASSWORD"] = "secret"
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            r = await c.get("/")
+        assert r.status_code == 401
+        assert "WWW-Authenticate" in r.headers
+    finally:
+        del os.environ["AGORA_CONSOLE_PASSWORD"]
+        get_settings.cache_clear()
+
+
+async def test_console_auth_allows_valid_credentials(app: FastAPI) -> None:
+    """Valid Basic credentials pass through to the console route."""
+    import base64
+    import os
+
+    from agora.config import get_settings
+
+    get_settings.cache_clear()
+    os.environ["AGORA_CONSOLE_PASSWORD"] = "secret"
+    os.environ["AGORA_CONSOLE_USERNAME"] = "staff"
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            token = base64.b64encode(b"staff:secret").decode()
+            r = await c.get("/", headers={"Authorization": f"Basic {token}"})
+        assert r.status_code == 200
+    finally:
+        del os.environ["AGORA_CONSOLE_PASSWORD"]
+        os.environ.pop("AGORA_CONSOLE_USERNAME", None)
+        get_settings.cache_clear()
