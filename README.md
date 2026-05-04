@@ -3,7 +3,10 @@
 > Research prototype. Multi-library consortium. Agents over FOLIO/ReShare.
 > Saga + idempotency. Human-approval at every state transition.
 
-> Last reviewed against code: 2026-05-04 (post PRs #41-#61).
+> Last reviewed against code: 2026-05-04 (post PRs #41-#76 — adds
+> Vertex env-routing requirement for `eval-routing --llm`,
+> `sync-doc-counts` script + pytest gate as the single source of
+> truth for test/ADR counts).
 
 ## What this is
 
