@@ -834,6 +834,30 @@ lower-level config, treat the lower level as private** — the
 boundary the SDK exposes is the boundary you own.
 *(PR #49 — see `src/agora/agents/routing_llm_adk.py::AdkLlmTiebreaker.__init__`.)*
 
+### 2026-05-04 — `google-genai` defaults to API-key auth; Vertex routing needs `GOOGLE_GENAI_USE_VERTEXAI=true`
+ADC bound + `aiplatform.googleapis.com` enabled + Studio
+click-through done + `gcloud auth application-default
+set-quota-project` correct — and the eval rerun still failed every
+LLM call with `No API key was provided. ... ai.google.dev/gemini-api/docs/api-key`.
+The `google-genai` SDK that ADK builds on routes through the
+public Gemini API by default; Vertex/ADC only kicks in when
+`GOOGLE_GENAI_USE_VERTEXAI=true` is set in the process env (with
+`GOOGLE_CLOUD_PROJECT` + `GOOGLE_CLOUD_LOCATION`). All four pieces
+are required: enablement on the project, ADC + quota project,
+Vertex env flag, and project/location env. Miss any one and the
+adapter falls back to API-key auth and 401s every call — but
+because `RoutingAgent`'s seam catches the failure and falls back to
+rules, the whole eval looks "successful" with rules-only
+numbers. Fix: pass the Vertex env explicitly when invoking
+`agora.evals.routing --llm`. Generalises: **when an SDK has two
+auth modes (API key vs ADC), assume the safest default is the
+public one — and that switching to the privileged mode is a
+positive flag, not the absence of an API key**. Don't trust an
+"empty" env to mean "use ADC."
+*(2026-05-04 LLM eval reverification — see CLAUDE.md known-gaps
+routing block; `src/agora/agents/routing_llm_adk.py` adapter does
+not set the env flag itself, so callers must.)*
+
 ---
 
 ## Convention reminders (collected here so they don't drift out of CLAUDE.md)
