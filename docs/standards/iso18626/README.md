@@ -23,6 +23,22 @@ The XSDs are **not bundled in the repo by default**. Reasons:
    `docs/architecture.md`). Bundling the XSD ahead of a real
    integration is dead weight in the diff.
 
+## What runs always vs cached opt-in
+
+Two layers, both shipped in #52:
+
+- **Always-on (CI + local).** `tests/test_iso18626_validation.py`
+  exercises `scripts/validate_iso18626.py` against the hand-rolled
+  minimal fixtures under `tests/fixtures/iso18626/` (`minimal.xsd`,
+  `minimal-valid.xml`, `minimal-invalid.xml`) on every PR. This
+  proves the validator plumbing — XSD parsing, XML parsing, lxml
+  schema bind, error surfacing — without depending on the real
+  ISO XSD being present.
+- **Opt-in (per-developer cache).** Real ISO 18626 v1.3 schema
+  validation kicks in once you complete the Cache step below. The
+  same test file then picks up the cached XSD path; until then the
+  real-schema test path skips with a clear "missing file" message.
+
 ## Cache step (one-time, manual)
 
 When you need to validate real ISO 18626 payloads (review pre-flight

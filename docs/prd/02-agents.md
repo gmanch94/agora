@@ -61,9 +61,10 @@ by `tests/test_agents.py::test_routing_picks_consortium_available_first`.
 point is in place but no LLM is wired yet. `RoutingAgent.__init__`
 takes an optional `llm_tiebreaker: LlmTiebreaker | None = None`
 kwarg; when configured, the agent calls `llm_tiebreaker.resolve()`
-on near-ties (top-2 score gap ≤ ε, default 0.05 via
-`AGORA_ROUTING_TIEBREAK_EPSILON`). `MockLlmTiebreaker` ships in
-the same module for tests. Failure paths (raise / abstain / unknown
+on near-ties (top-2 score gap ≤ ε, default 0.03 via
+`AGORA_ROUTING_TIEBREAK_EPSILON`; tightened from 0.05 in #51 / #7c
+so `routing-009` skips the LLM — rules already get it right).
+`MockLlmTiebreaker` ships in the same module for tests. Failure paths (raise / abstain / unknown
 symbol) all fall back to the rules pick + a diagnostic in the
 rationale — `RoutingAgent` never re-raises out to its caller because
 of the LLM (advisory-only invariant per ADR-0005). See
@@ -87,7 +88,8 @@ unless `AGORA_ROUTING_LLM_ENABLED=1`. CI floor gate at
 `.github/workflows/routing-eval-floor.yml` runs the harness in
 `--rules-only --check-floor` mode (no GCP secrets in CI) — catches
 rules-engine regressions; PR-review catches LLM-quality regressions.
-PR-2b ceiling per ADR-0014: top-1 19/20 (0.9500) by fixing the three
+PR-2b shipped (#51) hits the ADR-0014 ceiling: top-1 19/20 (0.9500),
+mean Spearman 0.8889 against `gemini-2.5-flash`, by fixing the three
 true-tie inversion scenarios (`routing-013`, `014`, `016`);
 `routing-015` stays out-of-scope (rules score gap 0.46 — not a
 tie).
@@ -100,9 +102,12 @@ the gating policy.
 variant against the 20 hand-labeled scenarios in
 `evals/routing/scenarios.json` and scores it on top-1 accuracy +
 mean Spearman rank correlation. Invoke with `make eval-routing`.
-The committed rules-baseline floor in `evals/routing/baseline.json`
-(top-1 0.8000, mean Spearman 0.5556) is what any LLM-augmented PR
-must meet or exceed before merging. Four scenarios
+Two committed baselines (split in #50): the rules-baseline floor
+in `evals/routing/baseline-rules.json` (top-1 0.8000, mean Spearman
+0.5556) is the regression guard the CI gate enforces, and
+`evals/routing/baseline.json` is the LLM-augmented baseline
+(top-1 0.9500, mean Spearman 0.8889 post #51) that PR-review reads
+to catch LLM-quality regressions. Four scenarios
 (`routing-013..016`) are deliberate rules-baseline misses encoding
 metadata-only signals — those are exactly the cases the LLM is
 hired to decide.

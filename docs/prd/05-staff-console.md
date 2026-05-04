@@ -57,6 +57,7 @@ GET    /sagas/{id}                     # full event timeline
 POST   /sagas/{id}/approve             # commit gate AND run forward in one tx
 POST   /sagas/{id}/reject              # mark pending gate failed
 POST   /sagas/{id}/compensate          # run compensator for committed forward
+POST   /sagas/{id}/discover            # run DiscoveryAgent; ROUTE-anchored OBSERVATION (#53)
 ```
 
 **Idempotency keys are minted server-side** — every saga event

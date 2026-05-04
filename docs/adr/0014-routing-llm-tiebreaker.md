@@ -181,7 +181,9 @@ no change to `RoutingAgent`.
   optional `epsilon=` override; `run` gains optional `item=` kwarg
   for patron-side metadata.
 - ε exposed via `Settings.routing_tiebreak_epsilon` /
-  `AGORA_ROUTING_TIEBREAK_EPSILON` (default 0.05).
+  `AGORA_ROUTING_TIEBREAK_EPSILON` (default 0.03; tightened from
+  0.05 → 0.03 in #51 / #7c after eval tuning so `routing-009` skips
+  the LLM).
 - Six-case test matrix in `tests/test_routing_tiebreaker.py`:
   rules-only path / wide-gap-no-call / within-ε-call /
   exception-fallback / unknown-symbol-fallback / abstain-fallback.
@@ -221,7 +223,12 @@ Shipped:
 - **Settings** four new fields (`AGORA_ROUTING_LLM_ENABLED`,
   `AGORA_ROUTING_LLM_MODEL` default `gemini-2.0-flash`,
   `AGORA_ROUTING_LLM_TIMEOUT_SECS` default 5.0,
-  `AGORA_ROUTING_LLM_LOCATION` default `us-central1`).
+  `AGORA_ROUTING_LLM_LOCATION` default `us-central1`). Note: the
+  config-default `gemini-2.0-flash` 404s under the current Vertex
+  enablement; the LLM-augmented baseline numbers in
+  `evals/routing/baseline.json` were captured against
+  `gemini-2.5-flash` (override via env). See CLAUDE.md for the
+  Vertex enablement / Studio click-through requirement.
 - **CLI flags** on `python -m agora.evals.routing`: `--rules-only`
   (explicit, matches default), `--llm` (wrap with factory output),
   `--check-floor` (read committed baseline, exit 1 on regression,

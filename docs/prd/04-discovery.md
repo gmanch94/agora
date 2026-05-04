@@ -1,12 +1,14 @@
 # PRD 04 — Discovery
 
-> Last reviewed against code: 2026-05-03 (post CrossRef client PR-A
-> + DiscoveryAgent integration PR-B + factory wiring PR-C — DOI input
-> now triggers a CrossRef identity confirmation that re-keys the SRU
-> search; CrossRef errors and 404s downgrade to diagnostics so SRU
-> still runs; both clients now expose ``get_*_client()`` factories
-> selecting mock vs HTTP via ``AGORA_CROSSREF_ENABLED`` /
-> ``AGORA_SRU_ENABLED``).
+> Last reviewed against code: 2026-05-04 (post CrossRef client PR-A
+> + DiscoveryAgent integration PR-B + factory wiring PR-C + endpoint
+> wiring #46/#53 — DOI input now triggers a CrossRef identity
+> confirmation that re-keys the SRU search; CrossRef errors and 404s
+> downgrade to diagnostics so SRU still runs; both clients now expose
+> ``get_*_client()`` factories selecting mock vs HTTP via
+> ``AGORA_CROSSREF_ENABLED`` / ``AGORA_SRU_ENABLED``;
+> `POST /sagas/{id}/discover` runs DiscoveryAgent against a saga's
+> stored request and writes a ROUTE-anchored OBSERVATION).
 
 ## Inputs
 
@@ -102,10 +104,14 @@ presence check would always select http and break offline workflows.
 The DiscoveryAgent itself takes both clients as constructor kwargs
 (`DiscoveryAgent(sru, *, crossref=None, ...)`) so callers can wire
 the factories at app startup or pass test doubles directly.
-Wiring into `agora.api.app.create_app` (lifespan-managed `app.state`
-+ `aclose()` on shutdown) is a separate PR — blocked until the
-staff-console discovery handler shape (sync endpoint vs background
-lifespan task) is decided.
+Wiring into `agora.api.app.create_app` shipped in #46/#53:
+`create_app()` constructs `DiscoveryAgent` from the two factories at
+top and stashes it on `app.state.discovery`; the lifespan calls
+`aclose()` on both http pools at shutdown alongside ReShare. The
+synchronous staff-handler shape was chosen over a background
+lifespan task — `POST /sagas/{id}/discover` invokes the agent
+inline and writes a single ROUTE-anchored OBSERVATION (kind
+`"discovery"`) per call.
 
 ## OpenURL parsing
 
