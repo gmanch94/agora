@@ -138,9 +138,7 @@ def test_sru_factory_enabled_returns_http(
 
 
 @pytest.mark.parametrize("falsy", ["0", "false", "False"])
-def test_sru_factory_falsy_env_returns_mock(
-    monkeypatch: pytest.MonkeyPatch, falsy: str
-) -> None:
+def test_sru_factory_falsy_env_returns_mock(monkeypatch: pytest.MonkeyPatch, falsy: str) -> None:
     """Common falsy strings parse to ``False`` and select the mock."""
     monkeypatch.setenv("AGORA_SRU_ENABLED", falsy)
     client = get_sru_client()
@@ -158,3 +156,48 @@ async def test_sru_factory_mock_searches_return_empty() -> None:
     assert await client.search_isbn("9780000000001") == []
     assert await client.search_issn("0000-0000") == []
     assert await client.search_title("nothing here") == []
+
+
+# --- LLM tie-breaker factory ----------------------------------------------
+
+
+def test_llm_tiebreaker_factory_default_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No env override → ``None`` (rules-only path).
+
+    ``RoutingAgent(llm_tiebreaker=None)`` is byte-identical to bare
+    ``RoutingAgent()`` — pinned by PR-2a's invariant. The factory
+    returning ``None`` honours that on the wired-up code path too.
+    """
+    from agora.agents.factories import get_llm_tiebreaker
+
+    monkeypatch.delenv("AGORA_ROUTING_LLM_ENABLED", raising=False)
+    assert get_llm_tiebreaker() is None
+
+
+def test_llm_tiebreaker_factory_enabled_returns_adk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``AGORA_ROUTING_LLM_ENABLED=1`` → ``AdkLlmTiebreaker`` instance.
+
+    Construction is cheap — no GCP call until ``resolve()`` fires —
+    so we can assert on type without bound credentials.
+    """
+    from agora.agents.factories import get_llm_tiebreaker
+    from agora.agents.routing_llm_adk import AdkLlmTiebreaker
+
+    monkeypatch.setenv("AGORA_ROUTING_LLM_ENABLED", "1")
+    instance = get_llm_tiebreaker()
+    assert isinstance(instance, AdkLlmTiebreaker)
+
+
+@pytest.mark.parametrize("falsy", ["0", "false", "False"])
+def test_llm_tiebreaker_factory_falsy_env_returns_none(
+    monkeypatch: pytest.MonkeyPatch, falsy: str
+) -> None:
+    """Common falsy strings parse to ``False`` and select no tie-breaker."""
+    from agora.agents.factories import get_llm_tiebreaker
+
+    monkeypatch.setenv("AGORA_ROUTING_LLM_ENABLED", falsy)
+    assert get_llm_tiebreaker() is None

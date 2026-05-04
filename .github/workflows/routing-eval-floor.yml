@@ -1,0 +1,50 @@
+name: routing-eval-floor
+
+# Regression guard for the RoutingAgent rules-baseline path. Runs the
+# eval harness in --rules-only mode (no LLM, no GCP, no secrets) and
+# asserts the scores have not regressed below the committed
+# evals/routing/baseline.json floor. PR-2b of ADR-0014 ships this gate.
+#
+# Why CI never invokes the real LLM:
+# - GCP credentials would have to live in repo secrets (cost + risk).
+# - LLM calls flake. Flake-on-CI is the worst regression signal.
+# - The "did the LLM help" question is a PR-review question, not a
+#   per-PR-CI question — the reviewer reads the new baseline.json
+#   numbers committed alongside the LLM-related change.
+#
+# What this workflow DOES catch: a tweak to the rules-engine that
+# accidentally drops top-1 accuracy or mean Spearman below the
+# committed floor. Anyone changing src/agora/agents/routing.py
+# scoring weights, or src/agora/evals/routing.py harness math, gets a
+# red CI signal.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  routing-eval-floor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install dev extras
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: routing eval — rules-only floor
+        # --rules-only: explicit (and matches the default); no LLM
+        # --check-floor: read baseline.json, compare, exit 1 on regression
+        # Implies --no-write so a failing run can't quietly overwrite the
+        # baseline it's checking against.
+        run: python -m agora.evals.routing --rules-only --check-floor

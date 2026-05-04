@@ -126,29 +126,50 @@ ISO 18626 message types — see table in `clients/reshare.py`.
   — replay-safety lives in the saga ledger's UNIQUE constraint,
   not the wire.
 - RoutingAgent uses a deterministic rules-only weighted-sum baseline
-  + a pluggable `LlmTiebreaker` seam (PR-2a). The LLM Protocol +
-  `MockLlmTiebreaker` test double + ε config
-  (`AGORA_ROUTING_TIEBREAK_EPSILON`, default 0.05) all ship; the
-  agent is byte-identical to PR-1 when constructed with no
-  `llm_tiebreaker=` kwarg. **No real LLM adapter wired** — that's
-  PR-2b alongside the prompt template + eval rerun + CI gate.
-  PR-2b's adapter MUST be ADK-mediated (ADR-0003), `temperature=0`
-  for determinism, and meet/exceed the committed rules-baseline floor
-  in `evals/routing/baseline.json`: top-1 **0.8000**, mean Spearman
-  **0.5556**. Four scenarios (`routing-013..016`) are deliberate
+  + a pluggable `LlmTiebreaker` seam (PR-2a) + a real
+  `AdkLlmTiebreaker` adapter (PR-2b) wired via the
+  `agora.agents.factories.get_llm_tiebreaker()` factory. Default
+  factory output is `None` (rules-only path) — the agent is
+  byte-identical to PR-1 unless `AGORA_ROUTING_LLM_ENABLED=1` AND
+  the caller passes `llm_tiebreaker=get_llm_tiebreaker()`. Adapter
+  uses ADK `LlmAgent` + `InMemoryRunner` (ADR-0003), Gemini Flash by
+  default (`AGORA_ROUTING_LLM_MODEL`), `temperature=0` pinned,
+  structured output via `output_schema=TiebreakDecisionSchema` so
+  JSON parsing is constrained-decoded. Per-call timeout via
+  `asyncio.wait_for(timeout=AGORA_ROUTING_LLM_TIMEOUT_SECS)` — a
+  stuck LLM raises, seam catches, rules-fallback diagnostic in the
+  rationale. Lazy `google.adk` import inside `__init__` so a base
+  install (no `[adk]` extra) doesn't crash on
+  `import agora.agents.routing`. Prompt template separated into
+  `src/agora/agents/routing_tiebreak_prompt.py` so prompt-wording
+  iteration is a prompt-only diff.
+  CI gate: `.github/workflows/routing-eval-floor.yml` runs the
+  harness in `--rules-only --check-floor` mode (no GCP secrets in
+  CI) — catches rules-engine regressions vs the committed
+  `evals/routing/baseline.json`. PR-review catches LLM-quality
+  regressions by reading the new baseline numbers in the diff. Floor
+  numbers: top-1 **0.8000**, mean Spearman **0.5556** (rules
+  baseline). Four scenarios (`routing-013..016`) are deliberate
   rules-baseline misses encoding metadata-only signals (SLA tier,
   reciprocity, format affinity, on-time reliability). Three (013,
   014, 016) have rules score gap 0.0 — true ties — and are in scope
   for the tie-breaker. The fourth (015) has gap 0.46 and is
   documented in ADR-0014 as **out of scope for the tie-breaker
-  mechanism** (a future ADR may revisit if real consortium routing
-  benefits from an always-on advisory call). Eval harness via
-  `make eval-routing`; NOT in `triple-gate` CI yet — PR-2b adds the
-  regression hook at the same time it commits the new baseline.
+  mechanism**. Eval harness via `make eval-routing` (rules) or
+  `python -m agora.evals.routing --llm` (LLM-augmented; needs ADC
+  bound + `aiplatform.googleapis.com` enabled + Gemini publisher-model
+  access in the bound project). PR-2b's `--llm` rerun was attempted
+  end-to-end and every call returned **Vertex 404 NOT_FOUND** on
+  `gemini-2.0-flash` / `gemini-1.5-flash` — ADC + Vertex API
+  enablement are necessary but **not** sufficient for publisher-model
+  access. The seam's exception-fallback path fired on every scenario
+  as designed (validating the wire end-to-end), so PR-2b shipped with
+  `evals/routing/baseline.json` byte-identical to master. A follow-on
+  pass reruns once publisher-model access is confirmed.
   Failure paths in the seam (LLM raises / abstains / returns unknown
-  symbol) ALWAYS fall back to the rules pick + diagnostic; the agent
-  never re-raises out to its caller (advisory-only invariant per
-  ADR-0005).
+  symbol / times out) ALWAYS fall back to the rules pick + diagnostic;
+  the agent never re-raises out to its caller (advisory-only invariant
+  per ADR-0005).
 - DiscoveryAgent has CrossRef + SRU client factories
   (`agora.clients.crossref.get_crossref_client`,
   `agora.clients.sru.get_sru_client`) gated on

@@ -102,6 +102,27 @@ class Settings(BaseSettings):
     # in ADR-0014 as out-of-scope for the tie-breaker).
     routing_tiebreak_epsilon: float = Field(default=0.05, alias="AGORA_ROUTING_TIEBREAK_EPSILON")
 
+    # RoutingAgent LLM tie-breaker adapter (PR-2b, ADR-0014). Disabled
+    # by default so ``RoutingAgent()`` with no kwargs and no factory
+    # call stays byte-identical to the rules-only baseline. Set
+    # ``AGORA_ROUTING_LLM_ENABLED=1`` to opt the factory into building
+    # the real ``AdkLlmTiebreaker``. Mirrors PR #46's explicit-boolean
+    # toggle pattern (``AGORA_CROSSREF_ENABLED`` / ``AGORA_SRU_ENABLED``).
+    routing_llm_enabled: bool = Field(default=False, alias="AGORA_ROUTING_LLM_ENABLED")
+    # Vertex/Gemini model id. Flash chosen for tie-break-only one-shot
+    # judgments — cheap, fast, JSON-mode reliable. Pro is overkill for
+    # a 4-candidate pick. Re-tune in ADR-0014 if eval data argues
+    # otherwise.
+    routing_llm_model: str = Field(default="gemini-2.0-flash", alias="AGORA_ROUTING_LLM_MODEL")
+    # Per-call timeout. Stuck LLM must NOT hang the saga; the adapter
+    # raises on timeout, the seam catches and falls back to the rules
+    # pick (PR #48's exception-fallback path). 5s is generous for
+    # Gemini Flash; tune down once production data is available.
+    routing_llm_timeout_secs: float = Field(default=5.0, alias="AGORA_ROUTING_LLM_TIMEOUT_SECS")
+    # Vertex AI region. ``us-central1`` matches the kroger-shopping-agent
+    # default and the bound quota project's primary location.
+    routing_llm_location: str = Field(default="us-central1", alias="AGORA_ROUTING_LLM_LOCATION")
+
     @property
     def reshare_enabled(self) -> bool:
         """True when a real ReShare endpoint is configured.

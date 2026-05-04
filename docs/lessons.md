@@ -315,6 +315,31 @@ staged and surface the blocker in the summary. CLAUDE.md now
 documents the rule explicitly.
 *(Bootstrap; see `MORNING_SUMMARY.md`.)*
 
+### 2026-05-03 — Vertex API enablement ≠ Gemini publisher-model access
+PR-2b's `--llm` eval rerun was attempted with ADC bound,
+`aiplatform.googleapis.com` enabled on the quota project, and
+`GOOGLE_GENAI_USE_VERTEXAI=1` + project + location all set
+correctly. Every call returned **Vertex 404 NOT_FOUND** on
+`gemini-2.0-flash` AND `gemini-1.5-flash`:
+
+```
+'Publisher Model `projects/<project>/locations/us-central1/
+publishers/google/models/gemini-2.0-flash` was not found or your
+project does not have access to it.'
+```
+
+Three things have to all be true to talk to a Gemini publisher
+model on Vertex: (1) ADC bound to a quota project, (2) Vertex API
+enabled, (3) the project must additionally have publisher-model
+access — typically a quota / org-policy / billing-account
+prerequisite separate from API enablement. The 404 surface is
+unmistakable; the rules-fallback path was exercised against it on
+every scenario as designed (validating the wire end-to-end).
+**Don't conflate "Vertex API enabled" with "I can call Gemini" in
+session-bootstrap docs or runbooks.** *(PR-2b shipped without the
+LLM-augmented baseline rerun; deferred to a follow-on pass once
+publisher-model access is confirmed.)*
+
 ---
 
 ## Schema / migrations
