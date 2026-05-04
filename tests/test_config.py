@@ -95,25 +95,55 @@ def _runbook_env_table_keys() -> set[str]:
     return keys
 
 
-def _env_example_keys() -> set[str]:
-    """Parse ``.env.example`` and return the set of declared env-var names.
+def _env_example_entries() -> dict[str, str]:
+    """Parse ``.env.example`` and return ``{key: raw_value}``.
 
-    Skips comments (lines starting ``#``), blank lines, and section
-    dividers. Tolerates ``KEY=`` (empty default), ``KEY=value`` and
-    ``KEY=quoted value``. Anything that doesn't match the
-    ``KEY=...`` shape is ignored — comments embedded mid-line aren't
-    valid env syntax anyway.
+    Underlies both ``_env_example_keys`` (just the keys) and the
+    default-value symmetry test (key + value). Skips comments and
+    blank lines. Tolerates ``KEY=`` (empty value), ``KEY=value`` and
+    ``KEY=quoted value``. Anything not matching ``KEY=...`` is
+    ignored — comments embedded mid-line aren't valid env syntax
+    anyway.
     """
-    pattern = re.compile(r"^(?P<key>[A-Z_][A-Z0-9_]*)=")
-    keys: set[str] = set()
+    pattern = re.compile(r"^(?P<key>[A-Z_][A-Z0-9_]*)=(?P<value>.*)$")
+    entries: dict[str, str] = {}
     for raw_line in _ENV_EXAMPLE_PATH.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
+        line = raw_line.rstrip()
+        stripped = line.lstrip()
+        if not stripped or stripped.startswith("#"):
             continue
-        match = pattern.match(line)
+        match = pattern.match(stripped)
         if match:
-            keys.add(match.group("key"))
-    return keys
+            entries[match.group("key")] = match.group("value")
+    return entries
+
+
+def _env_example_keys() -> set[str]:
+    """Return the set of declared env-var names in ``.env.example``."""
+    return set(_env_example_entries().keys())
+
+
+def _coerce_env_string(raw: str, annotation: type) -> object:
+    """Parse an env-style string into the typed value pydantic-settings would.
+
+    Mirrors pydantic-settings's coercion rules for the four types Agora
+    uses (``str``, ``int``, ``float``, ``bool``). The bool coercion
+    accepts the same truthy strings pydantic does so a doc-side
+    ``true`` / ``1`` / ``yes`` survives the comparison without
+    flagging a false mismatch.
+    """
+    if annotation is bool:
+        return raw.strip().lower() in ("1", "true", "yes", "on")
+    if annotation is int:
+        return int(raw.strip())
+    if annotation is float:
+        return float(raw.strip())
+    # str: strip surrounding quotes if present, otherwise keep verbatim
+    # (env-file convention is unquoted values).
+    stripped = raw.strip()
+    if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in ('"', "'"):
+        return stripped[1:-1]
+    return stripped
 
 
 def test_env_example_lists_every_settings_alias() -> None:
@@ -178,6 +208,53 @@ def test_runbook_env_table_only_documents_known_keys() -> None:
         f"Runbook env-var table documents env vars that Settings does "
         f"not honour: {sorted(extras)}. Either remove the row or "
         f"restore the Settings field."
+    )
+
+
+def test_env_example_default_values_match_settings_defaults() -> None:
+    """Each ``.env.example`` value must match the corresponding ``Settings`` default.
+
+    Catches the third-axis drift the key-symmetry tests miss: the row
+    is present, the key matches, but the *default* lies (the failure
+    mode that hid the routing-LLM ε mismatch through PRs #47-#51 — the
+    runbook said 0.05 / placeholder while Settings was tightened to
+    0.03 in #51 and ``.env.example`` simply hadn't been touched).
+
+    Comparison goes through ``_coerce_env_string`` so a ``5`` in the
+    env file matches a ``5.0`` Settings default (numeric equivalence)
+    and ``true`` / ``1`` both match ``True`` (pydantic-settings bool
+    semantics). Empty defaults match the bare ``KEY=`` form. Settings
+    fields that aren't documented in ``.env.example`` are caught by
+    ``test_env_example_lists_every_settings_alias`` — this test only
+    checks the overlap.
+    """
+    entries = _env_example_entries()
+    mismatches: list[str] = []
+    for name, info in Settings.model_fields.items():
+        alias = info.alias if info.alias is not None else name.upper()
+        if alias not in entries:
+            continue
+        annotation = info.annotation
+        # ``info.annotation`` for plain str/int/float/bool fields IS the
+        # bare type. Settings doesn't currently use Optional/Union for
+        # any field that lands in .env.example, so a direct ``isinstance``
+        # check is enough; if that changes the test will surface as a
+        # ``not a type`` TypeError and force an explicit branch.
+        if not isinstance(annotation, type):
+            continue
+        try:
+            coerced = _coerce_env_string(entries[alias], annotation)
+        except (TypeError, ValueError) as exc:
+            mismatches.append(f"{alias}: failed to coerce '{entries[alias]}' to {annotation.__name__}: {exc}")
+            continue
+        if coerced != info.default:
+            mismatches.append(
+                f"{alias}: .env.example says '{entries[alias]}' "
+                f"(coerced to {coerced!r}), Settings default is "
+                f"{info.default!r}"
+            )
+    assert not mismatches, "Default-value drift between Settings and .env.example:\n" + "\n".join(
+        mismatches
     )
 
 
