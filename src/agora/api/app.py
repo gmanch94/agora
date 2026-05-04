@@ -26,11 +26,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agora import __version__
+from agora.agents.discovery import DiscoveryAgent
 from agora.agents.tracking import OverdueScanner
 from agora.agents.transaction import TransactionAgent
 from agora.api.schemas import (
     ApprovalBody,
     CompensateBody,
+    DiscoverBody,
+    DiscoverResponse,
     HealthResponse,
     RejectionBody,
     SagaDetail,
@@ -39,13 +42,21 @@ from agora.api.schemas import (
     StepRunResponse,
     SubmitRequestResponse,
 )
+from agora.clients.crossref import CrossrefClient, get_crossref_client
 from agora.clients.ncip import MockNcipClient, NcipClient
 from agora.clients.reshare import ReShareClient
 from agora.clients.reshare import get_client as get_reshare_client
+from agora.clients.sru import SruClient, get_sru_client
 from agora.config import get_settings
 from agora.logging import configure_logging, get_logger
 from agora.models.events import NewSagaEvent, SagaEvent
-from agora.models.lifecycle import EventKind, LifecycleState, StepName, StepOutcome
+from agora.models.lifecycle import (
+    TERMINAL_STATES,
+    EventKind,
+    LifecycleState,
+    StepName,
+    StepOutcome,
+)
 from agora.models.request import IllRequest
 from agora.saga.context import SagaContext
 from agora.saga.coordinator import (
@@ -280,6 +291,17 @@ def create_app() -> FastAPI:
     transaction = TransactionAgent(reshare)
     registry = build_registry(transaction)
 
+    # DiscoveryAgent is constructed at app build time alongside reshare
+    # so ASGI-transport tests (which skip the lifespan) can still hit
+    # ``POST /sagas/{id}/discover``. Both clients honour their
+    # ``AGORA_*_ENABLED`` toggles — mock by default for offline dev,
+    # http when explicitly opted-in. ``consortium_members`` defaults to
+    # an empty set; populating it from settings is parked as a known
+    # gap (no consortium-roster source today).
+    crossref: CrossrefClient = get_crossref_client()
+    sru: SruClient = get_sru_client()
+    discovery = DiscoveryAgent(sru, crossref=crossref, consortium_members=set())
+
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         """Spawn outbox worker + tracking scanner on startup; cancel on shutdown.
@@ -359,6 +381,11 @@ def create_app() -> FastAPI:
             # closes the underlying ``httpx.AsyncClient``.
             await reshare.aclose()
             log.info("api.reshare_client.closed")
+            # Same shape for the discovery clients: mocks no-op, http
+            # impls release the underlying ``httpx.AsyncClient`` pool.
+            await crossref.aclose()
+            await sru.aclose()
+            log.info("api.discovery_clients.closed")
 
     app = FastAPI(
         title="Agora ILL",
@@ -370,6 +397,7 @@ def create_app() -> FastAPI:
     app.state.registry = registry
     app.state.reshare = reshare
     app.state.ncip = ncip
+    app.state.discovery = discovery
     # Ensure attributes always exist so dependents can read them even
     # when the lifespan never runs (e.g. ASGI transports that skip it).
     app.state.outbox_worker = None
@@ -514,6 +542,80 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except CoordinatorError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.post(
+        "/sagas/{saga_id}/discover",
+        response_model=DiscoverResponse,
+        status_code=status.HTTP_200_OK,
+    )
+    async def discover(
+        saga_id: UUID,
+        http_request: Request,
+        body: DiscoverBody | None = None,
+        session: AsyncSession = Depends(_get_session),
+    ) -> DiscoverResponse:
+        """Run DiscoveryAgent against the saga's stored request.
+
+        Advisory only: writes a single ``DISCOVERY`` OBSERVATION event
+        with candidates + diagnostics + rationale. The saga state is
+        unchanged — staff still has to commit a ROUTE gate before the
+        chosen supplier is locked in. ``StepName.ROUTE`` anchors the
+        observation because discovery candidates feed routing input.
+
+        Re-runnable by design: each call generates a fresh ULID
+        idempotency key so a citation update or SRU index refresh
+        produces a new event. Staff console renders the latest
+        DISCOVERY observation as the live candidate list.
+        """
+        actor = body.actor if body is not None else "agent:discovery"
+        agent: DiscoveryAgent = http_request.app.state.discovery
+
+        try:
+            async with session.begin():
+                ledger = SagaLedger(session)
+                saga = await ledger.get_saga(saga_id)
+                current = LifecycleState(saga.current_state)
+                if current in TERMINAL_STATES:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"saga is in terminal state {current.value!r}; "
+                            "discovery is advisory and only runs on active sagas"
+                        ),
+                    )
+
+                ill_request = IllRequest.model_validate(saga.request_payload)
+                rec = await agent.run(ill_request)
+
+                payload: dict[str, Any] = {
+                    "kind": "discovery",
+                    "candidates": [c.model_dump(mode="json") for c in rec.candidates],
+                    "diagnostics": list(rec.diagnostics),
+                    "observed_at": datetime.now(UTC).isoformat(),
+                }
+                ev = await ledger.append(
+                    NewSagaEvent(
+                        saga_id=saga_id,
+                        kind=EventKind.OBSERVATION,
+                        step=StepName.ROUTE,
+                        state_before=current,
+                        state_after=current,
+                        actor=actor,
+                        idempotency_key=new_idempotency_key(prefix="discovery"),
+                        payload=payload,
+                        outcome=StepOutcome.COMMITTED,
+                        rationale=rec.rationale,
+                    )
+                )
+            return DiscoverResponse(
+                saga_id=saga_id,
+                event=SagaEventOut.model_validate(ev.model_dump()),
+                candidates=rec.candidates,
+                diagnostics=list(rec.diagnostics),
+                rationale=rec.rationale,
+            )
+        except SagaNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.post("/sagas/{saga_id}/reject", status_code=204)
     async def reject(

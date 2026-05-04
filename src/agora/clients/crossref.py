@@ -79,6 +79,7 @@ class CrossrefRecord:
 
 class CrossrefClient(Protocol):
     async def lookup_doi(self, doi: str) -> CrossrefRecord | None: ...
+    async def aclose(self) -> None: ...
 
 
 # CrossRef ``type`` values seen in the wild → Agora's coarse
@@ -191,6 +192,9 @@ class MockCrossrefClient:
 
     async def lookup_doi(self, doi: str) -> CrossrefRecord | None:
         return self._records.get(_normalise_doi(doi))
+
+    async def aclose(self) -> None:
+        """Match Protocol shape; no-op for the in-memory mock."""
 
 
 def _parse_message(data: dict[str, Any]) -> CrossrefRecord | None:
