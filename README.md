@@ -3,16 +3,17 @@
 > Research prototype. Multi-library consortium. Agents over FOLIO/ReShare.
 > Saga + idempotency. Human-approval at every state transition.
 
-> Last reviewed against code: 2026-05-03.
+> Last reviewed against code: 2026-05-04 (post PRs #41-#61).
 
 ## What this is
 
 Agora is a research prototype that puts a multi-agent orchestration layer
 on top of standards-compliant ILL infrastructure. The lifecycle
-**Submitted → Routed → Approved → Shipped → Returned** is driven by
-agents that produce *recommendations*; humans approve every transition.
-Every state change is recorded in an event-sourced saga ledger with
-paired forward + compensator operations and ULID-keyed idempotency.
+**Submitted → Routed → Approved → Shipped → Received → Returned** is
+driven by agents that produce *recommendations*; humans approve every
+transition. Every state change is recorded in an event-sourced saga
+ledger with paired forward + compensator operations and ULID-keyed
+idempotency.
 
 The standards plumbing (ISO 18626 wire protocol, NCIP, etc.) is
 delegated to FOLIO's `mod-rs` / ReShare and `mod-ncip`. Agora does not
@@ -21,15 +22,20 @@ reimplement them.
 ## Status
 
 **Working prototype.** End-to-end demo runs via `make demo`
-(`agora.demos.happy_path`). 76 tests green (+6 postgres-only in CI).
+(`agora.demos.happy_path`). **210 tests** green (+6 postgres-only in CI).
 Saga + outbox + APPROVING-via-outbox (ADR-0012), multi-worker outbox
-safety (`SELECT … FOR UPDATE SKIP LOCKED`), TrackingAgent overdue
-scanner wired into the FastAPI lifespan, and Alembic-on-real-Postgres
-all shipped. CI gates: bandit + pip-audit + detect-secrets, pytest +
-ruff + mypy --strict, alembic+ORM parity against `postgres:15-alpine`.
+safety (`SELECT … FOR UPDATE SKIP LOCKED`), TrackingAgent three-tier
+overdue scanner (overdue / recall-proposed / receipt-unconfirmed) wired
+into the FastAPI lifespan, NCIP fan-out on RECEIVE / RETURN forwards,
+DiscoveryAgent with CrossRef + SRU clients (`POST /sagas/{id}/discover`
+endpoint), RoutingAgent LLM tie-breaker (ADR-0014, top-1 0.95 against
+the 20-scenario eval), ISO 18626 XSD validation harness, and
+Alembic-on-real-Postgres all shipped. CI gates: bandit + pip-audit +
+detect-secrets, pytest + ruff + mypy --strict, alembic+ORM parity
+against `postgres:15-alpine`, routing-eval rules-floor regression check.
 
 See `docs/prd/` for product requirements, `docs/adr/` for architecture
-decisions (12 ADRs through 0012), `docs/architecture.md` for the
+decisions (14 ADRs through 0014), `docs/architecture.md` for the
 hand-drawn diagrams, `docs/runbook.md` for operations, `docs/solution.md`
 for the solution doc, `docs/lessons.md` for accumulated gotchas, and
 `prompts/build-agora.md` to bootstrap a fresh dev session.
@@ -41,25 +47,32 @@ agora/
 ├── prompts/             # Project bootstrap prompt
 ├── docs/
 │   ├── prd/             # Product requirements (00-06)
-│   ├── adr/             # Architecture decisions (0001-0012)
+│   ├── adr/             # Architecture decisions (0001-0014)
 │   ├── architecture.md  # Hand-drawn Mermaid diagrams
 │   ├── runbook.md       # Operations / on-call notes
 │   ├── solution.md      # Solution overview
-│   └── lessons.md       # Accumulated gotchas (append-only)
+│   ├── lessons.md       # Accumulated gotchas (append-only)
+│   └── standards/       # ISO 18626 XSD validator + fixtures
+├── evals/routing/       # Routing tie-breaker eval scenarios + baselines
 ├── alembic/versions/    # DB migrations
+├── scripts/             # validate_iso18626.py + tooling
 ├── src/agora/
 │   ├── agents/          # Discovery, Routing, Policy, Transaction,
-│   │                    #   Tracking (+ OverdueScanner), Reconciliation
+│   │                    #   Tracking (+ OverdueScanner), Reconciliation,
+│   │                    #   AdkLlmTiebreaker (ADR-0014)
 │   ├── saga/            # Coordinator, ledger, flows (forward+
 │   │                    #   compensator pairs), steps, idempotency,
 │   │                    #   outbox, db
-│   ├── clients/         # ReShare, NCIP, SRU, OpenURL
+│   ├── clients/         # ReShare (+ OkapiAuth), NCIP, SRU, CrossRef,
+│   │                    #   OpenURL
 │   ├── api/             # FastAPI staff console + lifespan
 │   ├── demos/           # happy_path runnable end-to-end demo
+│   ├── evals/           # Routing eval harness (run via make eval-routing)
 │   ├── models/          # pydantic schemas (ISO 18626 subset)
 │   ├── config.py / cli.py / logging.py / py.typed
-├── tests/               # 76 unit + property + e2e (+6 postgres-only)
-├── .github/workflows/   # audit.yml, postgres-tests.yml, triple-gate.yml
+├── tests/               # 210 unit + property + e2e (+6 postgres-only)
+├── .github/workflows/   # audit.yml, postgres-tests.yml, triple-gate.yml,
+│                        #   routing-eval-floor.yml
 ├── docker-compose.yml   # Postgres-only sandbox today
 ├── Makefile
 └── pyproject.toml
@@ -93,9 +106,10 @@ make api
 
 | Standard | Role | Implementation strategy |
 |---|---|---|
-| ISO 18626:2021 | Peer-to-peer ILL messaging | Delegated to ReShare `mod-rs` |
-| NCIP / Z39.83 | Library ↔ ILS circulation | Delegated to FOLIO `mod-ncip` |
+| ISO 18626:2021 | Peer-to-peer ILL messaging | Delegated to ReShare `mod-rs`; XSD validation harness in `scripts/validate_iso18626.py` for the day Agora emits XML directly |
+| NCIP / Z39.83 | Library ↔ ILS circulation | Delegated to FOLIO `mod-ncip` (mock today; real client deferred) |
 | SRU | Catalog discovery | Direct HTTP client (`agora.clients.sru`) |
+| CrossRef REST | DOI → bibliographic record | Direct HTTP client (`agora.clients.crossref`) |
 | OpenURL | Citation resolution | Pure-Python parser |
 | Z39.50 (binary) | Legacy catalog discovery | **Not implemented** (see ADR-0006) |
 | FedRAMP | US gov cloud security | **Alignment-noted only** (see ADR-0007) |
@@ -113,9 +127,10 @@ make api
 - [Runbook](docs/runbook.md)
 - [Solution overview](docs/solution.md)
 - [Lessons learned](docs/lessons.md)
-- [ADRs](docs/adr/) — 12 records through
-  [ADR-0011 (outbox commit-then-enqueue)](docs/adr/0011-outbox-commit-then-enqueue.md)
-  and [ADR-0012 (APPROVE forward via outbox)](docs/adr/0012-approve-forward-outbox-migration.md)
+- [ADRs](docs/adr/) — 14 records, latest are
+  [ADR-0012 (APPROVE forward via outbox)](docs/adr/0012-approve-forward-outbox-migration.md),
+  [ADR-0013 (Okapi token auth)](docs/adr/0013-okapi-token-auth.md),
+  and [ADR-0014 (routing LLM tie-breaker)](docs/adr/0014-routing-llm-tiebreaker.md)
 - [Bootstrap prompt](prompts/build-agora.md)
 
 ## License
