@@ -93,14 +93,18 @@ class Settings(BaseSettings):
     # ``RoutingAgent`` consults the configured ``LlmTiebreaker`` (if
     # any). Larger values fire the LLM more often (higher cost,
     # potentially better calls); smaller values keep the rules path
-    # dominant. Default 0.05 is a placeholder until PR-2b runs the
-    # eval against a real LLM and tunes against committed scenarios —
-    # at the rules score scale (max ≈ 1.0), 0.05 captures cases where
-    # rules effectively tied (the four ground-truth-vs-rules
-    # disagreement scenarios in ``evals/routing/scenarios.json`` have
-    # gaps of 0.0 except routing-015, whose 0.46 gap is documented
-    # in ADR-0014 as out-of-scope for the tie-breaker).
-    routing_tiebreak_epsilon: float = Field(default=0.05, alias="AGORA_ROUTING_TIEBREAK_EPSILON")
+    # dominant. PR #51 (#7c) tightened from 0.05 → 0.03 after the
+    # PR-2b eval rerun showed routing-009 (gap 0.0467) firing the LLM
+    # on a near-tie that rules picked correctly — LLM picked the worse
+    # candidate. At 0.03, the three true-tie scenarios in scope (013 /
+    # 014 / 016 with gap 0.0; 015's 0.46 gap is documented as
+    # out-of-scope in ADR-0014) still fire the tie-breaker, but the
+    # near-tie scenarios where rules already get the right answer
+    # (007 gap 0.04, 009 gap 0.0467, 011 gap 0.04) skip the LLM. Three
+    # are full-rules wins post-tuning; only 013/014/016 actually need
+    # the model. Lift this back toward 0.05 only if a future scenario
+    # set adds genuine 0.03-0.05 gap cases the LLM should disambiguate.
+    routing_tiebreak_epsilon: float = Field(default=0.03, alias="AGORA_ROUTING_TIEBREAK_EPSILON")
 
     # RoutingAgent LLM tie-breaker adapter (PR-2b, ADR-0014). Disabled
     # by default so ``RoutingAgent()`` with no kwargs and no factory

@@ -71,15 +71,21 @@ your job is to pick which one staff would have picked given the
 metadata that the rules engine cannot read.
 
 Decision signals to weigh (in rough priority order):
-  1. SLA tier ("raw.sla_tier"): "fast" beats "standard" beats "slow".
-  2. Reciprocity balance ("raw.reciprocity_balance"): a positive
-     number means the consortium owes this lender; we should AVOID
-     borrowing from a lender we already owe a lot to. Prefer the
-     candidate with the more-negative or zero balance.
+  1. SLA tier ("raw.sla_tier"): "fast" or "A" beats "standard" or
+     "B" beats "slow" or "C". Letter grades and verbal tiers both
+     appear in scenarios; treat earlier letters / faster verbal
+     tiers as better.
+  2. Reciprocity balance ("raw.reciprocity_balance"): NEGATIVE
+     numbers mean the consortium already owes this lender (we have
+     borrowed more from them than we have lent back); positive
+     numbers mean the lender owes us. Borrowing again from a
+     lender we already owe deepens the imbalance — prefer the
+     candidate with the MORE-POSITIVE (or less-negative) balance
+     to keep consortium fairness healthy.
   3. Format / delivery affinity: if the request "item_kind" is
      "article" or "chapter" (i.e. copy-style not return-style),
      prefer a candidate whose "raw.holds_format" or "raw.delivery"
-     indicates digital fulfillment.
+     indicates digital / electronic fulfillment.
   4. Historical reliability ("raw.on_time_rate"): higher is better.
   5. Distance: only as a final tie-break.
 

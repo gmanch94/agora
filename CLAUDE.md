@@ -146,29 +146,32 @@ ISO 18626 message types — see table in `clients/reshare.py`.
   CI gate: `.github/workflows/routing-eval-floor.yml` runs the
   harness in `--rules-only --check-floor` mode (no GCP secrets in
   CI) — catches rules-engine regressions vs the committed
-  `evals/routing/baseline.json`. PR-review catches LLM-quality
-  regressions by reading the new baseline numbers in the diff. Floor
-  numbers (post-LLM-augmented rerun, `gemini-2.5-flash`): top-1
-  **0.8500** (17/20), mean Spearman **0.6944**. The CI gate runs
-  rules-only, so the floor it enforces is the *rules* floor (0.8000 /
-  0.5556) — anything that pushes rules numbers below that fails CI;
-  changes that lift the LLM-augmented numbers are observable only
-  in the `baseline.json` diff at PR-review time. Four scenarios (`routing-013..016`) are deliberate
-  rules-baseline misses encoding metadata-only signals (SLA tier,
-  reciprocity, format affinity, on-time reliability). Three (013,
-  014, 016) have rules score gap 0.0 — true ties — and are in scope
-  for the tie-breaker. The fourth (015) has gap 0.46 and is
-  documented in ADR-0014 as **out of scope for the tie-breaker
-  mechanism**. Eval harness via `make eval-routing` (rules) or
-  `python -m agora.evals.routing --llm` (LLM-augmented; needs ADC
-  bound + `aiplatform.googleapis.com` enabled + **Vertex AI Studio
-  click-through enablement** on the project + the correct API model
-  id — the Studio display label is NOT the API id; e.g. Studio
-  shows "gemini-3.1-flash-lite-preview" but the public API takes
-  `gemini-2.5-flash`. LLM-augmented baseline now committed against
-  `gemini-2.5-flash` at top-1 0.8500 / Spearman 0.6944 (rerun with
-  `AGORA_ROUTING_LLM_TIMEOUT_SECS=30` — the default 5s is sometimes
-  too tight for Gemini 2.5 cold-start).
+  `evals/routing/baseline-rules.json` (rules floor: top-1 0.8000 /
+  Spearman 0.5556). PR-review catches LLM-quality regressions by
+  reading the `baseline.json` diff. Current LLM-augmented baseline
+  (post-#7c prompt + ε tuning, `gemini-2.5-flash`): top-1 **0.9500**
+  (19/20), mean Spearman **0.8889**. Only `routing-015` misses —
+  documented out-of-scope in ADR-0014 (rules top-2 gap 0.46, LLM
+  never fires below ε). Four scenarios (`routing-013..016`) are
+  deliberate rules-baseline misses encoding metadata-only signals
+  (SLA tier, reciprocity, format affinity, on-time reliability).
+  Three (013, 014, 016) have rules score gap 0.0 — true ties — and
+  are in scope for the tie-breaker; LLM picks all three correctly
+  post-#7c. The fourth (015) has gap 0.46 and stays **out of scope
+  for the tie-breaker mechanism**. ε tightened from 0.05 → 0.03 in
+  #7c so `routing-009` (gap 0.0467) skips the LLM — rules already
+  get it right and PR-2b's first-cut LLM had picked the worse
+  candidate at ε=0.05. Eval harness via `make eval-routing` (rules)
+  or `python -m agora.evals.routing --llm` (LLM-augmented; needs
+  ADC bound + `aiplatform.googleapis.com` enabled + **Vertex AI
+  Studio click-through enablement** on the project + the correct
+  API model id — the Studio display label is NOT the API id; e.g.
+  Studio shows "gemini-3.1-flash-lite-preview" but the public API
+  takes `gemini-2.5-flash`. Rerun with
+  `AGORA_ROUTING_LLM_MODEL=gemini-2.5-flash AGORA_ROUTING_LLM_TIMEOUT_SECS=30`
+  — the default 5s is sometimes too tight for Gemini 2.5 cold-start,
+  and the config default `gemini-2.0-flash` 404s under the current
+  Vertex enablement).
   Failure paths in the seam (LLM raises / abstains / returns unknown
   symbol / times out) ALWAYS fall back to the rules pick + diagnostic;
   the agent never re-raises out to its caller (advisory-only invariant
