@@ -51,6 +51,10 @@ audit:
 	bandit -r src/agora/ -q
 	# Audit installed env for known CVEs. Network-bound (PyPI advisory DB).
 	pip-audit
+	# Normalize Windows-shaped backslash paths in the baseline before the
+	# hook compares against forward-slash `git ls-files` output. Idempotent
+	# on Linux/CI where the baseline is already forward-slash.
+	python scripts/normalize_secrets_baseline.py
 	# Scan for new secrets vs the committed baseline. Update baseline with:
 	#   detect-secrets scan --baseline .secrets.baseline
 	# NUL-delimited so filenames with spaces survive xargs splitting.
