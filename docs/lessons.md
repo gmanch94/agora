@@ -280,6 +280,52 @@ merges can't repeat the trick.
 
 ## Workflow / process
 
+### 2026-05-04 — README drifts harder than any other doc
+The README is the first-impression doc but sits outside every
+feature PR's natural blast radius — PRDs get touched when their area
+changes, runbook gets touched when env vars / endpoints change, but
+README only gets reviewed when somebody opens the repo cold and
+notices the mismatch. The 2026-05-04 README refresh found 21 PRs of
+accumulated drift: missing `Received` lifecycle state (shipped #36),
+test count 76 → 210, ADR count 12 → 14, missed three-tier scanner /
+NCIP fan-out / DiscoveryAgent endpoint / routing LLM tie-breaker /
+ISO 18626 harness in the Status section, missing CrossRef row in the
+standards table, missing `evals/` + `scripts/` in the layout block.
+**Generalises:** schedule an explicit README review when *any* of
+(a) test count changes by ≥5, (b) ADR count changes, (c) lifecycle
+states change, (d) standards/external-system list changes, (e) Status
+section claims tied to "latest shipped." Otherwise it's drift on
+autopilot until the next first-impression visitor.
+*(PR #62.)*
+
+### 2026-05-04 — Operationalise symmetry lessons via pytest, not just lessons.md prose
+PR #58 captured the lesson "symmetry claims between artifacts need a
+CI check or they're aspirational." That paragraph by itself didn't
+prevent the next drift — it only described the failure mode. PRs #59
+and #60 turned the lesson into two pytest cases (each both directions:
+.env.example ↔ Settings, runbook table ↔ Settings) so the next time
+somebody adds a `Settings` field without touching the docs, CI fails
+with the exact missing keys. **Generalises:** when a lesson describes
+a *mechanical* invariant (key sets, naming conventions, file locations
+that must agree), prefer test-as-enforcement over prose-as-warning.
+The lesson stays useful as historical context, but the pytest is what
+actually gates future PRs. lessons.md is for non-mechanical gotchas
+(state-aware logic, prompt polarity, model-id confusion) where a test
+would be expensive or impossible.
+*(PRs #59, #60 — see `tests/test_config.py`; lesson cited PR #58.)*
+
+### 2026-05-04 — `.gitignore` session-scratch artifacts belt-and-braces
+`NEXT_SESSION.md`, `RECOMMENDATION.md`, `DOCS_STALE_PUNCHLIST.md`,
+`DESIGN.md` are agent-written planning notes that never need to land
+in git. Repo root makes them easy to grep but also easy to land via a
+careless `git add .`. After 6 PRs in one working session, `git status`
+showed 5 untracked files in the root — clearly enough exposure to
+warrant a guard. Adding them to `.gitignore` even though they're
+already untracked closes the only failure mode (an accidental wide-add
+that hits the parent directory). Same trick for `.claude/settings.local.json`
+which is per-dev local Claude scope.
+*(PR #61 — see `.gitignore` § Session-scratch planning artifacts.)*
+
 ### 2026-05-04 — `.env.example` drifts silently unless the runbook claim is enforced
 The runbook env-var table § Configuration says ".env.example in the
 repo lists the same set." That invariant had been silently broken for
