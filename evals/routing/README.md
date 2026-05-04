@@ -10,17 +10,32 @@ that future PRs must beat.
 | File | What |
 | ---- | ---- |
 | `scenarios.json` | 20 routing situations with `expected_chosen` + `expected_ranking` ground truth. Authored by hand against PRD-02 routing semantics. |
-| `baseline.json`  | Committed rules-baseline scores. **Floor** for any PR that touches `RoutingAgent.run`. PR-2 (LLM tie-breaker) must meet or exceed both metrics. |
+| `baseline-rules.json` | Committed **rules-only** scores (top-1 0.8000 / mean Spearman 0.5556). The CI floor at `.github/workflows/routing-eval-floor.yml` enforces these — any PR that drops below either metric on the rules path fails. Split out from `baseline.json` in #50. |
+| `baseline.json`  | Committed **LLM-augmented** scores (top-1 0.9500 / mean Spearman 0.8889 against `gemini-2.5-flash`, post #51 prompt + ε tuning). PR-review reads diffs of this file to catch LLM-quality regressions; no CI gate (no GCP secrets in CI). |
 
 ## Run it
 
 ```bash
-make eval-routing                                 # via Makefile
-.venv/Scripts/python.exe -m agora.evals.routing   # direct
+make eval-routing                                            # rules-only via Makefile
+.venv/Scripts/python.exe -m agora.evals.routing              # direct, rules-only
 .venv/Scripts/python.exe -m agora.evals.routing --no-write   # print only
+.venv/Scripts/python.exe -m agora.evals.routing --llm        # LLM-augmented (rewrites baseline.json)
+.venv/Scripts/python.exe -m agora.evals.routing --rules-only --check-floor   # what CI runs
 ```
 
-The CLI prints a per-scenario summary and rewrites `baseline.json`.
+`--llm` requires bound GCP ADC + `aiplatform.googleapis.com` enabled
+on the project + Vertex AI Studio click-through enablement, plus the
+correct API model id (the Studio display label is **not** the API
+id; e.g. Studio shows "gemini-3.1-flash-lite-preview" but the public
+API takes `gemini-2.5-flash`). Rerun with
+`AGORA_ROUTING_LLM_MODEL=gemini-2.5-flash AGORA_ROUTING_LLM_TIMEOUT_SECS=30`
+— the config default `gemini-2.0-flash` 404s under current Vertex
+enablement, and the default 5s timeout can be too tight for cold
+start.
+
+The CLI prints a per-scenario summary and rewrites whichever baseline
+matches the run mode (`baseline-rules.json` for `--rules-only`,
+`baseline.json` for `--llm`).
 
 ## Metrics
 
@@ -66,5 +81,18 @@ either `null` (empty candidate list) or a member of `candidates`.
 
 Four scenarios (`routing-013` through `routing-016`) are deliberate
 **rules-baseline misses** — the `notes` field flags this. The LLM
-tie-breaker (PR-2) is expected to fix them by reading `raw` metadata
-the rules don't see.
+tie-breaker (PR-2, shipped #48-#51) was expected to fix them by reading
+`raw` metadata the rules don't see; post #51 prompt + ε tuning the
+score is **3 of 4 fixed**:
+
+| Scenario | Rules gap | LLM picks | Status |
+|---|---|---|---|
+| `routing-013` | 0.00 (true tie) | correct | ✅ fixed |
+| `routing-014` | 0.00 (true tie) | correct | ✅ fixed |
+| `routing-015` | 0.46 (not a tie) | n/a — LLM doesn't fire below ε=0.03 | ⏳ out-of-scope per ADR-0014 |
+| `routing-016` | 0.00 (true tie) | correct | ✅ fixed |
+
+`routing-015` stays out-of-scope for the tie-breaker mechanism
+specifically — its rules-score gap is too wide for the ε threshold.
+A future PR may add an "always-on" advisory call (or relabel the
+scenario) per ADR-0014's scope finding.
