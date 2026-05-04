@@ -16,7 +16,7 @@ Returned** with saga compensators paired to every forward step.
 .venv/Scripts/python.exe -m pip install -e ".[dev]"
 
 # Verify
-.venv/Scripts/python.exe -m pytest tests/ -q              # 76 tests (+6 postgres-only)
+.venv/Scripts/python.exe -m pytest tests/ -q              # 218 tests (+6 postgres-only)
 .venv/Scripts/python.exe -m ruff check src tests          # lint
 .venv/Scripts/python.exe -m mypy --strict                 # types
 make audit                                                # bandit + pip-audit + detect-secrets
@@ -44,7 +44,7 @@ agora/
 ├── prompts/build-agora.md       # Bootstrap prompt for fresh sessions
 ├── docs/
 │   ├── prd/  (7 docs)           # Product requirements
-│   ├── adr/  (10 docs)          # Architecture decisions
+│   ├── adr/  (14 docs)          # Architecture decisions
 │   └── architecture.md          # Hand-drawn Mermaid diagram
 ├── alembic/versions/            # DB migrations
 ├── src/agora/
@@ -58,7 +58,7 @@ agora/
 │   ├── saga/                    # ledger, coordinator, idempotency,
 │   │                            #   flows (forward+compensator pairs)
 │   ├── cli.py / config.py / logging.py
-├── tests/                       # 20 tests (unit + property + e2e)
+├── tests/                       # 218 tests (unit + property + e2e)
 ├── docker-compose.yml           # Postgres-only sandbox
 ├── Makefile / pyproject.toml
 ```
