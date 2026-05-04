@@ -1,9 +1,10 @@
 # ADR 0014 — RoutingAgent LLM-augmented tie-breaker
 
 **Status:** Accepted
-**Date:** 2026-05-03 (revised same day post PR-2b adapter shipping —
-real `AdkLlmTiebreaker` + prompt template + factory + CI floor gate;
-provider pinned to Gemini Flash via Vertex AI / ADK)
+**Date:** 2026-05-03 (revised post LLM-augmented eval rerun —
+`baseline.json` lifted from top-1 0.8000 / Spearman 0.5556 to
+0.8500 / 0.6944 against `gemini-2.5-flash`; new misses + regressions
+documented as prompt-iteration follow-ups)
 
 ## Context
 
@@ -236,26 +237,41 @@ Shipped:
 JSON-mode reliable for one-shot four-candidate picks. Re-tune via
 `AGORA_ROUTING_LLM_MODEL` if eval data argues otherwise.
 
-**Eval rerun: deferred.** ADC is bound and `aiplatform.googleapis.com`
-is enabled on the quota project, but every call to
-`gemini-2.0-flash` (and `gemini-1.5-flash`) returns
-**404 NOT_FOUND** — Vertex API enablement is necessary but not
-sufficient for Gemini publisher-model access. PR-2b runs the rerun
-end-to-end and observes the seam's exception-fallback path
-firing on every scenario (every LLM call → 404 → rules pick), which
-is exactly the failure-mode contract the seam was designed for —
-so PR-2b ships with `evals/routing/baseline.json` byte-identical
-to master. A follow-on pass reruns once publisher-model access is
-confirmed (likely a quota / project-policy issue separate from
-this PR).
+**Eval rerun: complete (post-PR-2b).** Once Vertex AI Studio access
+was enabled on the quota project (a click-through prerequisite
+separate from `aiplatform.googleapis.com` enablement) and the
+correct API model id was used (`gemini-2.5-flash` — the standard
+1st-party id, NOT the Studio display label `gemini-3.1-flash-lite-preview`
+which 404s through the API), the eval ran cleanly.
 
-Expected ceiling once the rerun does fire (subject to the prompt
-landing well):
+**Committed baseline numbers** (`evals/routing/baseline.json`):
 
-- top-1 accuracy: ≥0.9500 (19/20 — the three true-tie inversions
-  flip; `routing-015` stays a miss per the scope finding below)
-- mean Spearman: ≥0.5556 (must not drop below the rules floor; the
-  three flips improve it materially)
+- top-1 accuracy: **0.8500** (17/20) — up from 0.8000 floor (+0.05)
+- mean Spearman: **0.6944** — up from 0.5556 floor (+0.139)
+
+**Per-scenario diff vs rules baseline:**
+
+- ✅ `routing-013` (SLA tier): rules picked MEM-A, LLM correctly
+  flipped to MEM-B
+- ✅ `routing-016` (on-time rate): rules picked MEM-A, LLM
+  correctly flipped to MEM-B
+- ❌ `routing-014` (reciprocity balance): LLM kept MEM-A; expected
+  MEM-B. Prompt does not weight reciprocity strongly enough — the
+  signal is in `raw.reciprocity_balance` but the LLM is not
+  consistently treating in-debt = avoid. Prompt-iteration follow-up.
+- ❌ `routing-009` (regression): rules-baseline correctly picked
+  MEM-A; the LLM fired (apparently within ε) and returned EXT.
+  Either ε is too generous (LLM intercepting a clear rules win)
+  or the prompt over-weights non-consortium signals. Prompt /
+  ε-tuning follow-up.
+- ❌ `routing-015` (format affinity): out-of-scope per scope
+  finding below — gap 0.46, LLM never fires.
+
+**Net: +1 pick over rules.** Below the 19/20 ceiling expected
+in PR-2a's analysis. The miss + regression are honest signals
+that the prompt + ε are not yet fully tuned; both are next-PR
+territory per ADR-0014's "prompt design is the iterative part"
+stance.
 
 ### Scope finding from PR-2a: scenario `routing-015` is out-of-scope
 
@@ -291,6 +307,18 @@ known limitation.
 The harness runs in CI as a sibling job to `triple-gate` /
 `audit` / `postgres-tests`:
 `.github/workflows/routing-eval-floor.yml` →
-`python -m agora.evals.routing --rules-only --check-floor`. CI
-catches rules-engine regressions; PR-review catches LLM-quality
-regressions (by reading the diff of `evals/routing/baseline.json`).
+`python -m agora.evals.routing --rules-only --baseline
+evals/routing/baseline-rules.json --check-floor`.
+
+**Two baseline files** (post-LLM-rerun):
+
+- `evals/routing/baseline-rules.json` — frozen rules-only floor
+  (top-1 0.8000 / Spearman 0.5556). CI's check-floor target. Touch
+  this file only when scoring weights legitimately change; the PR
+  must explain why the rules floor moved.
+- `evals/routing/baseline.json` — current canonical agent numbers
+  (LLM-augmented, top-1 0.8500 / Spearman 0.6944). PR-review reads
+  the diff of this file to evaluate prompt / ε / model changes.
+
+CI catches rules-engine regressions; PR-review catches
+LLM-quality regressions.

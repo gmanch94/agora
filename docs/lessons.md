@@ -330,15 +330,46 @@ project does not have access to it.'
 
 Three things have to all be true to talk to a Gemini publisher
 model on Vertex: (1) ADC bound to a quota project, (2) Vertex API
-enabled, (3) the project must additionally have publisher-model
-access — typically a quota / org-policy / billing-account
-prerequisite separate from API enablement. The 404 surface is
-unmistakable; the rules-fallback path was exercised against it on
-every scenario as designed (validating the wire end-to-end).
-**Don't conflate "Vertex API enabled" with "I can call Gemini" in
-session-bootstrap docs or runbooks.** *(PR-2b shipped without the
-LLM-augmented baseline rerun; deferred to a follow-on pass once
-publisher-model access is confirmed.)*
+enabled, (3) **Vertex AI Studio access** has been click-through
+enabled on the project (a one-time consent prerequisite, separate
+from API enablement). Unblocked by opening
+https://console.cloud.google.com/vertex-ai/studio with the bound
+project selected and clicking through. **Don't conflate "Vertex
+API enabled" with "I can call Gemini" in session-bootstrap docs
+or runbooks.** *(Resolved post-PR-2b in the same session; eval
+rerun shipped against `gemini-2.5-flash`.)*
+
+### 2026-05-03 — Studio model display labels are NOT API model IDs
+Once Vertex AI Studio access was enabled, the user verified the
+flow by chatting with the Studio model labeled
+`gemini-3.1-flash-lite-preview`. Setting
+`AGORA_ROUTING_LLM_MODEL=gemini-3.1-flash-lite-preview` for the
+API call still returned 404 — Studio renders friendly display
+labels (often preview / latest tags) that don't map 1:1 to public
+API model IDs. The standard 1st-party API IDs are what you set in
+the SDK / payload (`gemini-2.5-flash`, `gemini-2.5-pro`,
+`gemini-2.5-flash-lite`, etc.). `gcloud ai models list
+--region=us-central1` only lists fine-tuned / custom models — it
+will NOT list 1st-party publisher models, so it's not a discovery
+tool for picking an API id. Reference:
+https://cloud.google.com/vertex-ai/generative-ai/docs/learn/model-versions
+*(Cost: ~10 minutes of trying Studio labels against the API and
+getting 404s before pivoting to standard IDs.)*
+
+### 2026-05-03 — `gemini-2.5-flash` cold-start exceeds 5s default timeout
+First call against `gemini-2.5-flash` from the smoke test hit
+`AGORA_ROUTING_LLM_TIMEOUT_SECS=5` (the documented default) and
+raised `TimeoutError`. Bumped to 30s — call returned in
+~5–10s. The seam catches the timeout and falls back to rules, so
+the failure mode is correct, but a saga whose top-2 candidates
+land within ε would silently never benefit from the LLM if every
+call timed out. **For the eval rerun set
+`AGORA_ROUTING_LLM_TIMEOUT_SECS=30` explicitly** — committed
+default of 5 is the production-warm target, not the cold-start
+target. Subsequent calls in the same process were fast (under
+2s); the cold-start bottleneck is per-process, not per-call.
+Future ADR may bump the default once we have production warm-pool
+data.
 
 ---
 
