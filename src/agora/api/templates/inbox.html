@@ -22,7 +22,9 @@
     <tbody>
       {% for saga in sagas %}
       <tr>
-        <td class="saga-id">{{ saga.saga_id_short }}</td>
+        <td class="saga-id">
+          <a href="/sagas/{{ saga.saga_id }}/view" class="saga-link">{{ saga.saga_id_short }}</a>
+        </td>
         <td>{{ saga.patron_label }}</td>
         <td class="item-title">{{ saga.item_title }}</td>
         <td>

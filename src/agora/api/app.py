@@ -22,8 +22,8 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, Request, status
-from fastapi.responses import HTMLResponse
+from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
@@ -156,6 +156,7 @@ def _to_inbox_row(saga: Saga) -> dict[str, Any]:
     except ValueError:
         is_terminal = False
     return {
+        "saga_id": str(saga.id),
         "saga_id_short": str(saga.id)[:8],
         "patron_label": patron_label,
         "item_title": str(item.get("title") or ""),
@@ -474,6 +475,195 @@ def create_app() -> FastAPI:
             "inbox.html",
             {"sagas": ctx_sagas},
         )
+
+    # ------------------------------------------------------------------
+    # Staff console UI — detail view + form action endpoints (slice 2)
+    # ------------------------------------------------------------------
+
+    # Maps a saga's current_state to the forward step staff can approve next.
+    # APPROVING is intentionally absent: the outbox worker is in flight and
+    # there is nothing for staff to do until the ack lands (or the row dies).
+    _STATE_TO_APPROVE_STEP: dict[str, str] = {
+        "submitted": StepName.ROUTE.value,
+        "routed": StepName.APPROVE.value,
+        "approved": StepName.SHIP.value,
+        "shipped": StepName.RECEIVE.value,
+        "received": StepName.RETURN_ITEM.value,
+    }
+
+    # Maps current_state to the most-recently-committed forward that can be
+    # compensated. APPROVING is absent: approve_compensator 400s (no reshare_id).
+    _STATE_TO_COMPENSATE_STEP: dict[str, str] = {
+        "routed": StepName.ROUTE.value,
+        "approved": StepName.APPROVE.value,
+        "shipped": StepName.SHIP.value,
+        "received": StepName.RECEIVE.value,
+    }
+
+    @app.get("/sagas/{saga_id}/view", response_class=HTMLResponse, include_in_schema=False)
+    async def saga_detail_view(
+        saga_id: UUID,
+        request: Request,
+        session: AsyncSession = Depends(_get_session),
+    ) -> HTMLResponse:
+        """Staff console detail view — full ledger timeline + action forms."""
+        async with session.begin():
+            saga = await session.get(Saga, saga_id)
+            if saga is None:
+                raise HTTPException(status_code=404, detail="saga not found")
+            ledger = SagaLedger(session)
+            events = await ledger.events_for(saga_id)
+
+        row = _to_inbox_row(saga)
+        state = row["current_state"]
+        approve_step = _STATE_TO_APPROVE_STEP.get(state)
+        compensate_step = _STATE_TO_COMPENSATE_STEP.get(state)
+
+        event_rows = [
+            {
+                "seq": ev.seq,
+                "kind": ev.kind.value,
+                "step": ev.step.value,
+                "state_before": ev.state_before.value,
+                "state_after": ev.state_after.value,
+                "actor": ev.actor or "",
+                "outcome": ev.outcome.value,
+                "rationale": ev.rationale or "",
+                "ts": ev.ts.strftime("%Y-%m-%d %H:%M UTC") if ev.ts else "",
+            }
+            for ev in events
+        ]
+        return templates.TemplateResponse(
+            request,
+            "detail.html",
+            {
+                "saga": row,
+                "events": event_rows,
+                "approve_step": approve_step,
+                "compensate_step": compensate_step,
+            },
+        )
+
+    @app.post("/ui/sagas/{saga_id}/approve", include_in_schema=False)
+    async def ui_saga_approve(
+        saga_id: UUID,
+        session: AsyncSession = Depends(_get_session),
+        registry: StepRegistry = Depends(_get_registry),
+        step: str = Form(...),
+        rationale: str = Form("Staff approved."),
+        chosen_supplier: str = Form(""),
+    ) -> RedirectResponse:
+        """HTML form endpoint: commit gate + run forward, then redirect to detail."""
+        step_name = _parse_step(step)
+        if step_name not in _APPROVABLE_STEPS:
+            raise HTTPException(status_code=400, detail=f"step {step!r} is not approvable")
+
+        extras: dict[str, Any] = {}
+        if chosen_supplier:
+            extras["chosen_supplier"] = chosen_supplier
+
+        try:
+            async with session.begin():
+                coord = Coordinator(session=session, registry=registry)
+                ledger = SagaLedger(session)
+                await coord.commit_gate(
+                    saga_id=saga_id,
+                    step=step_name,
+                    actor="staff",
+                    rationale=rationale,
+                )
+                saga = await ledger.get_saga(saga_id)
+                events = await ledger.events_for(saga_id)
+                full_extras = _derive_extras(events, extras or None)
+                ill_request = IllRequest.model_validate(saga.request_payload)
+                await coord.run_forward(
+                    ctx=_make_context(
+                        saga_id=saga_id,
+                        request=ill_request,
+                        current_state=LifecycleState(saga.current_state),
+                        actor="staff",
+                        step=step_name,
+                        extras=full_extras,
+                    ),
+                    step=step_name,
+                )
+        except (SagaNotFoundError, GateRequiredError, TerminalStateError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (CoordinatorError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        return RedirectResponse(url=f"/sagas/{saga_id}/view", status_code=303)
+
+    @app.post("/ui/sagas/{saga_id}/reject", include_in_schema=False)
+    async def ui_saga_reject(
+        saga_id: UUID,
+        session: AsyncSession = Depends(_get_session),
+        step: str = Form(...),
+        rationale: str = Form("Staff rejected."),
+    ) -> RedirectResponse:
+        """HTML form endpoint: append FAILED gate, then redirect to detail."""
+        step_name = _parse_step(step)
+        try:
+            async with session.begin():
+                ledger = SagaLedger(session)
+                saga = await ledger.get_saga(saga_id)
+                await ledger.append(
+                    NewSagaEvent(
+                        saga_id=saga_id,
+                        kind=EventKind.GATE,
+                        step=step_name,
+                        state_before=LifecycleState(saga.current_state),
+                        state_after=LifecycleState(saga.current_state),
+                        actor="staff",
+                        idempotency_key=new_idempotency_key(prefix="gate-reject"),
+                        payload={"reason": rationale},
+                        outcome=StepOutcome.FAILED,
+                        rationale=rationale,
+                    )
+                )
+        except SagaNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        return RedirectResponse(url=f"/sagas/{saga_id}/view", status_code=303)
+
+    @app.post("/ui/sagas/{saga_id}/compensate", include_in_schema=False)
+    async def ui_saga_compensate(
+        saga_id: UUID,
+        session: AsyncSession = Depends(_get_session),
+        registry: StepRegistry = Depends(_get_registry),
+        step: str = Form(...),
+        rationale: str = Form("Staff compensated."),
+    ) -> RedirectResponse:
+        """HTML form endpoint: run compensator, then redirect to detail."""
+        step_name = _parse_step(step)
+        try:
+            async with session.begin():
+                coord = Coordinator(session=session, registry=registry)
+                ledger = SagaLedger(session)
+                saga = await ledger.get_saga(saga_id)
+                events = await ledger.events_for(saga_id)
+                extras = _derive_extras(events, None)
+                ill_request = IllRequest.model_validate(saga.request_payload)
+                await coord.run_compensator(
+                    ctx=_make_context(
+                        saga_id=saga_id,
+                        request=ill_request,
+                        current_state=LifecycleState(saga.current_state),
+                        actor="staff",
+                        step=step_name,
+                        extras=extras,
+                        idem_prefix=f"comp-{step_name.value}",
+                    ),
+                    step=step_name,
+                )
+        except SagaNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (TerminalStateError, CoordinatorError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        return RedirectResponse(url=f"/sagas/{saga_id}/view", status_code=303)
 
     @app.get("/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
