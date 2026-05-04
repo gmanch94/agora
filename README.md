@@ -40,7 +40,7 @@ detect-secrets, pytest + ruff + mypy --strict, alembic+ORM parity
 against `postgres:15-alpine`, routing-eval rules-floor regression check.
 
 See `docs/prd/` for product requirements, `docs/adr/` for architecture
-decisions (14 ADRs through 0014), `docs/architecture.md` for the
+decisions (15 ADRs through 0015), `docs/architecture.md` for the
 hand-drawn diagrams, `docs/runbook.md` for operations, `docs/solution.md`
 for the solution doc, `docs/lessons.md` for accumulated gotchas, and
 `prompts/build-agora.md` to bootstrap a fresh dev session.
@@ -52,7 +52,7 @@ agora/
 ├── prompts/             # Project bootstrap prompt
 ├── docs/
 │   ├── prd/             # Product requirements (00-06)
-│   ├── adr/             # Architecture decisions (0001-0014)
+│   ├── adr/             # Architecture decisions (0001-0015)
 │   ├── architecture.md  # Hand-drawn Mermaid diagrams
 │   ├── runbook.md       # Operations / on-call notes
 │   ├── solution.md      # Solution overview
@@ -132,10 +132,10 @@ make api
 - [Runbook](docs/runbook.md)
 - [Solution overview](docs/solution.md)
 - [Lessons learned](docs/lessons.md)
-- [ADRs](docs/adr/) — 14 records, latest are
-  [ADR-0012 (APPROVE forward via outbox)](docs/adr/0012-approve-forward-outbox-migration.md),
+- [ADRs](docs/adr/) — 15 records, latest are
   [ADR-0013 (Okapi token auth)](docs/adr/0013-okapi-token-auth.md),
-  and [ADR-0014 (routing LLM tie-breaker)](docs/adr/0014-routing-llm-tiebreaker.md)
+  [ADR-0014 (routing LLM tie-breaker)](docs/adr/0014-routing-llm-tiebreaker.md),
+  and [ADR-0015 (staff console HTMX + Jinja2)](docs/adr/0015-staff-console-htmx-jinja2.md)
 - [Bootstrap prompt](prompts/build-agora.md)
 
 ## License

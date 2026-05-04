@@ -519,7 +519,7 @@ All gaps are tracked in `CLAUDE.md`.
 - `docs/runbook.md` — operational reference (bring-up, gate workflow, outbox, dead-letter triage)
 - `docs/architecture.md` — Mermaid diagrams (layer cake, lifecycle state machine, idempotency model)
 - `docs/prd/00-overview.md` … `06-non-functional.md` — product requirements (7 docs)
-- `docs/adr/0001-…` … `0014-routing-llm-tiebreaker.md` — architecture decisions (15 docs; latest: 0013 Okapi auth, 0014 routing-LLM tie-breaker)
+- `docs/adr/0001-…` … `0015-staff-console-htmx-jinja2.md` — architecture decisions (15 docs; latest: 0014 routing-LLM tie-breaker, 0015 staff console HTMX+Jinja2)
 - `src/agora/api/app.py` — FastAPI factory + lifespan
 - `src/agora/saga/coordinator.py` — coordinator
 - `src/agora/saga/flows.py` — forward+compensator pairs
