@@ -1056,7 +1056,7 @@ Docker Desktop running burned through three failed setup attempts:
 2. **`AGORA_DB_URL=sqlite+aiosqlite:///agora.db; alembic upgrade
    head`** — alembic still tried to hit Postgres on `:5433`.
    `alembic.ini:4` hardcodes
-   `sqlalchemy.url = postgresql+asyncpg://agora:agora@localhost:5433/agora`
+   `sqlalchemy.url = postgresql+asyncpg://agora:agora@localhost:5433/agora` <!-- pragma: allowlist secret -->
    and `alembic/env.py:22` only honours `AGORA_DB_URL` when
    `sqlalchemy.url` is *not* set in the .ini. So pydantic
    Settings reading the env var is a no-op for the alembic flow.
