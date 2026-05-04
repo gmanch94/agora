@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+
+{% block title %}{{ saga.item_title or "Saga" }} &middot; Agora{% endblock %}
+
+{% block content %}
+<nav class="breadcrumb">
+  <a href="/" class="breadcrumb__link">&larr; Inbox</a>
+</nav>
+
+<h1 class="page__title">{{ saga.item_title or "ILL Request" }}</h1>
+<div class="saga-header">
+  <span class="state{% if saga.is_terminal %} state--terminal{% endif %}">
+    {{ saga.current_state }}
+  </span>
+  <span class="saga-header__meta">{{ saga.patron_label }}</span>
+  <span class="saga-header__id">{{ saga.saga_id }}</span>
+</div>
+
+{% if approve_step %}
+<section class="card-base action-section">
+  <h2 class="action-section__title">Actions</h2>
+  <div class="action-row">
+    <form method="post" action="/ui/sagas/{{ saga.saga_id }}/approve" class="action-form">
+      <input type="hidden" name="step" value="{{ approve_step }}" />
+      {% if approve_step == "route" %}
+      <label class="form-label">
+        Supplier symbol
+        <input type="text" name="chosen_supplier" class="form-input" required placeholder="e.g. LIB-B" />
+      </label>
+      {% endif %}
+      <label class="form-label">
+        Rationale
+        <input type="text" name="rationale" class="form-input" value="Staff approved." />
+      </label>
+      <button type="submit" class="button-primary">Approve {{ approve_step }}</button>
+    </form>
+
+    <form method="post" action="/ui/sagas/{{ saga.saga_id }}/reject" class="action-form">
+      <input type="hidden" name="step" value="{{ approve_step }}" />
+      <label class="form-label">
+        Rationale
+        <input type="text" name="rationale" class="form-input" value="Staff rejected." />
+      </label>
+      <button type="submit" class="button-danger">Reject {{ approve_step }}</button>
+    </form>
+  </div>
+</section>
+{% endif %}
+
+{% if compensate_step %}
+<section class="card-base action-section">
+  <h2 class="action-section__title">Compensate</h2>
+  <form method="post" action="/ui/sagas/{{ saga.saga_id }}/compensate" class="action-form">
+    <input type="hidden" name="step" value="{{ compensate_step }}" />
+    <label class="form-label">
+      Rationale
+      <input type="text" name="rationale" class="form-input" value="Staff compensated." />
+    </label>
+    <button type="submit" class="button-secondary">Compensate {{ compensate_step }}</button>
+  </form>
+</section>
+{% endif %}
+
+{% if not approve_step and not compensate_step %}
+<section class="card-base action-section">
+  <p class="empty__title">
+    {% if saga.is_terminal %}Saga is in a terminal state — no further actions.
+    {% else %}No actions available for state &ldquo;{{ saga.current_state }}&rdquo;.{% endif %}
+  </p>
+</section>
+{% endif %}
+
+<section class="card-base">
+  <h2 class="action-section__title">Event timeline</h2>
+  {% if events %}
+  <table class="inbox-table" aria-label="Saga events">
+    <thead>
+      <tr>
+        <th scope="col">#</th>
+        <th scope="col">Kind</th>
+        <th scope="col">Step</th>
+        <th scope="col">State &rarr;</th>
+        <th scope="col">Outcome</th>
+        <th scope="col">Actor</th>
+        <th scope="col">Time (UTC)</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for ev in events %}
+      <tr>
+        <td class="saga-id">{{ ev.seq }}</td>
+        <td>{{ ev.kind }}</td>
+        <td>{{ ev.step }}</td>
+        <td>{{ ev.state_after }}</td>
+        <td>
+          <span class="outcome outcome--{{ ev.outcome }}">{{ ev.outcome }}</span>
+        </td>
+        <td>{{ ev.actor }}</td>
+        <td class="saga-id">{{ ev.ts }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty__title">No events yet.</p>
+  {% endif %}
+</section>
+{% endblock %}

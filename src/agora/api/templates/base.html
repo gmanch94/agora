@@ -11,8 +11,10 @@
     href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Cormorant+Garamond:wght@400;500&display=swap"
   />
   <link rel="stylesheet" href="/static/theme.css" />
+  <!-- HTMX: pending vendor to static/htmx.min.js per ADR-0015. CDN for now. -->
+  <script src="https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js" defer></script>
 </head>
-<body>
+<body hx-boost="true">
   <header class="header">
     <span class="header__brand">Agora</span>
     <span class="header__sub">Staff console &mdash; ILL prototype</span>
