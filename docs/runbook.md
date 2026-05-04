@@ -1,11 +1,13 @@
 # Agora Runbook
 
-> Last reviewed against code: 2026-05-04 (post PRs #41-#54 — PR-2b
+> Last reviewed against code: 2026-05-04 (post PRs #41-#76 — PR-2b
 > routing-LLM adapter adds `AGORA_ROUTING_LLM_*` env vars + a sibling
 > `routing-eval-floor.yml` CI workflow alongside `triple-gate` /
 > `audit` / `postgres-tests`; ε retuned to 0.03 (#51); DiscoveryAgent
 > wired with `POST /sagas/{id}/discover` endpoint (#46/#53); ISO
-> 18626 XSD validation harness shipped (#52)).
+> 18626 XSD validation harness shipped (#52); Vertex env-routing
+> rows added for `eval-routing --llm` and silent-fallback failure
+> mode noted on `AGORA_ROUTING_LLM_ENABLED` (#75)).
 
 Operational reference for the Agora ILL prototype. Covers bring-up,
 day-to-day operation (outbox, overdue scan, gate workflow), and
@@ -49,7 +51,7 @@ the process env. Defaults target local dev (Postgres on `localhost:5433`).
 | `AGORA_ENV`                         | `dev`                                                  | Free-form tag in logs.                                     |
 | `AGORA_LOG_LEVEL`                   | `INFO`                                                 | Standard logging level.                                    |
 | `AGORA_API_HOST` / `AGORA_API_PORT` | `0.0.0.0` / `8000`                                     | uvicorn bind.                                              |
-| `AGORA_DB_URL`                      | `postgresql+asyncpg://agora:agora@localhost:5433/agora` | Tests override to `sqlite+aiosqlite:///:memory:`.          |
+| `AGORA_DB_URL`                      | `postgresql+asyncpg://agora:agora@localhost:5433/agora` <!-- pragma: allowlist secret --> | Tests override to `sqlite+aiosqlite:///:memory:`. Dev-default; production sets `AGORA_DB_URL`. |
 | `AGORA_DB_POOL_SIZE`                | `10`                                                   |                                                            |
 | `RESHARE_BASE_URL`                  | `""`                                                   | Empty → mock client. Non-empty triggers real HTTP client.  |
 | `RESHARE_TENANT`                    | `consortium-a`                                         | Maps to mod-rs `X-Okapi-Tenant` (login + data requests).   |

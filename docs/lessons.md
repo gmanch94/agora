@@ -858,6 +858,89 @@ positive flag, not the absence of an API key**. Don't trust an
 routing block; `src/agora/agents/routing_llm_adk.py` adapter does
 not set the env flag itself, so callers must.)*
 
+### 2026-05-04 — Always pass `--no-write` when reverifying an eval baseline
+Today's first LLM eval rerun ran without `--no-write`. The Vertex
+env was misconfigured (silent API-key fallback — see entry above),
+every call 401'd, the seam fell back to rules, and the eval
+script wrote a rules-only baseline (top-1 0.8000) over the
+committed LLM-augmented baseline (0.9500). Restored from
+`git restore`. Generalises: **eval CLIs that overwrite a
+committed truth artifact must default to `--no-write` for
+reverification runs**. Drop the flag only after the run's
+numbers match expectations. PR #75 made this the default by
+hard-coding `--no-write` into the new `make eval-routing-llm`
+target — so `make` users can't repeat the foot-gun, but bare
+`python -m agora.evals.routing --llm` callers still need to
+remember. Same shape applies to any tool that mutates an
+artifact-of-truth on success: assume the run is wrong until
+proven right.
+*(2026-05-04 — see `Makefile::eval-routing-llm`,
+`src/agora/evals/routing.py::main`.)*
+
+### 2026-05-04 — Single source of truth + CI gate beats manual fix-up PRs for tri-artifact drift
+Test count and ADR count drifted three times in two days (#72:
+76→212, #73: 212→218 + ADR 10→14, then would have drifted again
+on #76). Each fix was mechanical but the recurrence eats time
+and the docs are wrong between cycles. PR #76 broke the loop by
+shipping `scripts/sync_doc_counts.py` (registry of `(file,
+regex)` pairs; reads truth from runtime; `--fix` rewrites in
+place) plus `tests/test_doc_counts.py` (pytest gate that fails
+the triple-gate on drift) plus `make sync-doc-counts`.
+Generalises: **second drift on a recurring surface is the
+signal — stop fixing manually, build a script + CI gate**. The
+shape is reusable: `tests/test_config.py` does the same for
+Settings ↔ runbook ↔ `.env.example` symmetry; the same shape
+works for any tri-artifact-of-truth problem. The first drift
+earns a manual fix; the second earns infrastructure.
+*(PR #76 + user feedback "could we keep the numbers in one
+place" — see `scripts/sync_doc_counts.py`,
+`tests/test_doc_counts.py`, `Makefile::sync-doc-counts`.)*
+
+### 2026-05-04 — Two compounding detect-secrets gotchas: line drift + Windows filter drop
+PR #77's audit failed twice in a row on the same docs/runbook.md
+secret. Two distinct mechanisms compounded:
+
+**Mechanism A: line-number drift.** A freshness-header bump in
+the same PR added 2 lines above the `AGORA_DB_URL` dev-default
+credential row, shifting it from line 52 to line 54. detect-secrets
+keys baseline entries on (file, hash, line_number), so a same-hash
+shift fails the hook. Worse: the gate fails on line shift even
+when the secret content is byte-identical, so any doc edit ABOVE a
+tracked secret risks audit failure.
+
+**Mechanism B: platform filter drop.** Trying to refresh the
+baseline locally with `detect-secrets scan --baseline
+.secrets.baseline` on Windows + Python 3.14 silently drops the
+runbook entry — the rescan returns zero findings because of a
+filter heuristic that fires differently on this platform than on
+CI's Linux + Python 3.11. So the "fix" (rebaseline locally)
+quietly removes real entries that CI then rediscovers as
+"new secrets" → audit fails again.
+
+Mitigations adopted in PR #77:
+
+1. **Prefer `<!-- pragma: allowlist secret -->` over baseline
+   tracking for documented dev-defaults.** The `agora:agora` URL
+   is documented in 4+ places (README, runbook, CLAUDE.md,
+   `.env.example`); hash-pinning its baseline entry is theatre,
+   not security — a credential rotation would update each
+   recitation independently. Pragma makes the line inert to
+   line-shift drift.
+2. **Don't `detect-secrets scan --baseline` on Windows.**
+   `Makefile::audit` now carries the warning. If a real
+   rebaseline is needed, do it on Linux/WSL.
+3. **Keep `scripts/normalize_secrets_baseline.py`** for the
+   path-separator fix (forward slash everywhere) — that's
+   orthogonal to (1) and (2).
+
+Generalises: **for "must be in this file forever as a documented
+default" credentials, pragma is the right primitive; for real
+secrets the baseline hash-pin is the right primitive**. Don't
+over-track.
+*(PR #77 — see `docs/runbook.md` AGORA_DB_URL row;
+`Makefile::audit` warning block;
+`scripts/normalize_secrets_baseline.py`.)*
+
 ---
 
 ## Convention reminders (collected here so they don't drift out of CLAUDE.md)
