@@ -298,6 +298,31 @@ section claims tied to "latest shipped." Otherwise it's drift on
 autopilot until the next first-impression visitor.
 *(PR #62.)*
 
+### 2026-05-04 — Symmetry tests need both directions AND both axes (keys + values)
+PR #59 added forward + reverse key-symmetry between `.env.example`
+and `Settings`; PR #60 did the same for the runbook env-var table.
+Two PRs, four tests, full coverage on the *keys* axis. Then PR #65
+added a *value*-symmetry test for `.env.example` and PR #66 did the
+same for the runbook. Two more PRs, two more tests. Only with all six
+in place does the symmetry actually hold against the historical
+failure mode that triggered this work — the routing-LLM ε drift
+through PRs #47-#51, where the runbook said `0.05` / "Placeholder
+until PR-2b tunes against eval" while `Settings` was tightened to
+`0.03` in #51 and `.env.example` had a stale 0.05 too. The keys all
+matched (Settings.routing_tiebreak_epsilon was always there); only
+the *values* lied. **Generalises:** a symmetry claim has at least two
+axes — *which entries exist* and *what each entry says*. A test that
+covers only one axis catches half the drift modes. When you reach for
+a symmetry pytest, ask: do I need keys-only, values-only, or both?
+For three-artifact contracts (Settings + dev-template + ops-doc) you
+typically need both, on each pair, in each direction — six tests
+total. lessons.md PR #58 captured the meta-lesson "operationalise
+symmetry claims via pytest"; this entry refines it: don't stop at one
+axis.
+*(PRs #59, #60, #65, #66 — see `tests/test_config.py`; CLAUDE.md
+behavioural rule "When adding a new ``Settings`` field, three
+artifacts must agree" added in PR #67.)*
+
 ### 2026-05-04 — Operationalise symmetry lessons via pytest, not just lessons.md prose
 PR #58 captured the lesson "symmetry claims between artifacts need a
 CI check or they're aspirational." That paragraph by itself didn't
