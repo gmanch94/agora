@@ -44,6 +44,7 @@ from typing import Any, Protocol
 
 from agora.agents.routing import RoutingAgent, RoutingRecommendation
 from agora.models.candidate import HolderCandidate
+from agora.models.request import ItemMetadata
 
 # Repo-root-relative defaults. The harness can be invoked with explicit
 # paths (e.g. from ``tests/test_eval_harness.py`` against a synthetic
@@ -60,7 +61,12 @@ class _RoutingAgentLike(Protocol):
     ``RoutingRecommendation`` out.
     """
 
-    async def run(self, candidates: list[HolderCandidate]) -> RoutingRecommendation: ...
+    async def run(
+        self,
+        candidates: list[HolderCandidate],
+        *,
+        item: ItemMetadata | None = None,
+    ) -> RoutingRecommendation: ...
 
 
 # --- Scenario / report dataclasses ----------------------------------------
@@ -82,10 +88,17 @@ class Scenario:
     expected_chosen: str | None
     expected_ranking: list[str]
     notes: str = ""
+    # Optional ItemMetadata for scenarios where the request shape
+    # influences scoring (e.g. article-vs-book routing — see
+    # ADR-0014 addendum on format-affinity). Most scenarios are
+    # request-shape-agnostic and leave this None.
+    item: ItemMetadata | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Scenario:
         cands = [HolderCandidate.model_validate(c) for c in data["candidates"]]
+        item_raw = data.get("item")
+        item = ItemMetadata.model_validate(item_raw) if item_raw is not None else None
         return cls(
             id=str(data["id"]),
             description=str(data.get("description", "")),
@@ -93,6 +106,7 @@ class Scenario:
             expected_chosen=data.get("expected_chosen"),
             expected_ranking=list(data.get("expected_ranking", [])),
             notes=str(data.get("notes", "")),
+            item=item,
         )
 
     def validate(self) -> None:
@@ -217,7 +231,7 @@ async def evaluate(agent: _RoutingAgentLike, scenarios: list[Scenario]) -> EvalR
     matches = 0
 
     for sc in scenarios:
-        rec = await agent.run(sc.candidates)
+        rec = await agent.run(sc.candidates, item=sc.item)
         actual_chosen = rec.chosen.symbol if rec.chosen is not None else None
         actual_ranking = [c.symbol for c in rec.ranked]
         match = actual_chosen == sc.expected_chosen

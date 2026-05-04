@@ -338,3 +338,65 @@ evals/routing/baseline-rules.json --check-floor`.
 
 CI catches rules-engine regressions; PR-review catches
 LLM-quality regressions.
+
+### 2026-05-04 addendum (PR for #7e) — format-affinity feature lands in rules
+
+`routing-015` (article request, gap-0.46 between consortium-but-physical
+MEM-A and external-digital EXT-DIG) was originally documented above as
+out-of-scope for the LLM tie-breaker mechanism — the LLM never fires
+below ε so the gap-0.46 case can't be addressed without raising ε to
+near-1.0, which would push the LLM into the primary-ranker role on
+essentially every routing decision (architectural shift, ~20× call
+volume, rules-floor CI gate becomes meaningless).
+
+The alternatives table in this ADR previously rejected hand-tuning
+rules weights as "combinatorially explodes for future signals." The
+"explodes" pushback was correct in the limit but hyperbolic for the
+immediate case: of the four metadata-only scenarios (`routing-013` /
+`014` / `015` / `016`), three are **true ties** (gap 0.0) handled by
+the LLM tie-breaker by design — only `015` has the gap-0.46 problem.
+So the question reduces from "add four features" to "add **one**
+feature (delivery / format affinity) to close `015`."
+
+**Decision criterion adopted:**
+
+- **Single-axis tractable signal → add to the score function.** The
+  format-affinity case (article requests strongly prefer electronic
+  delivery; physical-only is borderline disqualifying) is one
+  conditional axis with two well-defined values; the LLM is overkill.
+  The scoring change is mechanically auditable, deterministic, and
+  free at runtime.
+- **Multi-signal cross-feature reasoning → lean LLM.** True-tie
+  scenarios where the deciding signal is a small composite (e.g. SLA
+  tier × reciprocity × on-time history all near-equal) stay in
+  LLM-tie-breaker territory. Adding a feature for each combinatorial
+  intersection is what "explodes."
+
+**Implementation (PR for #7e):**
+
+- `RoutingAgent._score(c, item)` gains a `_format_affinity` term:
+  `+0.3` when `item.item_kind in {"article", "chapter"}` and
+  `c.raw["delivery"] == "electronic"`; `-0.3` when `physical_only`;
+  `0.0` otherwise. Term is zero for book / other-shaped requests, so
+  routing behaviour for the bulk of scenarios is unchanged.
+- `Scenario` gains an optional `item: ItemMetadata | None` field; the
+  eval harness threads it to `agent.run(candidates, item=...)`.
+- `routing-015` scenario gains `"item": {"title": "...", "item_kind":
+  "article"}`. Other scenarios stay item-less (request-shape-agnostic).
+- `evals/routing/baseline-rules.json`: top-1 **0.8500** (was 0.8000,
+  +0.05) / mean Spearman **0.6667** (was 0.5556, +0.111). New rules
+  floor.
+- `evals/routing/baseline.json`: top-1 **1.0000** (was 0.9500,
+  +0.05) / mean Spearman **1.0000** (was 0.8889, +0.111). 20/20.
+- New unit test `tests/test_agents.py::test_routing_format_affinity_flips_article_to_digital`
+  pins the feature against the `routing-015` shape and confirms zero
+  effect on book requests + backward-compatible behaviour when no
+  item is passed.
+
+**Out-of-scope for #7e (deferred):**
+
+- Generalising affinity to other request shapes (e.g. prefer
+  consortium-print for walkable distance) — speculative, no eval
+  scenario asks for it.
+- Auto-deriving `item_kind` from citation parser output — handled
+  upstream by `OpenURLClient` / submitter.

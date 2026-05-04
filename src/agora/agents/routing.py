@@ -150,7 +150,7 @@ class RoutingAgent:
         if not candidates:
             return RoutingRecommendation(ranked=[], chosen=None, rationale="no candidates to rank")
 
-        scored = sorted(candidates, key=self._score, reverse=True)
+        scored = sorted(candidates, key=lambda c: self._score(c, item), reverse=True)
         rules_chosen = scored[0]
 
         # Rules-only path: no LLM, single candidate, or top-2 gap exceeds ε.
@@ -164,7 +164,7 @@ class RoutingAgent:
                 rationale=self._make_rationale(rules_chosen, len(scored)),
             )
 
-        gap = self._score(scored[0]) - self._score(scored[1])
+        gap = self._score(scored[0], item) - self._score(scored[1], item)
         if gap > self._epsilon:
             return RoutingRecommendation(
                 ranked=scored,
@@ -257,7 +257,7 @@ class RoutingAgent:
             ),
         )
 
-    def _score(self, c: HolderCandidate) -> float:
+    def _score(self, c: HolderCandidate, item: ItemMetadata | None = None) -> float:
         consortium = 1.0 if c.is_consortium_member else 0.0
         preferred = c.preferred_score
         status = _STATUS_SCORE.get(c.status, 0.5)
@@ -265,7 +265,29 @@ class RoutingAgent:
             proximity = max(0.0, 1.0 - (c.distance_km / self._max_distance))
         else:
             proximity = 0.5
-        return 0.5 * consortium + 0.2 * preferred + 0.2 * status + 0.1 * proximity
+        base = 0.5 * consortium + 0.2 * preferred + 0.2 * status + 0.1 * proximity
+        # Format-affinity adjustment: for article-shaped requests, the
+        # candidate's delivery channel is load-bearing — digital fulfilment
+        # is essentially required, physical-only is borderline disqualifying.
+        # Symmetric +/- 0.3 swing is large enough to overcome the 0.5
+        # consortium weight when the consortium candidate is physical-only
+        # and an external candidate offers electronic delivery (the
+        # `routing-015` shape). For book/other requests this term is zero
+        # and rules behaviour is unchanged. See ADR-0014 addendum on
+        # "single-axis tractable signal → add feature; multi-signal cross-
+        # feature reasoning → lean LLM."
+        return base + self._format_affinity(c, item)
+
+    @staticmethod
+    def _format_affinity(c: HolderCandidate, item: ItemMetadata | None) -> float:
+        if item is None or item.item_kind not in {"article", "chapter"}:
+            return 0.0
+        delivery = (c.raw or {}).get("delivery") if c.raw else None
+        if delivery == "electronic":
+            return 0.3
+        if delivery == "physical_only":
+            return -0.3
+        return 0.0
 
     def _make_rationale(self, chosen: HolderCandidate, total: int) -> str:
         tier = "consortium member" if chosen.is_consortium_member else "external"
