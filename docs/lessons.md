@@ -200,6 +200,26 @@ human-in-loop invariant without any test failing.
 
 ## Type / lint surface
 
+### 2026-05-04 — Dynamic module load needs a typed alias to pacify mypy
+`scripts/validate_iso18626.py` is loaded by `importlib` so the test
+file isn't bound by package layout. `module.validate` typed as
+`Any` infects every downstream call site. Wrapping with a typed
+alias (`fn: _ValidateFn = module.validate; return fn`) restores
+typing without making the test ugly. Generalises to any
+"plugin-style" loader where the module isn't on the import path
+ahead of time.
+*(PR #52 — see `tests/test_iso18626_validation.py::_load_validate`.)*
+
+### 2026-05-04 — `@pytest.mark.parametrize` with an empty list emits a collection warning even under `skipif`
+The real-XSD test variants `parametrize` over a list whose contents
+depend on whether the XSD was cached. When the cache is missing the
+list is empty and pytest emits a collection-time warning *even when
+`skipif` would have skipped the test.* Fix was to invert the shape:
+loop inside the test body and call `pytest.skip()` per iteration so
+collection sees a populated parametrize. Cleaner than a global skip
+marker that mutes everything.
+*(PR #52.)*
+
 ### 2026-05-03 — pydantic-settings constructor takes ALIASES, not field names
 `Settings(reshare_base_url="x")` returns a Settings object with
 `reshare_base_url == ""` — silently ignored. The field is declared
@@ -246,6 +266,60 @@ merges can't repeat the trick.
 ---
 
 ## Workflow / process
+
+### 2026-05-04 — Quality gates without committed numbers are just vibes
+Initial draft of ADR-0014 (routing eval gate) had only a qualitative
+hurdle: "PR-2 must beat the rules baseline." Advisor pushback: the
+gate is empty until somebody runs the harness and commits numbers.
+Resolution: run the harness against rules-only first, commit
+`evals/routing/baseline.json`, quote the numbers in the ADR (top-1
+0.8000 / mean Spearman 0.5556) so a regression shows up in the diff.
+The scaffolding has to load before the LLM PR exists; otherwise the
+LLM PR is rebuilding both the metric and the floor at the same time
+and nobody can tell what shipped what.
+*(PR #47 — see `evals/routing/baseline-rules.json`,
+`docs/adr/0014-routing-llm-eval-floor.md`,
+`.github/workflows/routing-eval-floor.yml`.)*
+
+### 2026-05-04 — Eval harnesses don't live under `tests/`
+Pytest auto-collects everything matching `test_*.py` under
+`testpaths`. Wiring real LLM calls into that path makes CI slow,
+costly, and flaky on the day someone touches infra. The eval harness
+itself ships as code under `src/agora/evals/routing.py` (still
+mypy-checked, bandit-scanned), data lives at top-level
+`evals/routing/`, invocation is `make eval-routing`. A small
+synthetic-fixture plumbing test (`tests/test_eval_harness.py`)
+keeps the *harness* covered by pytest without dragging the full
+eval set in. Generalises: **eval harnesses are on-demand quality
+artefacts, not unit tests** — keep them next to docs, not next to
+pytest.
+*(PR #47.)*
+
+### 2026-05-04 — When an "improvement" requires external state, split along that state boundary
+Original PR-2 scope was "wire LLM tie-breaker prompt + ADK call + ε
+threshold + fallback + eval rerun + CI gate" — one PR. Advisor:
+the eval rerun requires a real Gemini call. Without one, the
+adapter ships but the baseline doesn't move; the gate is unchanged.
+Resolution: PR-2a (seam + Mock + tests + ADR/docs split) is a pure
+*structural* change — provable green without any external service.
+PR-2b (real adapter + prompt + eval rerun + new committed baseline
++ CI gate) is the *intelligence* change. Otherwise PR-N looks
+identical to PR-N-1 in metrics and you can't attribute outcomes.
+*(PRs #48 / #49.)*
+
+### 2026-05-04 — Verify discriminator gaps fit ε before authoring scenarios
+PR-2's eval set adds four scenarios designed to invert the rules
+baseline. Advisor pre-flight: "compute the rules score gap for each
+before writing — anything past ε is out of scope for the
+tie-breaker mechanism." Result: routing-013/014/016 all had gap
+0.0 (true ties — in scope), but routing-015's gap was 0.46 — no ε
+can ever make the LLM fire. Right answer: keep the scenario AND
+mark it explicitly out-of-scope in the ADR, raising PR-2b's top-1
+ceiling to 19/20 (0.95). Generalises: when an eval scenario sits
+upstream of a mechanism's discriminator, it's vapor coverage —
+document the discriminator constraint before authoring.
+*(PR #48 — see `docs/adr/0014-routing-llm-eval-floor.md` § Out of
+scope, scenarios `routing-013..016` in `evals/routing/scenarios.yaml`.)*
 
 ### 2026-05-03 — Sanity-check new test coverage by deleting the registration
 Adding `RECEIVE` step + state — the lifecycle-extend skill calls for
@@ -433,6 +507,67 @@ lands, the same harness picks up real-schema fixtures
 standards work where the spec lives behind a third-party fetch:**
 make the framework ship-ready, make the data opt-in, document the
 opt-in step in a README colocated with the cache directory.
+
+### 2026-05-04 — Factory-toggle conventions don't always mirror — check defaults first
+ReShare's `get_client()` works by URL-presence: `RESHARE_BASE_URL=""`
+defaults to mock; non-empty switches to http. Mirroring that for
+CrossRef and SRU was the obvious move and **wrong**: both ship
+with non-empty production URL defaults (`api.crossref.org`,
+`lx2.loc.gov`), so a presence check would force http and break
+offline dev. Resolution: explicit `AGORA_*_ENABLED` boolean
+Settings (additive, no behaviour change for existing callers).
+The advisor surfaced three options pre-flight — flip URL defaults
+to empty (breaks `HttpCrossrefClient()`'s default-URL constructor),
+explicit booleans (chosen), or a coarse umbrella flag (rejected
+— two clients may want independent toggling). Lesson:
+**convention-mirroring needs a defaults check** — two factories
+that look isomorphic on the surface can have incompatible toggle
+semantics under their defaults.
+*(PR #46 — see `agora.clients.crossref.get_crossref_client`,
+`agora.clients.sru.get_sru_client`, `Settings.crossref_enabled` /
+`sru_enabled`.)*
+
+### 2026-05-04 — App-state wiring without a consumer is dead state
+Initial scope for PR-8b factory wiring was: factories + lifespan
+registration + `app.state.discovery` + `aclose()` on shutdown.
+Advisor pushback: there's no endpoint that consumes DiscoveryAgent
+today, so we'd be constructing an httpx connection pool nothing
+dispatches against. Three honest scopes surfaced — (1) factories
+only, (2) factories + dead state, (3) factories + endpoint. Picked
+(1). The endpoint shipped one PR later (8c) once the handler shape
+was decided. Generalises: **prefer the smaller PR that ships a
+real seam** over a medium PR with a dangling pool. Dead state
+also confuses future readers — it implies a consumer exists.
+*(PRs #46 / #53.)*
+
+### 2026-05-04 — Test that constructs an optional-extra module forces that extra into CI
+`[adk]` was an opt-in extra for production consumers (kroger
+precedent). The moment `tests/test_routing_llm_adk.py` constructed
+`AdkLlmTiebreaker` (which lazy-imports `google.adk` and raises if
+absent), the extra became mandatory in CI's install line. Local
+Windows venv had `[adk]` from earlier session probing; CI's fresh
+`pip install -e ".[dev]"` missed it → 8 lazy-import RuntimeErrors.
+Fix: switch CI install to `pip install -e ".[dev,adk]"` (commit
+`05d876b`). Generalises: **tests that import an optional-extra
+module path bind that extra to CI.** The opt-in distinction lives
+for prod consumers only — once tests exist, CI must install the
+extra unconditionally.
+*(PR #49 — see `.github/workflows/*.yml` install lines.)*
+
+### 2026-05-04 — Discovery endpoint = single OBSERVATION re-runnable per call
+`POST /sagas/{id}/discover` writes a single OBSERVATION event with
+a fresh ULID idempotency key (`discovery-{ULID}`) — *not* a
+deterministic key like the OverdueScanner uses. Discovery is
+intentionally re-runnable: a citation edit or SRU index refresh
+should produce a new event with the latest candidate list, not be
+absorbed by the UNIQUE constraint as a "replay." Anchored on
+`StepName.ROUTE` (the step the candidates feed) following the
+TrackingAgent precedent of "anchor the observation on the step
+it's *about*, not the saga's current step." Saga state is
+unchanged — discovery is advisory; staff still commits a ROUTE
+gate via `/approve` to lock in the supplier.
+*(PR #53 — see `agora.api.app.discover`,
+`tests/test_api.py::test_discover_is_rerunnable_each_call_new_event`.)*
 
 ---
 
