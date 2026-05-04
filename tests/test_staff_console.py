@@ -325,7 +325,7 @@ async def test_console_auth_blocks_unauthenticated(app: FastAPI) -> None:
     from agora.config import get_settings
 
     get_settings.cache_clear()
-    os.environ["AGORA_CONSOLE_PASSWORD"] = "secret"
+    os.environ["AGORA_CONSOLE_PASSWORD"] = "secret"  # pragma: allowlist secret
     try:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as c:
@@ -345,7 +345,7 @@ async def test_console_auth_allows_valid_credentials(app: FastAPI) -> None:
     from agora.config import get_settings
 
     get_settings.cache_clear()
-    os.environ["AGORA_CONSOLE_PASSWORD"] = "secret"
+    os.environ["AGORA_CONSOLE_PASSWORD"] = "secret"  # pragma: allowlist secret
     os.environ["AGORA_CONSOLE_USERNAME"] = "staff"
     try:
         transport = ASGITransport(app=app)
