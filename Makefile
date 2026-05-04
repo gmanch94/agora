@@ -19,7 +19,7 @@ help:
 	@echo "  migrate     alembic upgrade head"
 	@echo "  api         run FastAPI app locally"
 	@echo "  demo        run scripted happy-path demo"
-	@echo "  eval-routing run RoutingAgent eval harness; rewrite evals/routing/baseline.json"
+	@echo "  eval-routing run RoutingAgent eval harness (rules-only); rewrite evals/routing/baseline-rules.json"
 	@echo "  clean       remove caches"
 
 install:
@@ -78,9 +78,13 @@ demo:
 	python -m agora.demos.happy_path
 
 # Score the rules-baseline RoutingAgent against the committed eval set
-# (evals/routing/scenarios.json) and rewrite evals/routing/baseline.json.
-# See ADR-0014 for the gating policy. Not part of triple-gate CI yet —
-# PR-2 (LLM tie-breaker) will add the regression check.
+# (evals/routing/scenarios.json) and rewrite evals/routing/baseline-rules.json
+# (the rules floor — split from the LLM-augmented baseline.json in #50).
+# See ADR-0014 for the gating policy. CI runs the floor check via
+# .github/workflows/routing-eval-floor.yml; PR-2 (LLM tie-breaker)
+# shipped in #48-#51 with top-1 0.9500 / mean Spearman 0.8889 against
+# gemini-2.5-flash. For LLM-augmented runs invoke the module directly:
+#   python -m agora.evals.routing --llm
 eval-routing:
 	python -m agora.evals.routing
 
