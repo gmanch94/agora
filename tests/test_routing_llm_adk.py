@@ -1,0 +1,249 @@
+"""Unit tests for ``AdkLlmTiebreaker`` (PR-2b adapter).
+
+Mock at the ``_invoke_model`` boundary — the seam between the prompt
+render + JSON parse logic (which we test) and the ADK runner
+ceremony (which we don't, because that requires real Gemini calls
++ ADC). This mirrors PR #43's ``httpx.MockTransport`` discipline:
+test what you own; trust the SDK below.
+
+Cases covered:
+
+- happy path → ``TiebreakDecision`` constructed with both fields
+- abstain (``chosen_symbol=None``) survives the schema-to-dataclass
+  conversion (the seam in ``RoutingAgent._call_tiebreaker`` then
+  applies the rules-fallback)
+- model raises → re-raised out of ``resolve`` (so the seam catches)
+- timeout → ``asyncio.TimeoutError`` re-raised from ``resolve`` (so
+  the seam catches)
+- ``settings``-driven defaults wire through to instance attributes
+- prompt rendering passes through the ``item`` kwarg
+
+Cases NOT covered here (covered elsewhere or out of scope):
+
+- the seam's fallback rationale composition — ``test_routing_tiebreaker.py``
+- end-to-end with a real Gemini call — manual ``make eval-routing
+  --llm`` rerun before committing ``baseline.json``
+"""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Iterator
+
+import pytest
+
+from agora.agents.routing import TiebreakDecision
+from agora.agents.routing_llm_adk import AdkLlmTiebreaker
+from agora.agents.routing_tiebreak_prompt import (
+    TiebreakDecisionSchema,
+    render_prompt,
+)
+from agora.config import get_settings
+from agora.models.candidate import HolderCandidate
+from agora.models.request import ItemMetadata
+
+
+@pytest.fixture(autouse=True)
+def _clear_settings_cache() -> Iterator[None]:
+    """Mirrors ``test_routing_tiebreaker.py`` — clear before+after so
+    tests that monkeypatch env vars don't poison each other (or the
+    rest of the suite)."""
+    get_settings.cache_clear()
+    try:
+        yield
+    finally:
+        get_settings.cache_clear()
+
+
+def _candidates() -> list[HolderCandidate]:
+    return [
+        HolderCandidate(
+            symbol="MEM-A",
+            is_consortium_member=True,
+            status="available",
+            preferred_score=0.6,
+            distance_km=120.0,
+        ),
+        HolderCandidate(
+            symbol="MEM-B",
+            is_consortium_member=True,
+            status="available",
+            preferred_score=0.6,
+            distance_km=130.0,
+        ),
+    ]
+
+
+# --- Construction ----------------------------------------------------------
+
+
+def test_init_reads_settings_defaults() -> None:
+    """``AdkLlmTiebreaker()`` with no args picks up the four routing-LLM
+    Settings fields at construction time."""
+    adapter = AdkLlmTiebreaker()
+    s = get_settings()
+    assert adapter._model == s.routing_llm_model
+    assert adapter._timeout == s.routing_llm_timeout_secs
+    assert adapter._location == s.routing_llm_location
+
+
+def test_init_explicit_args_override_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Explicit kwargs override the env-driven defaults."""
+    monkeypatch.setenv("AGORA_ROUTING_LLM_MODEL", "gemini-2.0-pro")
+    get_settings.cache_clear()
+    adapter = AdkLlmTiebreaker(
+        model="gemini-flash-latest",
+        timeout_secs=12.5,
+        location="europe-west1",
+    )
+    assert adapter._model == "gemini-flash-latest"
+    assert adapter._timeout == 12.5
+    assert adapter._location == "europe-west1"
+
+
+# --- resolve() happy path --------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_returns_tiebreak_decision_on_valid_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stub ``_invoke_model`` → schema instance; assert the dataclass
+    conversion preserves both fields verbatim."""
+    adapter = AdkLlmTiebreaker()
+
+    async def _stub(prompt: str) -> TiebreakDecisionSchema:
+        # Sanity-check that the prompt was rendered — not just that
+        # *something* was passed.
+        assert "MEM-A" in prompt and "MEM-B" in prompt
+        return TiebreakDecisionSchema(
+            chosen_symbol="MEM-B",
+            rationale="MEM-B has lower reciprocity debt.",
+        )
+
+    monkeypatch.setattr(adapter, "_invoke_model", _stub)
+    decision = await adapter.resolve(_candidates())
+    assert isinstance(decision, TiebreakDecision)
+    assert decision.chosen_symbol == "MEM-B"
+    assert decision.rationale == "MEM-B has lower reciprocity debt."
+
+
+@pytest.mark.asyncio
+async def test_resolve_passes_item_through_render(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The prompt body must include the patron-side ``item`` metadata
+    when supplied. The render itself is unit-tested in
+    ``test_routing_tiebreak_prompt.py``; here we just confirm the
+    adapter wires it through."""
+    adapter = AdkLlmTiebreaker()
+    captured: dict[str, str] = {}
+
+    async def _stub(prompt: str) -> TiebreakDecisionSchema:
+        captured["prompt"] = prompt
+        return TiebreakDecisionSchema(chosen_symbol="MEM-A", rationale="ok")
+
+    monkeypatch.setattr(adapter, "_invoke_model", _stub)
+    item = ItemMetadata(title="Sample Article", item_kind="article", year=2024)
+    await adapter.resolve(_candidates(), item=item)
+    assert "Sample Article" in captured["prompt"]
+    assert "item_kind=article" in captured["prompt"]
+
+
+# --- resolve() failure paths -----------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_abstain_survives_conversion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``chosen_symbol=None`` is a valid abstain — the seam
+    (RoutingAgent) is what falls back to rules; the adapter just
+    forwards it."""
+    adapter = AdkLlmTiebreaker()
+
+    async def _stub(_: str) -> TiebreakDecisionSchema:
+        return TiebreakDecisionSchema(chosen_symbol=None, rationale="indistinguishable")
+
+    monkeypatch.setattr(adapter, "_invoke_model", _stub)
+    decision = await adapter.resolve(_candidates())
+    assert decision.chosen_symbol is None
+    assert decision.rationale == "indistinguishable"
+
+
+@pytest.mark.asyncio
+async def test_resolve_reraises_invoke_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the underlying ADK call raises, ``resolve`` re-raises so the
+    seam's exception-fallback path applies. The adapter does NOT swallow
+    the exception itself — that would prevent the seam from logging
+    the rules-fallback diagnostic."""
+    adapter = AdkLlmTiebreaker()
+
+    async def _stub(_: str) -> TiebreakDecisionSchema:
+        raise RuntimeError("ADK runner exploded")
+
+    monkeypatch.setattr(adapter, "_invoke_model", _stub)
+    with pytest.raises(RuntimeError, match="ADK runner exploded"):
+        await adapter.resolve(_candidates())
+
+
+@pytest.mark.asyncio
+async def test_resolve_enforces_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub takes longer than the configured timeout — adapter raises
+    ``TimeoutError`` (seam catches downstream)."""
+    adapter = AdkLlmTiebreaker(timeout_secs=0.05)
+
+    async def _slow(_: str) -> TiebreakDecisionSchema:
+        await asyncio.sleep(0.5)
+        return TiebreakDecisionSchema(chosen_symbol="MEM-A", rationale="late")
+
+    monkeypatch.setattr(adapter, "_invoke_model", _slow)
+    with pytest.raises(asyncio.TimeoutError):
+        await adapter.resolve(_candidates())
+
+
+# --- prompt module sanity -------------------------------------------------
+
+
+def test_render_prompt_includes_all_candidate_symbols() -> None:
+    """Prompt body lists each candidate exactly once with status,
+    consortium membership, and preferred score."""
+    body = render_prompt(_candidates())
+    assert body.count("symbol=MEM-A") == 1
+    assert body.count("symbol=MEM-B") == 1
+    assert "consortium=True" in body
+    assert "status=available" in body
+
+
+def test_render_prompt_handles_no_item() -> None:
+    body = render_prompt(_candidates(), item=None)
+    assert "(no item metadata supplied)" in body
+
+
+def test_render_prompt_includes_raw_signals() -> None:
+    """Decision-relevant ``raw`` fields (sla_tier, reciprocity_balance,
+    on_time_rate, holds_format, delivery) MUST appear when present.
+    These are exactly the signals the LLM was hired to weigh."""
+    cands = [
+        HolderCandidate(
+            symbol="X1",
+            is_consortium_member=True,
+            status="available",
+            preferred_score=0.5,
+            raw={
+                "sla_tier": "fast",
+                "reciprocity_balance": -3,
+                "on_time_rate": 0.95,
+                "holds_format": "digital",
+                "delivery": "electronic",
+            },
+        ),
+    ]
+    body = render_prompt(cands)
+    assert "raw.sla_tier='fast'" in body
+    assert "raw.reciprocity_balance=-3" in body
+    assert "raw.on_time_rate=0.95" in body
+    assert "raw.holds_format='digital'" in body
+    assert "raw.delivery='electronic'" in body

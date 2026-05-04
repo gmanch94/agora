@@ -1,13 +1,10 @@
 # PRD 02 — Agents
 
-> Last reviewed against code: 2026-05-03 (post tier-2 recall-proposed
-> + tier-3 receipt-unconfirmed scanner emissions and FastAPI-lifespan
-> wiring; CrossRef integration shipped — PR-A client + PR-B
-> DiscoveryAgent fan-out; PR-1 of RoutingAgent LLM track shipped —
-> eval harness + ADR-0014, rules-baseline floor committed at
-> top-1 0.8000 / mean Spearman 0.5556; PR-2a seam shipped — pluggable
-> `LlmTiebreaker` Protocol + `MockLlmTiebreaker` test double + ε
-> config via `AGORA_ROUTING_TIEBREAK_EPSILON`).
+> Last reviewed against code: 2026-05-03 (PR-2b RoutingAgent LLM
+> track shipped — real `AdkLlmTiebreaker` adapter via ADK
+> `LlmAgent` + Gemini Flash + factory `get_llm_tiebreaker()` + four
+> `AGORA_ROUTING_LLM_*` env vars + sibling
+> `.github/workflows/routing-eval-floor.yml` CI gate).
 
 All agents are **advisory** in the prototype: they emit a recommendation
 + reasoning trace into the staff console. Staff commit by clicking
@@ -73,14 +70,27 @@ of the LLM (advisory-only invariant per ADR-0005). See
 `tests/test_routing_tiebreaker.py` for the six-case behavioural
 matrix.
 
-**Tools (PR-2b — next):** real ADK-mediated `LlmTiebreaker`
-implementation with its prompt template, `temperature=0`
-determinism, eval rerun against the LLM-augmented agent, and a CI
-hook gating on the committed `baseline.json` (top-1 0.8000, mean
-Spearman 0.5556). PR-2b will lift the rules-baseline floor by
-fixing the three true-tie inversion scenarios (`routing-013`,
-`014`, `016`); `routing-015` is documented as out-of-scope for the
-tie-breaker (rules score gap 0.46 — not a tie), see ADR-0014.
+**Tools (PR-2b shipped):** real `AdkLlmTiebreaker` in
+`src/agora/agents/routing_llm_adk.py` implementing the Protocol from
+PR-2a. Built on ADK `LlmAgent` + `InMemoryRunner` (ADR-0003), Gemini
+Flash via Vertex AI by default (`AGORA_ROUTING_LLM_MODEL`),
+`temperature=0` pinned, structured output via
+`output_schema=TiebreakDecisionSchema` (defined in
+`src/agora/agents/routing_tiebreak_prompt.py` — same module as the
+prompt template, kept separate from the adapter so prompt-wording
+diffs stand alone). Per-call timeout via `asyncio.wait_for` —
+defaults to 5s (`AGORA_ROUTING_LLM_TIMEOUT_SECS`). Lazy
+`google.adk` import in `__init__` so a base install (no `[adk]`
+extra) doesn't crash. Factory at
+`agora.agents.factories.get_llm_tiebreaker()` returns `None`
+unless `AGORA_ROUTING_LLM_ENABLED=1`. CI floor gate at
+`.github/workflows/routing-eval-floor.yml` runs the harness in
+`--rules-only --check-floor` mode (no GCP secrets in CI) — catches
+rules-engine regressions; PR-review catches LLM-quality regressions.
+PR-2b ceiling per ADR-0014: top-1 19/20 (0.9500) by fixing the three
+true-tie inversion scenarios (`routing-013`, `014`, `016`);
+`routing-015` stays out-of-scope (rules score gap 0.46 — not a
+tie).
 
 **Tie-breaker, not replacement** — rules keep deciding the bulk;
 LLM fires only on near-ties. See **ADR-0014** for the decision and

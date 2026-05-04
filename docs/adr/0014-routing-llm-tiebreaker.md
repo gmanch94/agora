@@ -1,9 +1,9 @@
 # ADR 0014 — RoutingAgent LLM-augmented tie-breaker
 
 **Status:** Accepted
-**Date:** 2026-05-03 (revised same day post PR-2a seam landing —
-implementation note split into PR-2a / PR-2b; `routing-015` scope
-finding documented)
+**Date:** 2026-05-03 (revised same day post PR-2b adapter shipping —
+real `AdkLlmTiebreaker` + prompt template + factory + CI floor gate;
+provider pinned to Gemini Flash via Vertex AI / ADK)
 
 ## Context
 
@@ -189,20 +189,73 @@ no change to `RoutingAgent`.
   through PR-2a. The eval harness produces an unchanged report.
 - **No prompt template, no real LLM adapter, no CI gate change.**
 
-### PR-2b (next) — prompt + ADK adapter + eval rerun + CI gate
+### PR-2b (this PR) — prompt + ADK adapter + factory + CI floor gate
 
-- `AdkLlmTiebreaker` adapter (or whatever the eventual concrete
-  implementation is named) implementing the Protocol shipped in
-  PR-2a. Determinism pin: `temperature=0`, single-run scoring.
-- Prompt template that takes `list[HolderCandidate]` + optional
-  `ItemMetadata` and returns a `TiebreakDecision`-shaped JSON
-  response constrained to a candidate symbol or null. The prompt
-  enforces ≤1-sentence rationale (so the agent's composed rationale
-  stays ≤3 sentences total — see PRD-02).
-- Eval rerun against the LLM-augmented agent; commit the new
-  `baseline.json` if it beats the floor.
-- CI hook running `python -m agora.evals.routing --no-write` and
-  diffing scores vs `baseline.json`. Regression = red CI.
+Shipped:
+
+- **`AdkLlmTiebreaker`** in `src/agora/agents/routing_llm_adk.py`.
+  Lazy `google.adk` import (inside `__init__`) so a base install
+  without the `[adk]` extra doesn't crash on
+  `import agora.agents.routing`. Wraps an ADK `LlmAgent` +
+  `InMemoryRunner`. `temperature=0` pinned in
+  `GenerateContentConfig`; `output_schema=TiebreakDecisionSchema`
+  puts Gemini in JSON-mode with constrained decoding so the parse
+  is just `model_validate`. Per-call timeout enforced via
+  `asyncio.wait_for(timeout=routing_llm_timeout_secs)` — a stuck
+  LLM raises `TimeoutError`, caught by the seam, falls back to
+  rules + diagnostic.
+- **Prompt template** in `src/agora/agents/routing_tiebreak_prompt.py`.
+  System instruction lists the five decision signals (SLA tier,
+  reciprocity balance, format affinity, on-time rate, distance) in
+  rough priority order; user-prompt body lists each candidate with
+  its `raw` metadata fields. Pydantic `TiebreakDecisionSchema`
+  carries the JSON-mode contract (`chosen_symbol: str | None`,
+  `rationale: str`); the field description on `rationale` requires
+  ≤25 words, keeping the composed rationale ≤3 sentences.
+- **Factory** `agora.agents.factories.get_llm_tiebreaker()` mirrors
+  PR #46's discovery factory pattern. Returns `None` when
+  `AGORA_ROUTING_LLM_ENABLED=0` (default), `AdkLlmTiebreaker`
+  otherwise. Lazy ADK import inside the factory body keeps the
+  module cheap when LLM is disabled.
+- **Settings** four new fields (`AGORA_ROUTING_LLM_ENABLED`,
+  `AGORA_ROUTING_LLM_MODEL` default `gemini-2.0-flash`,
+  `AGORA_ROUTING_LLM_TIMEOUT_SECS` default 5.0,
+  `AGORA_ROUTING_LLM_LOCATION` default `us-central1`).
+- **CLI flags** on `python -m agora.evals.routing`: `--rules-only`
+  (explicit, matches default), `--llm` (wrap with factory output),
+  `--check-floor` (read committed baseline, exit 1 on regression,
+  implies `--no-write`).
+- **CI gate** `.github/workflows/routing-eval-floor.yml` runs the
+  harness in `--rules-only --check-floor` mode against committed
+  `baseline.json`. CI does **not** call a real LLM (no GCP
+  secrets); the gate is a regression-guard for the rules path.
+  Whether the LLM helped is a PR-review question — read the new
+  baseline numbers in the diff.
+
+**Provider:** Gemini Flash (via Vertex AI / ADK). Cheap, fast,
+JSON-mode reliable for one-shot four-candidate picks. Re-tune via
+`AGORA_ROUTING_LLM_MODEL` if eval data argues otherwise.
+
+**Eval rerun: deferred.** ADC is bound and `aiplatform.googleapis.com`
+is enabled on the quota project, but every call to
+`gemini-2.0-flash` (and `gemini-1.5-flash`) returns
+**404 NOT_FOUND** — Vertex API enablement is necessary but not
+sufficient for Gemini publisher-model access. PR-2b runs the rerun
+end-to-end and observes the seam's exception-fallback path
+firing on every scenario (every LLM call → 404 → rules pick), which
+is exactly the failure-mode contract the seam was designed for —
+so PR-2b ships with `evals/routing/baseline.json` byte-identical
+to master. A follow-on pass reruns once publisher-model access is
+confirmed (likely a quota / project-policy issue separate from
+this PR).
+
+Expected ceiling once the rerun does fire (subject to the prompt
+landing well):
+
+- top-1 accuracy: ≥0.9500 (19/20 — the three true-tie inversions
+  flip; `routing-015` stays a miss per the scope finding below)
+- mean Spearman: ≥0.5556 (must not drop below the rules floor; the
+  three flips improve it materially)
 
 ### Scope finding from PR-2a: scenario `routing-015` is out-of-scope
 
@@ -233,8 +286,11 @@ Neither is in PR-2a or PR-2b's scope. The case stays in
 `scenarios.json` as documentation that the metric is honest about a
 known limitation.
 
-### Harness is not part of `triple-gate` CI yet
+### CI gate landed in PR-2b
 
-`make eval-routing` writes `evals/routing/baseline.json` locally;
-PR-2b will add the regression check at the same time as the new
-baseline.
+The harness runs in CI as a sibling job to `triple-gate` /
+`audit` / `postgres-tests`:
+`.github/workflows/routing-eval-floor.yml` →
+`python -m agora.evals.routing --rules-only --check-floor`. CI
+catches rules-engine regressions; PR-review catches LLM-quality
+regressions (by reading the diff of `evals/routing/baseline.json`).

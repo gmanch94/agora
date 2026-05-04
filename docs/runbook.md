@@ -1,9 +1,9 @@
 # Agora Runbook
 
-> Last reviewed against code: 2026-05-03 (post CrossRef client PR-A
-> — `CROSSREF_*` env vars added; tier-3 receipt-unconfirmed watch
-> from prior session unchanged; PR-2a routing seam adds
-> `AGORA_ROUTING_TIEBREAK_EPSILON`).
+> Last reviewed against code: 2026-05-03 (PR-2b routing-LLM adapter
+> adds `AGORA_ROUTING_LLM_*` env vars + a sibling
+> `routing-eval-floor.yml` CI workflow alongside `triple-gate` /
+> `audit` / `postgres-tests`).
 
 Operational reference for the Agora ILL prototype. Covers bring-up,
 day-to-day operation (outbox, overdue scan, gate workflow), and
@@ -69,6 +69,10 @@ the process env. Defaults target local dev (Postgres on `localhost:5433`).
 | `AGORA_TRACKING_RECALL_AFTER_DAYS`  | `14`                                                   | Days past `due_at` before tier-2 `recall-proposed` fires.  |
 | `AGORA_TRACKING_UNCONFIRMED_RECEIPT_AFTER_DAYS` | `7`                                        | Days past `shipped_at` (with no RECEIVE event) before tier-3 `receipt-unconfirmed` fires. Independent of tier-1/2; tracks transit time. |
 | `AGORA_ROUTING_TIEBREAK_EPSILON`    | `0.05`                                                 | RoutingAgent LLM tie-breaker activation threshold. When the rules-baseline scoring puts the top-2 candidates within this gap, `RoutingAgent` consults the configured `LlmTiebreaker` (if any). Placeholder until PR-2b tunes against eval — see ADR-0014. |
+| `AGORA_ROUTING_LLM_ENABLED`         | `false`                                                | Opt-in for `agora.agents.factories.get_llm_tiebreaker()`. `false` → factory returns `None` (rules-only path). `true` → factory builds `AdkLlmTiebreaker`. Requires bound GCP ADC + Vertex AI API enabled. |
+| `AGORA_ROUTING_LLM_MODEL`           | `gemini-2.0-flash`                                     | Vertex/Gemini model id for the routing tie-breaker. Flash chosen for tie-break-only one-shot judgments (cheap, fast, JSON-mode reliable). |
+| `AGORA_ROUTING_LLM_TIMEOUT_SECS`    | `5.0`                                                  | Per-call timeout. Stuck LLM raises; the seam catches and falls back to the rules pick + diagnostic. |
+| `AGORA_ROUTING_LLM_LOCATION`        | `us-central1`                                          | Vertex AI region for the `LlmAgent` runtime.               |
 
 `.env.example` in the repo lists the same set with safe defaults.
 

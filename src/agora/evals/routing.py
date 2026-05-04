@@ -288,20 +288,67 @@ def _format_summary(report: EvalReport) -> str:
     return "\n".join(lines)
 
 
+def _check_floor(report: EvalReport, baseline_path: Path) -> int:
+    """Compare ``report`` against committed baseline numbers; return exit code.
+
+    PR-2b's CI gate: assert that the rules-only path has not regressed
+    below the committed floor. CI never calls a real LLM (no GCP
+    secrets in the workflow), so the gate's job is to catch *rules-path
+    regressions*, not LLM-quality regressions. Whether PR-2b's LLM
+    actually helped is verified at PR-review time by reading the new
+    ``baseline.json`` numbers committed alongside.
+    """
+    if not baseline_path.exists():
+        print(f"ERROR: baseline file missing at {baseline_path}", flush=True)
+        return 2
+    baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+    floor_top1 = float(baseline["top1_accuracy"])
+    raw_rho = baseline.get("mean_spearman")
+    floor_rho = None if raw_rho is None else float(raw_rho)
+
+    # Compare at the same 4-dp precision the baseline file ships at —
+    # ``baseline.json`` rounds on write (``EvalReport.to_dict``), so a
+    # raw-float compare can fire on the rounding-vs-runtime delta
+    # (e.g. live 0.555555... vs committed 0.5556). Rounding both
+    # sides keeps the check honest *to the precision we actually
+    # commit*, which is what reviewers will read in the diff.
+    fails: list[str] = []
+    rounded_top1 = round(report.top1_accuracy, 4)
+    if rounded_top1 < round(floor_top1, 4):
+        fails.append(f"top1_accuracy {rounded_top1:.4f} < floor {floor_top1:.4f}")
+    if floor_rho is not None and report.mean_spearman is not None:
+        rounded_rho = round(report.mean_spearman, 4)
+        if rounded_rho < round(floor_rho, 4):
+            fails.append(f"mean_spearman {rounded_rho:.4f} < floor {floor_rho:.4f}")
+
+    if fails:
+        print("\nFLOOR CHECK FAILED:", flush=True)
+        for f in fails:
+            print(f"  - {f}", flush=True)
+        return 1
+    print("\nFLOOR CHECK OK", flush=True)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """``python -m agora.evals.routing`` entrypoint.
 
-    Runs the rules-baseline ``RoutingAgent`` against the committed
-    scenarios and writes ``evals/routing/baseline.json``. PR-2 will add
-    a ``--agent`` flag to swap in the LLM variant, but the rules
-    baseline is intentionally the only mode in PR-1 — that's what we
-    commit as the floor.
+    Three modes:
+
+    - ``--rules-only`` (CI default): construct ``RoutingAgent()`` with
+      no kwargs — pure rules path. Pair with ``--check-floor`` to gate
+      regressions vs the committed baseline.
+    - ``--llm``: opt into LLM-augmented routing via the factory.
+      Requires ``AGORA_ROUTING_LLM_ENABLED=1`` + bound GCP ADC.
+      Used locally (and one-off in PRs) to regenerate ``baseline.json``.
+    - default (no flag): same as ``--rules-only`` but writes
+      ``baseline.json`` — convenient for refreshing the rules baseline
+      after a rules-engine tweak.
     """
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Score the rules-baseline RoutingAgent against the "
-        "committed scenario set and write a baseline report."
+        description="Score a RoutingAgent against the committed scenario set."
     )
     parser.add_argument(
         "--scenarios",
@@ -314,9 +361,9 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         default=DEFAULT_BASELINE,
         help=(
-            "path to write baseline JSON "
-            f"(default: {DEFAULT_BASELINE}); pass /dev/null or omit "
-            "with --no-write to print only"
+            "path to baseline JSON "
+            f"(default: {DEFAULT_BASELINE}); read for --check-floor, "
+            "written unless --no-write"
         ),
     )
     parser.add_argument(
@@ -324,12 +371,54 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="print summary only; do not write baseline.json",
     )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--rules-only",
+        action="store_true",
+        help="force the rules-only baseline path (default; explicit for CI)",
+    )
+    mode.add_argument(
+        "--llm",
+        action="store_true",
+        help=(
+            "wrap the rules agent with the configured LLM tie-breaker "
+            "(via agora.agents.factories.get_llm_tiebreaker). Requires "
+            "AGORA_ROUTING_LLM_ENABLED=1 + GCP ADC."
+        ),
+    )
+    parser.add_argument(
+        "--check-floor",
+        action="store_true",
+        help=(
+            "after scoring, compare against committed baseline; exit 1 "
+            "if top1_accuracy or mean_spearman regressed. Implies --no-write."
+        ),
+    )
     args = parser.parse_args(argv)
 
     scenarios = load_scenarios(args.scenarios)
-    agent = RoutingAgent()
+    if args.llm:
+        from agora.agents.factories import get_llm_tiebreaker
+
+        tiebreaker = get_llm_tiebreaker()
+        if tiebreaker is None:
+            print(
+                "ERROR: --llm passed but get_llm_tiebreaker() returned None. "
+                "Set AGORA_ROUTING_LLM_ENABLED=1.",
+                flush=True,
+            )
+            return 2
+        agent: _RoutingAgentLike = RoutingAgent(llm_tiebreaker=tiebreaker)
+    else:
+        agent = RoutingAgent()
     report = asyncio.run(evaluate(agent, scenarios))
     print(_format_summary(report))
+
+    if args.check_floor:
+        # Floor check implies read-only — never overwrite the baseline
+        # we're checking against.
+        return _check_floor(report, args.baseline)
+
     if not args.no_write:
         write_baseline(report, args.baseline)
         print(f"\nwrote {args.baseline}")
