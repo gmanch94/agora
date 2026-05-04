@@ -136,6 +136,12 @@ class Settings(BaseSettings):
     # default and the bound quota project's primary location.
     routing_llm_location: str = Field(default="us-central1", alias="AGORA_ROUTING_LLM_LOCATION")
 
+    # Staff console HTTP Basic auth. When console_password is empty (default),
+    # auth is disabled — dev convenience, no credentials required locally.
+    # Set both vars in production-like envs to gate the HTML UI.
+    console_username: str = Field(default="staff", alias="AGORA_CONSOLE_USERNAME")
+    console_password: str = Field(default="", alias="AGORA_CONSOLE_PASSWORD")
+
     @property
     def reshare_enabled(self) -> bool:
         """True when a real ReShare endpoint is configured.

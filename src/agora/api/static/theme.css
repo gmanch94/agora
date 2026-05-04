@@ -383,6 +383,30 @@ body {
   margin-bottom: var(--space-xl);
 }
 
+.discover-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-lg);
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+
+.discover-panel__header .action-section__title {
+  margin: 0;
+}
+
+.discover-panel__rerun {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.discover-panel__ts {
+  font-size: 12px;
+  color: var(--color-muted);
+}
+
 .discover-panel__hint {
   color: var(--color-steel);
   font-size: 14px;

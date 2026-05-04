@@ -963,6 +963,60 @@ test-leaky** — `lru_cache`, `functools.cache`, module-level
 *(PR #46 + PR #48 — see `tests/test_factories.py::_clear_settings_cache`,
 `tests/test_routing_tiebreaker.py`.)*
 
+---
+
+## Staff console / UI
+
+### 2026-05-04 — Jinja2 `{% include %}` inherits full parent template context
+When a partial is included via `{% include '_discover_panel.html' %}`,
+it runs inside the parent template's variable scope — `{% set %}` vars
+defined in the `detail.html` block before the include statement are
+visible inside the partial without any explicit passing. This is the
+correct shape for the "cached panel pre-render" pattern: `detail.html`
+computes `candidates`, `diagnostics`, `rationale`, `show_rerun` from
+the server-side `cached_discovery` dict, and `_discover_panel.html`
+renders the same markup HTMX would swap in dynamically. One partial,
+two code paths (page load vs HTMX swap), no duplication. Contrast with
+Jinja2 macros (`{% macro %}`) — macros have their own local scope and
+require arguments; include uses the caller's scope. Choose include when
+the partial shares context naturally; choose macro when you need an
+explicit boundary.
+*(PRs #80/#84 — see `src/agora/api/templates/detail.html` and
+`src/agora/api/templates/_discover_panel.html`.)*
+
+### 2026-05-04 — FastAPI 0.136.1 + `HTTPBasic(auto_error=False)` requires old-style `Optional[X] = Depends()`
+Using the new-style `Annotated[HTTPBasicCredentials | None, Depends(_security)]`
+for an optional security dependency produces a 422 Unprocessable Entity
+on every request in FastAPI 0.136.1 — FastAPI incorrectly treats the
+`None`-able annotation as a mandatory body parameter. The correct form
+for optional HTTP Basic auth is the old-style default:
+```python
+credentials: Optional[HTTPBasicCredentials] = Depends(_security)
+```
+with `HTTPBasic(auto_error=False)` on the scheme object. When no
+credentials are provided, FastAPI injects `None` (not a 401); the
+dependency function then decides whether to gate (check the password
+setting) or pass through. Generalises: **for optional security
+dependencies in FastAPI, prefer the classic `= Depends()` form over
+`Annotated[X | None, Depends()]` until Annotated + optional security
+handling is verified in the installed version.**
+*(PR #82 — see `src/agora/api/app.py::_console_security`,
+`_require_console_auth`, `tests/test_staff_console.py::test_console_auth_*`.)*
+
+### 2026-05-04 — Stacked branch PRs must target the correct base before merging the parent
+PR #83 (slice 3) was opened targeting `feat/staff-console-slice-2`
+because that was the working branch at the time. PR #80 (slice 2) then
+merged to `master`. GitHub left PR #83 targeting the now-merged branch —
+its diff showed only slice-3's commits, and GitHub showed "no open PRs"
+for `feat/staff-console-slice-2`. The fix was cherry-picking slice-3's
+commit onto a fresh branch from `master` and opening PR #84. **Rule
+for stacked branches:** before merging a parent branch, check whether
+any open PRs target it; either (a) rebase the child PR onto `master`
+first, or (b) merge the child right after the parent while both are
+fresh. `gh pr list --json baseRefName` shows the base of every open PR.
+*(PRs #83/#84 — the cherry-pick and re-PR cost one PR number and
+~20 minutes.)*
+
 ### 2026-05-04 — When an ADR pre-emptively names follow-ups, schedule them in the same session
 ADR-0014 (RoutingAgent LLM tie-breaker) documented the
 `routing-014` miss + `routing-009` regression as "next-PR

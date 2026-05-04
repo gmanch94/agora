@@ -31,8 +31,8 @@ for design rationale.
 # 1. Python venv (Windows path; adjust on Linux)
 .venv/Scripts/python.exe -m pip install --upgrade pip wheel
 
-# 2. Project + dev extras + sqlite driver (used by tests)
-.venv/Scripts/python.exe -m pip install -e ".[dev]" aiosqlite
+# 2. Project + dev extras (aiosqlite bundled in [dev] since PR #28)
+.venv/Scripts/python.exe -m pip install -e ".[dev]"
 
 # 3. (Optional) Postgres sandbox
 docker compose up -d postgres
@@ -83,6 +83,8 @@ the process env. Defaults target local dev (Postgres on `localhost:5433`).
 | `AGORA_ROUTING_LLM_MODEL`           | `gemini-2.5-flash`                                     | Vertex/Gemini model id for the routing tie-breaker. gemini-2.5-flash is the model used in the committed LLM-augmented baseline (top-1 0.95, post-#7c); the old default gemini-2.0-flash 404s under the current Vertex enablement. |
 | `AGORA_ROUTING_LLM_TIMEOUT_SECS`    | `30.0`                                                 | Per-call timeout. Raised from 5s (too tight for Gemini 2.5 cold-start) to 30s to match the eval harness recommendation. Stuck LLM raises; the seam catches and falls back to the rules pick + diagnostic. |
 | `AGORA_ROUTING_LLM_LOCATION`        | `us-central1`                                          | Vertex AI region for the `LlmAgent` runtime.               |
+| `AGORA_CONSOLE_USERNAME`            | `staff`                                                | HTTP Basic username for the staff console HTML routes. Ignored when `AGORA_CONSOLE_PASSWORD` is empty. |
+| `AGORA_CONSOLE_PASSWORD`            | `""`                                                   | HTTP Basic password. Empty (default) disables auth entirely — no credentials required in local dev. Set a non-empty value to enable. JSON API routes are unaffected (trusted-network assumption, ADR-0007). |
 | `GOOGLE_GENAI_USE_VERTEXAI`         | `true`                                                 | Read by `google-adk` / `google-genai`, not by Agora `Settings`. Mirrors `.env.example`. **Required** when `AGORA_ROUTING_LLM_ENABLED=true` — without it the SDK routes through the public Gemini API instead of Vertex/ADC and 401s every call. |
 | `GOOGLE_CLOUD_PROJECT`              | `""`                                                   | Read by `google-adk` / `google-genai`. The GCP project that hosts the bound ADC + Vertex enablement. Set to your project id (e.g. `my-project-1234`). |
 | `GOOGLE_CLOUD_LOCATION`             | `us-central1`                                          | Read by `google-adk` / `google-genai`. Vertex region; should match `AGORA_ROUTING_LLM_LOCATION`. |
