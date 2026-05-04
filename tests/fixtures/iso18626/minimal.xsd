@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Hand-rolled minimal XSD used by tests/test_iso18626_validation.py to
+  prove the lxml-based validation harness in scripts/validate_iso18626.py
+  works end-to-end. NOT a stand-in for the real ISO 18626 schema —
+  intentionally tiny so the contract is "the validator detects valid
+  vs malformed XML against any XSD, including the real one when cached."
+
+  The real ISO 18626 v1.3 XSD lives (or should live, when cached) at
+  docs/standards/iso18626/iso18626-v1_3.xsd. See that directory's
+  README.md for the cache instructions; we don't bundle it by default
+  because the canonical source is illtransactions.org and version
+  pinning is the cache-step's responsibility.
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="http://example.test/agora/minimal"
+           xmlns="http://example.test/agora/minimal"
+           elementFormDefault="qualified">
+  <xs:element name="message">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="header" type="HeaderType"/>
+        <xs:element name="body" type="xs:string"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+  <xs:complexType name="HeaderType">
+    <xs:sequence>
+      <xs:element name="id" type="xs:string"/>
+      <xs:element name="timestamp" type="xs:dateTime"/>
+    </xs:sequence>
+  </xs:complexType>
+</xs:schema>
