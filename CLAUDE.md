@@ -163,15 +163,25 @@ ISO 18626 message types — see table in `clients/reshare.py`.
   get it right and PR-2b's first-cut LLM had picked the worse
   candidate at ε=0.05. Eval harness via `make eval-routing` (rules)
   or `python -m agora.evals.routing --llm` (LLM-augmented; needs
-  ADC bound + `aiplatform.googleapis.com` enabled + **Vertex AI
+  ADC bound + `gcloud auth application-default set-quota-project
+  <project>` + `aiplatform.googleapis.com` enabled + **Vertex AI
   Studio click-through enablement** on the project + the correct
   API model id — the Studio display label is NOT the API id; e.g.
   Studio shows "gemini-3.1-flash-lite-preview" but the public API
-  takes `gemini-2.5-flash`. Rerun with
-  `AGORA_ROUTING_LLM_MODEL=gemini-2.5-flash AGORA_ROUTING_LLM_TIMEOUT_SECS=30`
-  — the default 5s is sometimes too tight for Gemini 2.5 cold-start,
-  and the config default `gemini-2.0-flash` 404s under the current
-  Vertex enablement).
+  takes `gemini-2.5-flash`. Rerun with **all** of
+  `GOOGLE_GENAI_USE_VERTEXAI=true` +
+  `GOOGLE_CLOUD_PROJECT=<project-id>` +
+  `GOOGLE_CLOUD_LOCATION=us-central1` +
+  `AGORA_ROUTING_LLM_ENABLED=1` +
+  `AGORA_ROUTING_LLM_MODEL=gemini-2.5-flash` +
+  `AGORA_ROUTING_LLM_TIMEOUT_SECS=30`. Without
+  `GOOGLE_GENAI_USE_VERTEXAI=true` the SDK silently falls back to
+  public-Gemini API-key auth and 401s every call (the seam catches
+  it and runs rules-only — output looks "successful" but with the
+  rules baseline numbers). The default 5s `*_TIMEOUT_SECS` is
+  sometimes too tight for Gemini 2.5 cold-start, and the config
+  default `gemini-2.0-flash` 404s under the current Vertex
+  enablement).
   Failure paths in the seam (LLM raises / abstains / returns unknown
   symbol / times out) ALWAYS fall back to the rules pick + diagnostic;
   the agent never re-raises out to its caller (advisory-only invariant
