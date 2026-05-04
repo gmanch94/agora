@@ -14,6 +14,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -21,7 +22,10 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from agora.agents.discovery import DiscoveryAgent
 from agora.api.app import _build_outbox_worker, create_app
+from agora.clients.crossref import MockCrossrefClient
+from agora.clients.sru import MockSruClient, SruRecord
 from agora.saga.db import get_sessionmaker
 
 # Tests inherit ``engine`` (auto-uses :memory: SQLite) so the API's
@@ -399,6 +403,130 @@ async def test_outbox_worker_disabled_via_settings(
             assert app.state.outbox_worker_task is None
     finally:
         get_settings.cache_clear()
+
+
+async def test_discover_writes_observation_with_candidates(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    """Happy path: agent finds holders, OBSERVATION event written, no state change."""
+    sru = MockSruClient(
+        records=[
+            SruRecord(
+                title="Brave New World",
+                authors=["Huxley"],
+                isbn="9780060850524",
+                issn=None,
+                holdings=["MEMBER1", "OTHER1"],
+                raw_marcxml="",
+            )
+        ]
+    )
+    app.state.discovery = DiscoveryAgent(
+        sru, crossref=MockCrossrefClient(), consortium_members={"MEMBER1"}
+    )
+
+    saga_id = (await client.post("/requests", json=_request_payload())).json()[
+        "saga_id"
+    ]
+
+    r = await client.post(f"/sagas/{saga_id}/discover")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["saga_id"] == saga_id
+    assert {c["symbol"] for c in body["candidates"]} == {"MEMBER1", "OTHER1"}
+    member = next(c for c in body["candidates"] if c["symbol"] == "MEMBER1")
+    assert member["is_consortium_member"] is True
+    assert "MEMBER1" in body["rationale"] or "1 in-consortium" in body["rationale"]
+
+    detail = (await client.get(f"/sagas/{saga_id}")).json()
+    # Saga still in submitted state — discovery is advisory.
+    assert detail["saga"]["current_state"] == "submitted"
+    obs = [
+        e for e in detail["events"] if e["kind"] == "observation" and e["step"] == "route"
+    ]
+    assert len(obs) == 1
+    assert obs[0]["payload"]["kind"] == "discovery"
+    assert obs[0]["idempotency_key"].startswith("discovery-")
+
+
+async def test_discover_with_no_holders_returns_empty_with_diagnostic(
+    client: AsyncClient,
+) -> None:
+    """Default factory wiring (empty MockSruClient) yields zero candidates + diagnostic."""
+    saga_id = (await client.post("/requests", json=_request_payload())).json()[
+        "saga_id"
+    ]
+
+    r = await client.post(f"/sagas/{saga_id}/discover")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["candidates"] == []
+    assert any("zero holders" in d for d in body["diagnostics"])
+
+
+async def test_discover_is_rerunnable_each_call_new_event(client: AsyncClient) -> None:
+    """Two discover calls produce two distinct OBSERVATION events (fresh ULID keys)."""
+    saga_id = (await client.post("/requests", json=_request_payload())).json()[
+        "saga_id"
+    ]
+
+    first = await client.post(f"/sagas/{saga_id}/discover")
+    second = await client.post(f"/sagas/{saga_id}/discover")
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["event"]["idempotency_key"] != second.json()["event"]["idempotency_key"]
+
+    detail = (await client.get(f"/sagas/{saga_id}")).json()
+    obs = [e for e in detail["events"] if e["kind"] == "observation"]
+    assert len(obs) == 2
+
+
+async def test_discover_unknown_saga_returns_404(client: AsyncClient) -> None:
+    r = await client.post(f"/sagas/{uuid4()}/discover")
+    assert r.status_code == 404
+
+
+async def test_discover_on_terminal_saga_returns_409(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    """Terminal sagas reject discovery — advisory only on active sagas."""
+    from agora.models.events import NewSagaEvent
+    from agora.models.lifecycle import (
+        EventKind,
+        LifecycleState,
+        StepName,
+        StepOutcome,
+    )
+    from agora.saga.db import get_sessionmaker
+    from agora.saga.idempotency import new_idempotency_key
+    from agora.saga.ledger import SagaLedger
+
+    saga_id = (await client.post("/requests", json=_request_payload())).json()[
+        "saga_id"
+    ]
+
+    # Force the saga to a terminal state by appending a CANCEL forward.
+    sm = get_sessionmaker()
+    async with sm() as session, session.begin():
+        ledger = SagaLedger(session)
+        await ledger.append(
+            NewSagaEvent(
+                saga_id=UUID(saga_id),
+                kind=EventKind.FORWARD,
+                step=StepName.CANCEL,
+                state_before=LifecycleState.SUBMITTED,
+                state_after=LifecycleState.CANCELLED,
+                actor="staff:test",
+                idempotency_key=new_idempotency_key(prefix="cancel"),
+                payload={},
+                outcome=StepOutcome.COMMITTED,
+                rationale="test",
+            )
+        )
+
+    r = await client.post(f"/sagas/{saga_id}/discover")
+    assert r.status_code == 409
+    assert "terminal" in r.json()["detail"]
 
 
 async def test_reject_records_failed_gate(client: AsyncClient) -> None:

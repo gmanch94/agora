@@ -37,6 +37,7 @@ class SruClient(Protocol):
     async def search_isbn(self, isbn: str) -> list[SruRecord]: ...
     async def search_issn(self, issn: str) -> list[SruRecord]: ...
     async def search_title(self, title: str, author: str | None = None) -> list[SruRecord]: ...
+    async def aclose(self) -> None: ...
 
 
 class HttpSruClient:
@@ -101,6 +102,9 @@ class MockSruClient:
     async def search_title(self, title: str, author: str | None = None) -> list[SruRecord]:
         out = [r for r in self._records if title.lower() in r.title.lower()]
         return out or list(self._records[:1])
+
+    async def aclose(self) -> None:
+        """Match Protocol shape; no-op for the in-memory mock."""
 
 
 def _parse_sru_response(xml: str) -> list[SruRecord]:

@@ -109,6 +109,9 @@ class _SpySruClient:
         self.calls.append(("title", title))
         return await self._inner.search_title(title, author)
 
+    async def aclose(self) -> None:
+        """Match SruClient Protocol; in-memory spy has no resources."""
+
 
 class _SpyCrossrefClient:
     """CrossRef client recording call count, returning a fixed record."""
@@ -121,6 +124,9 @@ class _SpyCrossrefClient:
         self.calls.append(doi)
         return self._record
 
+    async def aclose(self) -> None:
+        """Match CrossrefClient Protocol; in-memory spy has no resources."""
+
 
 class _UnavailableCrossrefClient:
     """CrossRef client that always raises. Models 5xx / network failure."""
@@ -131,6 +137,9 @@ class _UnavailableCrossrefClient:
     async def lookup_doi(self, doi: str) -> CrossrefRecord | None:
         self.calls.append(doi)
         raise RemoteUnavailableError("crossref 503")
+
+    async def aclose(self) -> None:
+        """Match CrossrefClient Protocol; in-memory spy has no resources."""
 
 
 # --- 1. DOI + CrossRef hit with ISSN → SRU.search_issn keyed off CrossRef ---

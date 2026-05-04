@@ -13,6 +13,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from agora.models.candidate import HolderCandidate
 from agora.models.request import IllRequest
 
 
@@ -104,3 +105,33 @@ class StepRunResponse(SagaEventOut):
     Identical to ``SagaEventOut``; named distinctly so OpenAPI surfaces
     a clear "this is the event we just appended" return type.
     """
+
+
+class DiscoverBody(BaseModel):
+    """Optional payload for ``POST /sagas/{id}/discover``.
+
+    All fields are optional — discovery defaults to running as the
+    ``"agent:discovery"`` actor against the saga's stored request.
+    """
+
+    actor: str = Field(
+        default="agent:discovery",
+        description="Actor recorded on the OBSERVATION event.",
+    )
+
+
+class DiscoverResponse(BaseModel):
+    """Result of a discovery run.
+
+    Mirrors ``DiscoveryRecommendation`` plus the ledger event reference
+    so the staff console can pivot to the timeline. Discovery is
+    advisory: no saga state changes, no outbox dispatch — just a
+    ``DISCOVERY`` OBSERVATION event with the candidate list and
+    rationale.
+    """
+
+    saga_id: UUID
+    event: SagaEventOut
+    candidates: list[HolderCandidate]
+    diagnostics: list[str]
+    rationale: str
