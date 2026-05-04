@@ -1,16 +1,16 @@
 # PRD 05 — Staff Console
 
-> Last reviewed against code: 2026-05-03 (post tier-3 tracking watch
-> — `/override` endpoint reframed as future-only; see drift cleanup
-> entry below).
+> Last reviewed against code: 2026-05-04 (post staff-console slices 1–3,
+> PRs #80/#82/#84; UI shell now built).
 
 The staff console is the **only UI in the prototype**. It is the
 human-in-the-loop surface for every state transition.
 
-**UI shell status:** *not yet built*. The prototype today exposes the
-JSON endpoints listed below; the inbox / detail / browser surfaces
-described under "Surfaces" are the design target, not current
-behaviour.
+**UI shell status:** *shipped (slices 1–3)*. HTMX + Jinja2 server-rendered
+console (ADR-0015). Inbox (`GET /`), detail view (`GET /sagas/{id}/view`),
+approve / reject / compensate form endpoints, and a discover-candidates
+HTMX panel are live. Saga browser (filter by state/library/date) is not yet
+built.
 
 ## Users
 
@@ -40,7 +40,7 @@ Single saga, full reasoning trace.
   - Rationale (≤3 sentences from the agent)
   - Inputs (collapsible: full request, candidate list, policy flags)
   - Idempotency key (debug aid)
-- Action buttons: Approve, Reject (with reason), Override (with reason)
+- Action buttons: Approve, Reject (with reason), Compensate (future: Override)
 
 ### Saga browser
 Filter by state, library, date. Read-only. Useful for demo + debug.
@@ -53,11 +53,19 @@ Implemented today (`src/agora/api/app.py`), no `/api` prefix:
 GET    /health                         # liveness + version
 POST   /requests                       # patron submit
 GET    /sagas                          # list active + recent sagas
-GET    /sagas/{id}                     # full event timeline
+GET    /sagas/{id}                     # full event timeline (JSON)
 POST   /sagas/{id}/approve             # commit gate AND run forward in one tx
 POST   /sagas/{id}/reject              # mark pending gate failed
 POST   /sagas/{id}/compensate          # run compensator for committed forward
 POST   /sagas/{id}/discover            # run DiscoveryAgent; ROUTE-anchored OBSERVATION (#53)
+
+# Staff console UI (server-rendered HTML, ADR-0015)
+GET    /                               # inbox — all active sagas
+GET    /sagas/{id}/view                # detail view with event timeline
+POST   /ui/sagas/{id}/approve          # form submit → approve; 303 redirect to detail
+POST   /ui/sagas/{id}/reject           # form submit → reject;  303 redirect to detail
+POST   /ui/sagas/{id}/compensate       # form submit → compensate; 303 redirect to detail
+POST   /ui/sagas/{id}/discover         # HTMX partial → _discover_panel.html fragment
 ```
 
 **Idempotency keys are minted server-side** — every saga event
@@ -72,8 +80,7 @@ sketched for a hypothetical hard-fail flow on PolicyAgent flags;
 today PolicyAgent has no hard-fail mode — every flag surfaces as
 advisory rationale and staff judgement is the override. An
 `/override` endpoint would be solution-without-problem until a
-hard-fail surface lands. Tracked in `NEXT_SESSION.md` backlog;
-revisit only when (a) PolicyAgent gains a hard-fail mode, or (b) a
+hard-fail surface lands. Revisit only when (a) PolicyAgent gains a hard-fail mode, or (b) a
 RECEIVE-compensator decision needs operator-supplied custody
 ground-truth (deferred from PR #38, see `saga/flows.py` § RECEIVE
 compensator).
@@ -85,13 +92,14 @@ network for the prototype.
 
 - **Reasoning before action.** Recommendation summary always visible
   before the approve button.
-- **No silent autopilot.** Even with override, staff must type a reason;
-  reason persists in ledger.
+- **No silent autopilot.** Staff must type a rationale for every approve /
+  reject / compensate action; rationale persists in the saga ledger.
 - **Reproducibility.** Every action has an event in the ledger; UI is a
   projection, never authoritative.
 
 ## Implementation note (prototype)
 
-Build the API first. UI can be the simplest possible — server-side
-rendered HTMX pages or a tiny React shell. Don't waste time on
-visual polish; correctness + traceability is the demo target.
+API-first approach used. UI is server-rendered HTMX + Jinja2 (ADR-0015) —
+no Node toolchain, no build step. Visual polish deferred; correctness +
+traceability is the demo target. HTMX 2.0.4 vendored to `static/htmx.min.js`
+(no CDN dependency).
