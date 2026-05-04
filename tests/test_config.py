@@ -17,6 +17,15 @@ from agora.config import Settings
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _ENV_EXAMPLE_PATH = _REPO_ROOT / ".env.example"
+_RUNBOOK_PATH = _REPO_ROOT / "docs" / "runbook.md"
+
+# Runbook env-var table delimiters. The table sits inside section 1.2
+# "Environment variables"; section 1.3 "Schema" follows. We scope the
+# scan to that region so backticked tokens elsewhere in the document
+# (e.g. ``AGORA_TEST_DB_URL`` in the postgres-tests section, which is
+# NOT a ``Settings`` field) don't pollute the comparison.
+_RUNBOOK_ENV_TABLE_START = "### 1.2 Environment variables"
+_RUNBOOK_ENV_TABLE_END = "### 1.3"
 
 # Env vars referenced by ``.env.example`` for downstream tooling that is
 # not part of Agora's own ``Settings`` (read directly by ``google-adk``
@@ -46,6 +55,44 @@ def _settings_env_aliases() -> set[str]:
     for name, info in Settings.model_fields.items():
         aliases.add(info.alias if info.alias is not None else name.upper())
     return aliases
+
+
+def _runbook_env_table_keys() -> set[str]:
+    """Return the set of env-var names documented in the runbook table.
+
+    Reads ``docs/runbook.md``, scopes to the env-var table region
+    (``### 1.2 Environment variables`` → ``### 1.3``), and pulls every
+    backticked all-caps token from rows that start with ``|``. Some
+    rows pack two vars in a single cell with ``/`` (e.g.
+    ``AGORA_API_HOST`` / ``AGORA_API_PORT``); the inner regex catches
+    both.
+
+    Scoping the scan to the table region matters: ``AGORA_TEST_DB_URL``
+    appears in the postgres-tests section but is not a ``Settings``
+    field, and a whole-file scan would generate false positives.
+    """
+    lines = _RUNBOOK_PATH.read_text(encoding="utf-8").splitlines()
+    in_table = False
+    keys: set[str] = set()
+    token_re = re.compile(r"`([A-Z_][A-Z0-9_]*)`")
+    for line in lines:
+        if line.startswith(_RUNBOOK_ENV_TABLE_START):
+            in_table = True
+            continue
+        if in_table and line.startswith(_RUNBOOK_ENV_TABLE_END):
+            break
+        if not in_table or not line.startswith("|"):
+            continue
+        # First cell carries the env var name(s); table-formatting rows
+        # like ``| ----- |`` have no backticks so the regex misses them
+        # naturally.
+        first_cell_end = line.find("|", 1)
+        if first_cell_end == -1:
+            continue
+        first_cell = line[1:first_cell_end]
+        for match in token_re.finditer(first_cell):
+            keys.add(match.group(1))
+    return keys
 
 
 def _env_example_keys() -> set[str]:
@@ -92,6 +139,45 @@ def test_env_example_lists_every_settings_alias() -> None:
         f"Settings declares env aliases that .env.example is missing: "
         f"{sorted(missing)}. Add a row for each (with a comment "
         f"explaining the toggle) and update the runbook env-var table."
+    )
+
+
+def test_runbook_env_table_lists_every_settings_alias() -> None:
+    """``docs/runbook.md`` § 1.2 must document every ``Settings`` alias.
+
+    Sibling of ``test_env_example_lists_every_settings_alias``: the
+    runbook env-var table is the canonical operator-facing
+    documentation; ``.env.example`` is the canonical developer-facing
+    template. Both drift independently if untested. Operationalises the
+    PR #58 lesson "symmetry claims between artifacts need a CI check or
+    they're aspirational."
+    """
+    settings_keys = _settings_env_aliases()
+    runbook_keys = _runbook_env_table_keys()
+    missing = settings_keys - runbook_keys
+    assert not missing, (
+        f"Settings declares env aliases that the runbook table is "
+        f"missing: {sorted(missing)}. Add a row to "
+        f"``docs/runbook.md`` § 1.2 with the default + a one-line "
+        f"description of the toggle's effect."
+    )
+
+
+def test_runbook_env_table_only_documents_known_keys() -> None:
+    """Every runbook env-var row maps to a current ``Settings`` field.
+
+    Catches the inverse drift: a row left behind for a removed
+    ``Settings`` field. The runbook table only documents Agora's own
+    config (no Google ADK / Anthropic SDK rows like ``.env.example``
+    has), so the comparison is strict — no allowlist needed.
+    """
+    settings_keys = _settings_env_aliases()
+    runbook_keys = _runbook_env_table_keys()
+    extras = runbook_keys - settings_keys
+    assert not extras, (
+        f"Runbook env-var table documents env vars that Settings does "
+        f"not honour: {sorted(extras)}. Either remove the row or "
+        f"restore the Settings field."
     )
 
 
