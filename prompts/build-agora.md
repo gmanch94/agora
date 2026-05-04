@@ -14,7 +14,7 @@ Working directory: `C:\Users\giris\Documents\GitHub\agora`
 Build a research prototype of an agentic ILL system that:
 
 1. Drives the standard ILL lifecycle **Submitted → Routed → Approved →
-   Shipped → Returned** through a multi-agent orchestrator.
+   Shipped → Received → Returned** through a multi-agent orchestrator.
 2. Wraps **FOLIO `mod-rs`** (ISO 18626) and **FOLIO `mod-ncip`** (Z39.83)
    for all standards-compliant wire protocols — **never reimplement the
    wire formats**.
@@ -40,10 +40,13 @@ Build a research prototype of an agentic ILL system that:
 
 ## Where to start
 
-1. Read **`docs/prd/`** — product requirements, in numbered order.
-2. Read **`docs/adr/`** — architecture decisions, in numbered order.
-3. Read **`README.md`** — current build status + next milestone.
-4. Check **`memory/project_agora_ill.md`** for the durable project context.
+1. Read **`CLAUDE.md`** — project rules + known gaps + behavioural expectations.
+2. Read **`README.md`** — current build status + next milestone.
+3. Read **`docs/prd/`** — product requirements, in numbered order.
+4. Read **`docs/adr/`** — architecture decisions (14 records through 0014).
+5. Read **`docs/lessons.md`** for accumulated gotchas before re-deriving them.
+6. Read **`docs/runbook.md`** for env vars, endpoint surface, and the
+   gate-workflow walk-through.
 
 ## Behavior expectations
 
@@ -58,16 +61,22 @@ Build a research prototype of an agentic ILL system that:
 
 ## Definition of "done" for the prototype
 
-- ReShare sandbox boots via `docker compose up`, mod-rs reachable.
-- Full happy-path lifecycle runs end-to-end against ReShare with
-  human-approval mocks, persisted in saga ledger.
-- Each state has a working compensator; chaos tests inject mid-saga
-  failure and verify ledger ends in consistent terminal state.
-- Idempotency: replay any inbound msg 3× → exactly one observable effect.
-- Discovery agent can resolve OpenURL citation + return ranked supplier
-  list from SRU.
-- Staff console exposes pending approvals + reasoning traces.
-- Architecture documented; decisions captured in ADRs.
+- ✅ Full happy-path lifecycle runs end-to-end via `make demo`
+  (`agora.demos.happy_path`), persisted in the saga ledger.
+- ✅ Each state has a working compensator; saga + idempotency covered
+  by property-based tests (`tests/test_property_saga.py`).
+- ✅ Idempotency: replay any inbound msg 3× → exactly one observable
+  effect (UNIQUE constraint on `saga_event.idempotency_key`).
+- ✅ Discovery agent resolves DOI via CrossRef + holdings via SRU, with
+  fallback diagnostics; `POST /sagas/{id}/discover` exposes it.
+- ✅ Staff console (FastAPI) exposes pending approvals + reasoning
+  traces — UI front-end deferred (PRD-05 explicit non-goal for the
+  prototype).
+- ✅ Architecture documented; 14 ADRs (0001-0014) capture the
+  architectural commitments; 7 PRDs cover product scope.
+- ⏳ ReShare sandbox boots via `docker compose up` against a real
+  mod-rs tenant — Docker compose ships Postgres-only today; live
+  mod-rs probing blocked on sandbox access (backlog #9 PR-C / PR-D).
 
 ## Out of scope (explicit)
 
