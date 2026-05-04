@@ -70,6 +70,20 @@
 </section>
 {% endif %}
 
+{% if not saga.is_terminal %}
+<div id="discovery-panel" class="card-base discover-panel">
+  <h2 class="action-section__title">Discovery</h2>
+  <p class="discover-panel__hint">Run the discovery agent to find candidate holders for this request.</p>
+  <button
+    class="button-secondary"
+    hx-post="/ui/sagas/{{ saga.saga_id }}/discover"
+    hx-target="#discovery-panel"
+    hx-swap="outerHTML"
+    hx-indicator="#discovery-panel"
+  >Discover candidates</button>
+</div>
+{% endif %}
+
 <section class="card-base">
   <h2 class="action-section__title">Event timeline</h2>
   {% if events %}

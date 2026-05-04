@@ -594,6 +594,80 @@ def create_app() -> FastAPI:
 
         return RedirectResponse(url=f"/sagas/{saga_id}/view", status_code=303)
 
+    @app.post("/ui/sagas/{saga_id}/discover", response_class=HTMLResponse, include_in_schema=False)
+    async def ui_saga_discover(
+        saga_id: UUID,
+        http_request: Request,
+        session: AsyncSession = Depends(_get_session),
+    ) -> HTMLResponse:
+        """HTMX partial: run DiscoveryAgent, return candidate list as HTML fragment.
+
+        The detail view swaps this fragment into ``#discovery-panel`` via
+        ``hx-post`` + ``hx-swap="outerHTML"``.  The partial includes inline
+        Select-and-approve mini-forms for each candidate so staff can pick a
+        supplier without copying a symbol manually.
+        """
+        agent: DiscoveryAgent = http_request.app.state.discovery
+
+        try:
+            async with session.begin():
+                ledger = SagaLedger(session)
+                saga = await ledger.get_saga(saga_id)
+                current = LifecycleState(saga.current_state)
+                if current in TERMINAL_STATES:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"saga is terminal ({current.value}); discovery only runs on active sagas",
+                    )
+                ill_request = IllRequest.model_validate(saga.request_payload)
+                rec = await agent.run(ill_request)
+
+                payload: dict[str, Any] = {
+                    "kind": "discovery",
+                    "candidates": [c.model_dump(mode="json") for c in rec.candidates],
+                    "diagnostics": list(rec.diagnostics),
+                    "observed_at": datetime.now(UTC).isoformat(),
+                }
+                await ledger.append(
+                    NewSagaEvent(
+                        saga_id=saga_id,
+                        kind=EventKind.OBSERVATION,
+                        step=StepName.ROUTE,
+                        state_before=current,
+                        state_after=current,
+                        actor="agent:discovery",
+                        idempotency_key=new_idempotency_key(prefix="discovery"),
+                        payload=payload,
+                        outcome=StepOutcome.COMMITTED,
+                        rationale=rec.rationale,
+                    )
+                )
+        except SagaNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        candidate_rows = [
+            {
+                "symbol": c.symbol,
+                "name": c.name or "",
+                "status": c.status,
+                "distance_km": round(c.distance_km, 1) if c.distance_km is not None else "",
+                "in_consortium": c.is_consortium_member,
+            }
+            for c in rec.candidates
+        ]
+        can_route = current == LifecycleState.SUBMITTED
+        return templates.TemplateResponse(
+            http_request,
+            "_discover_panel.html",
+            {
+                "saga_id": str(saga_id),
+                "candidates": candidate_rows,
+                "diagnostics": list(rec.diagnostics),
+                "rationale": rec.rationale,
+                "can_route": can_route,
+            },
+        )
+
     @app.post("/ui/sagas/{saga_id}/reject", include_in_schema=False)
     async def ui_saga_reject(
         saga_id: UUID,
