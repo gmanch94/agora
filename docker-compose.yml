@@ -1,9 +1,21 @@
 # Agora local dev stack.
 #
-# For the prototype we ship Postgres only. ReShare's full FOLIO stack
-# is heavy and is brought up on demand via the upstream
-# `reshare-docker` recipe (see ADR-0009). Until then, all ReShare
-# traffic uses the in-process MockReShareClient.
+# Default profile: Postgres only (used by tests + `make up`).
+# ReShare probe profile (profile: reshare): adds a mod-rs container so
+# you can hit the real ReShare REST API locally.
+#
+#   make reshare-up    — bring up Postgres + reshare-init-db + mod-rs
+#   make reshare-down  — tear down the reshare profile services
+#   make reshare-probe — run scripts/reshare_probe.py against :8081
+#
+# mod-rs listens on container port 8080, mapped to host :8081 so it
+# doesn't collide with anything else.  The init container (profile:
+# reshare) creates the `reshare` Postgres database before mod-rs
+# starts.  Auth: HTTP Basic works against the module-direct port when
+# permissions are not enforced (dev path — see reshare.py docstring).
+#
+# Versions pinned to the latest stable RC at time of writing (2026-05-05).
+# Update both image tags together if you upgrade.
 
 services:
   postgres:
@@ -22,6 +34,71 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  # ── ReShare profile ────────────────────────────────────────────────────────
+  # Create the `reshare` database on the shared Postgres before mod-rs starts.
+  # Runs once and exits.  mod-rs's `depends_on` waits for this to complete.
+  reshare-init-db:
+    profiles: [reshare]
+    image: postgres:15-alpine
+    restart: "no"
+    environment:
+      PGPASSWORD: agora
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint:
+      - sh
+      - -c
+      - |
+        psql -h postgres -U agora -d postgres -tc \
+          "SELECT 1 FROM pg_database WHERE datname='reshare'" \
+          | grep -q 1 \
+          && echo "reshare DB already exists" \
+          || psql -h postgres -U agora -d postgres \
+               -c "CREATE DATABASE reshare WITH OWNER agora;"
+
+  # FOLIO mod-rs (Resource Sharing module).
+  # Image: ghcr.io/openlibraryenvironment/mod-rs:2.19.0-rc17
+  # Host port 8081 → container port 8080 (direct, no Okapi gateway).
+  # Probe via scripts/reshare_probe.py once the healthcheck turns green.
+  mod-rs:
+    profiles: [reshare]
+    image: ghcr.io/openlibraryenvironment/mod-rs:2.19.0-rc17
+    container_name: agora-mod-rs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      reshare-init-db:
+        condition: service_completed_successfully
+    environment:
+      # Standard FOLIO module DB env (folio-service-tools convention)
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_DATABASE: reshare
+      DB_USERNAME: agora
+      DB_PASSWORD: agora
+      # mod-rs tries to self-register with Okapi at startup; pointing to
+      # localhost (no Okapi running) causes a non-fatal connection log.
+      # Probe traffic goes direct to :8081 — no Okapi in the loop.
+      OKAPI_SERVICE_HOST: localhost
+      OKAPI_SERVICE_PORT: "9130"
+    ports:
+      - "8081:8080"
+    # Grails cold-start can take 90 s+; give it time before failing.
+    # Healthcheck path: ModuleDescriptor declares permission
+    # rs.patronrequests.collection.get on GET /rs/patronrequests.
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - |
+          wget -qO- 'http://localhost:8080/rs/patronrequests?perPage=0' \
+            --header 'X-Okapi-Tenant: consortium-a' > /dev/null 2>&1 \
+            || exit 1
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 90s
 
 volumes:
   agora_pg_data:
