@@ -75,6 +75,10 @@ class StepName(str, Enum):
     REVOKE = "revoke"
     RECALL = "recall"
     DISPUTE = "dispute"
+    # Staff override — not a forward or compensator; no flows.py registration.
+    # Written by POST /sagas/{id}/override as an OBSERVATION event to resolve
+    # a DISPUTED saga directly to CANCELLED or UNFILLED.
+    RESOLVE = "resolve"
 
 
 class StepKind(str, Enum):

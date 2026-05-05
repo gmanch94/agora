@@ -16,7 +16,7 @@ Returned** with saga compensators paired to every forward step.
 .venv/Scripts/python.exe -m pip install -e ".[dev]"
 
 # Verify
-.venv/Scripts/python.exe -m pytest tests/ -q              # 241 tests (+6 postgres-only)
+.venv/Scripts/python.exe -m pytest tests/ -q              # 247 tests (+6 postgres-only)
 .venv/Scripts/python.exe -m ruff check src tests          # lint
 .venv/Scripts/python.exe -m mypy --strict                 # types
 make audit                                                # bandit + pip-audit + detect-secrets
@@ -58,7 +58,7 @@ agora/
 │   ├── saga/                    # ledger, coordinator, idempotency,
 │   │                            #   flows (forward+compensator pairs)
 │   ├── cli.py / config.py / logging.py
-├── tests/                       # 241 tests (unit + property + e2e)
+├── tests/                       # 247 tests (unit + property + e2e)
 ├── docker-compose.yml           # Postgres-only sandbox
 ├── Makefile / pyproject.toml
 ```
@@ -257,9 +257,9 @@ ISO 18626 message types — see table in `clients/reshare.py`.
     deliberately does *not* emit a paired `check_in` — the saga
     can't tell whether a receipt dispute is about non-receipt (loan
     should clear) or condition (loan should stay). Routes to
-    DISPUTED for staff resolution; a future PR may add a
-    state-aware compensator (or a `/sagas/{id}/override` endpoint)
-    once the staff console surfaces the necessary inputs.
+    DISPUTED for staff resolution; `POST /sagas/{id}/override`
+    resolves DISPUTED → CANCELLED or UNFILLED (implemented). A
+    state-aware compensator with ILS check_in logic is still future.
   - The NCIP HTTP/SOAP client itself remains a mock —
     `MockNcipClient` for prototype/tests; real `mod-ncip`
     integration is still future work.

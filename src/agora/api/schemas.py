@@ -107,6 +107,22 @@ class StepRunResponse(SagaEventOut):
     """
 
 
+class OverrideBody(BaseModel):
+    """Staff-initiated override to resolve a DISPUTED saga.
+
+    Allowed targets: ``cancelled`` or ``unfilled``.  Writes a ledger
+    OBSERVATION (``step=resolve``) with ``outcome=committed`` so
+    ``saga.current_state`` advances atomically.  No outbox dispatch —
+    any open ILS loans must be settled out-of-band by staff.
+    """
+
+    target_state: str = Field(
+        description="Terminal state to force the saga into ('cancelled' or 'unfilled')."
+    )
+    actor: str = Field(description="Staff identifier (e.g. 'staff:alice@org')")
+    rationale: str = Field(description="Mandatory reason recorded on the ledger event.")
+
+
 class DiscoverBody(BaseModel):
     """Optional payload for ``POST /sagas/{id}/discover``.
 

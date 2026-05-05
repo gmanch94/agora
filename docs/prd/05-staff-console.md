@@ -40,7 +40,7 @@ Single saga, full reasoning trace.
   - Rationale (≤3 sentences from the agent)
   - Inputs (collapsible: full request, candidate list, policy flags)
   - Idempotency key (debug aid)
-- Action buttons: Approve, Reject (with reason), Compensate (future: Override)
+- Action buttons: Approve, Reject (with reason), Compensate, Override (DISPUTED only)
 
 ### Saga browser
 Filter by state, library, date. Read-only. Useful for demo + debug.
@@ -58,6 +58,7 @@ POST   /sagas/{id}/approve             # commit gate AND run forward in one tx
 POST   /sagas/{id}/reject              # mark pending gate failed
 POST   /sagas/{id}/compensate          # run compensator for committed forward
 POST   /sagas/{id}/discover            # run DiscoveryAgent; ROUTE-anchored OBSERVATION (#53)
+POST   /sagas/{id}/override            # resolve DISPUTED saga → CANCELLED or UNFILLED
 
 # Staff console UI (server-rendered HTML, ADR-0015)
 GET    /                               # inbox — all active sagas
@@ -74,16 +75,16 @@ The `Idempotency-Key` request header is **not currently honoured**
 (safe to retry the same request body without one because the API
 is read-or-mutate based on saga state, not on caller-supplied keys).
 
-**Override endpoint** (`POST /sagas/{id}/override`): **future, not
-yet implemented and not actively scoped**. The endpoint was
-sketched for a hypothetical hard-fail flow on PolicyAgent flags;
-today PolicyAgent has no hard-fail mode — every flag surfaces as
-advisory rationale and staff judgement is the override. An
-`/override` endpoint would be solution-without-problem until a
-hard-fail surface lands. Revisit only when (a) PolicyAgent gains a hard-fail mode, or (b) a
-RECEIVE-compensator decision needs operator-supplied custody
-ground-truth (deferred from PR #38, see `saga/flows.py` § RECEIVE
-compensator).
+**Override endpoint** (`POST /sagas/{id}/override`): **implemented
+(narrowly scoped)**. Resolves a `DISPUTED` saga directly to
+`CANCELLED` or `UNFILLED` — the two sensible staff-resolution
+outcomes when a receipt dispute cannot be settled via normal
+compensators. Writes an `OBSERVATION` event (`step=resolve`,
+`outcome=committed`) directly to the ledger; `saga.current_state`
+advances atomically. No outbox dispatch — any open ILS loans must
+be settled out-of-band by staff (see `saga/flows.py` § RECEIVE
+compensator for rationale). Broader override (arbitrary state
+forcing, PolicyAgent hard-fail integration) remains out of scope.
 
 **Auth:** none. ADR-0007 (FedRAMP deferred) — assumes a trusted
 network for the prototype.
