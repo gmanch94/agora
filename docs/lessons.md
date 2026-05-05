@@ -851,6 +851,23 @@ look great in markdown and break in two different ways outside
 it.
 *(PR #47 — see `src/agora/evals/routing.py` CLI summary block.)*
 
+### 2026-05-05 — Don't poll a hanging daemon by spawning more shells; tell the user instead
+While waiting for Docker Desktop to finish initialising, the agent
+ran `docker info`, `docker ps`, `docker version`, `docker info` …
+seven times in succession. Every command hung (Docker's named pipe
+exists but the engine isn't ready), and each invocation became a
+background task because the sandbox timeout expired before Docker
+responded. Result: 7 orphaned shells that had to be killed manually.
+**Rule:** if the first `docker` (or any daemon-bound) command hangs,
+stop. The daemon isn't ready. Spawning the same command again — even
+with a shorter timeout, even via a different shell — just adds more
+orphans. The right move is to surface the blocker in a single message
+("Docker Desktop is still starting; run `make reshare-up` once the
+system-tray icon turns solid") and wait for the user to confirm
+readiness. Daemon health cannot be polled reliably from inside a
+sandboxed shell that itself blocks on the daemon socket.
+*(Session 2026-05-05 — PR #95 bring-up attempt.)*
+
 ### 2026-05-03 — `output_schema` on ADK `LlmAgent` is the structured-output primitive; don't fight it
 ADK's `LlmAgent(output_schema=Foo)` automatically derives
 `response_mime_type="application/json"` and `response_schema=Foo`
