@@ -1,6 +1,6 @@
 # Agora — common dev commands
 
-.PHONY: help install fmt lint type test test-fast cov audit up down logs db-reset migrate api demo eval-routing eval-routing-llm sync-doc-counts clean
+.PHONY: help install fmt lint type test test-fast cov audit up down logs db-reset migrate api demo eval-routing eval-routing-llm sync-doc-counts reshare-up reshare-down reshare-logs reshare-probe reshare-smoke clean
 
 help:
 	@echo "Common targets:"
@@ -22,6 +22,11 @@ help:
 	@echo "  eval-routing run RoutingAgent eval harness (rules-only); rewrite evals/routing/baseline-rules.json"
 	@echo "  eval-routing-llm  run LLM-augmented eval (--no-write); requires Vertex/ADC env (see CLAUDE.md)"
 	@echo "  sync-doc-counts  rewrite test count + ADR count in docs to match runtime truth"
+	@echo "  reshare-up   bring up mod-rs sandbox (Postgres + reshare-init-db + mod-rs)"
+	@echo "  reshare-down tear down mod-rs sandbox (keeps agora postgres running)"
+	@echo "  reshare-logs tail mod-rs container logs"
+	@echo "  reshare-probe run scripts/reshare_probe.py against localhost:8081"
+	@echo "  reshare-smoke run HttpReShareClient smoke test against localhost:8081"
 	@echo "  clean       remove caches"
 
 install:
@@ -131,6 +136,38 @@ eval-routing-llm:
 # `scripts/sync_doc_counts.py` for the registry of doc locations.
 sync-doc-counts:
 	python scripts/sync_doc_counts.py --fix
+
+# ── ReShare local sandbox ───────────────────────────────────────────────────
+# Requires Docker with Compose v2 (docker compose, not docker-compose).
+# Pulls ghcr.io/openlibraryenvironment/mod-rs:2.19.0-rc17 on first run.
+# mod-rs Grails cold-start takes 90 s+; watch progress with `make logs`.
+
+reshare-up:
+	docker compose --profile reshare up -d
+	@echo ""
+	@echo "Sandbox starting.  Follow logs: make reshare-logs"
+	@echo "mod-rs healthcheck turns green in ~2 min (Grails cold start)."
+	@echo "Then run: make reshare-probe"
+
+reshare-down:
+	docker compose --profile reshare down --remove-orphans
+	@echo "mod-rs containers removed. agora-postgres still running."
+
+reshare-logs:
+	docker compose --profile reshare logs -f mod-rs
+
+reshare-probe:
+	python scripts/reshare_probe.py
+
+# Run the existing HttpReShareClient smoke test (tests/test_reshare_http_smoke.py)
+# against the local mod-rs sandbox.  Complements reshare-probe: the probe finds
+# the body shapes; reshare-smoke verifies the client factory wiring end-to-end.
+reshare-smoke:
+	AGORA_TEST_RESHARE_URL=http://localhost:8081 \
+	  RESHARE_TENANT=consortium-a \
+	  RESHARE_USER=admin \
+	  RESHARE_PASSWORD=admin \
+	  python -m pytest tests/test_reshare_http_smoke.py -v
 
 clean:
 	rm -rf .pytest_cache .mypy_cache .ruff_cache htmlcov .coverage
