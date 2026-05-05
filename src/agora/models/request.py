@@ -60,6 +60,14 @@ class ItemMetadata(BaseModel):
     article_title: str | None = None
     pages: str | None = None
     item_kind: str = Field(default="book", description="book|article|chapter|other")
+    item_barcode: str | None = Field(
+        default=None,
+        description=(
+            "Physical item barcode from the supplying library's ILS. "
+            "When present, used as item_id in NCIP check_out/check_in calls "
+            "instead of the reshare_id approximation."
+        ),
+    )
 
 
 class Citation(BaseModel):
