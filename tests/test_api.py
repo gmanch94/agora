@@ -567,3 +567,145 @@ async def test_reject_records_failed_gate(client: AsyncClient) -> None:
         e for e in detail["events"] if e["kind"] == "gate" and e["step"] == "route"
     ]
     assert any(e["outcome"] == "failed" for e in gate_events)
+
+
+# ---------------------------------------------------------------------------
+# POST /sagas/{id}/override
+# ---------------------------------------------------------------------------
+
+
+async def _drive_to_disputed(app: FastAPI, client: AsyncClient) -> str:
+    """Drive a new saga to DISPUTED via the receive compensator.
+
+    Full path: Submit → Route → Approve (+ worker) → Ship (+ worker)
+    → Receive (+ worker) → Compensate-receive → DISPUTED.
+    """
+    saga_id: str = (await client.post("/requests", json=_request_payload())).json()[
+        "saga_id"
+    ]
+    await client.post(
+        f"/sagas/{saga_id}/approve",
+        json={
+            "step": "route",
+            "actor": "staff:test",
+            "rationale": "ok",
+            "extras": {"chosen_supplier": "MEMBER1"},
+        },
+    )
+    await client.post(
+        f"/sagas/{saga_id}/approve",
+        json={"step": "approve", "actor": "staff:test", "rationale": "ok"},
+    )
+    await _drive_outbox_worker(app)
+
+    await client.post(
+        f"/sagas/{saga_id}/approve",
+        json={"step": "ship", "actor": "staff:test", "rationale": "ok"},
+    )
+    await _drive_outbox_worker(app)
+
+    await client.post(
+        f"/sagas/{saga_id}/approve",
+        json={"step": "receive", "actor": "staff:test", "rationale": "ok"},
+    )
+    await _drive_outbox_worker(app)
+
+    r = await client.post(
+        f"/sagas/{saga_id}/compensate",
+        json={"step": "receive", "actor": "staff:test", "rationale": "patron disputes receipt"},
+    )
+    assert r.json()["state_after"] == "disputed", r.text
+    return saga_id
+
+
+async def test_override_resolves_disputed_to_cancelled(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    """DISPUTED → CANCELLED via override writes a resolve OBSERVATION."""
+    saga_id = await _drive_to_disputed(app, client)
+    r = await client.post(
+        f"/sagas/{saga_id}/override",
+        json={
+            "target_state": "cancelled",
+            "actor": "staff:alice",
+            "rationale": "item lost in transit; patron satisfied",
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["kind"] == "observation"
+    assert body["step"] == "resolve"
+    assert body["state_before"] == "disputed"
+    assert body["state_after"] == "cancelled"
+    assert body["outcome"] == "committed"
+
+    detail = (await client.get(f"/sagas/{saga_id}")).json()
+    assert detail["saga"]["current_state"] == "cancelled"
+
+
+async def test_override_resolves_disputed_to_unfilled(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    """DISPUTED → UNFILLED via override advances current_state."""
+    saga_id = await _drive_to_disputed(app, client)
+    r = await client.post(
+        f"/sagas/{saga_id}/override",
+        json={
+            "target_state": "unfilled",
+            "actor": "staff:bob",
+            "rationale": "item never physically arrived",
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["state_after"] == "unfilled"
+
+    detail = (await client.get(f"/sagas/{saga_id}")).json()
+    assert detail["saga"]["current_state"] == "unfilled"
+
+
+async def test_override_rejects_non_disputed_state(client: AsyncClient) -> None:
+    """Override on a non-DISPUTED saga returns 409."""
+    saga_id = (await client.post("/requests", json=_request_payload())).json()[
+        "saga_id"
+    ]
+    # Saga is SUBMITTED — not DISPUTED.
+    r = await client.post(
+        f"/sagas/{saga_id}/override",
+        json={"target_state": "cancelled", "actor": "staff:test", "rationale": "wrong state"},
+    )
+    assert r.status_code == 409
+    assert "disputed" in r.json()["detail"]
+
+
+async def test_override_rejects_disallowed_target_state(client: AsyncClient) -> None:
+    """target_state must be 'cancelled' or 'unfilled'; 'shipped' returns 400."""
+    saga_id = (await client.post("/requests", json=_request_payload())).json()[
+        "saga_id"
+    ]
+    r = await client.post(
+        f"/sagas/{saga_id}/override",
+        json={"target_state": "shipped", "actor": "staff:test", "rationale": "bogus"},
+    )
+    assert r.status_code == 400
+    assert "allowed" in r.json()["detail"]
+
+
+async def test_override_rejects_unknown_target_state(client: AsyncClient) -> None:
+    """Unrecognised target_state string returns 400."""
+    saga_id = (await client.post("/requests", json=_request_payload())).json()[
+        "saga_id"
+    ]
+    r = await client.post(
+        f"/sagas/{saga_id}/override",
+        json={"target_state": "not-a-state", "actor": "staff:test", "rationale": "bogus"},
+    )
+    assert r.status_code == 400
+    assert "invalid target_state" in r.json()["detail"]
+
+
+async def test_override_unknown_saga_returns_404(client: AsyncClient) -> None:
+    r = await client.post(
+        f"/sagas/{uuid4()}/override",
+        json={"target_state": "cancelled", "actor": "staff:test", "rationale": "bogus"},
+    )
+    assert r.status_code == 404

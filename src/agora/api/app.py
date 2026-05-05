@@ -8,6 +8,7 @@ The console exposes a small surface:
 - ``POST /sagas/{id}/approve``      commit gate AND run the forward step
 - ``POST /sagas/{id}/reject``       cancel pending gate
 - ``POST /sagas/{id}/compensate``   run compensator for a committed forward
+- ``POST /sagas/{id}/override``     resolve DISPUTED saga to CANCELLED/UNFILLED
 
 Auth is intentionally *not* implemented in the prototype — see ADR-0007.
 """
@@ -41,6 +42,7 @@ from agora.api.schemas import (
     DiscoverBody,
     DiscoverResponse,
     HealthResponse,
+    OverrideBody,
     RejectionBody,
     SagaDetail,
     SagaEventOut,
@@ -1094,6 +1096,84 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Valid target states for the override endpoint.
+    _OVERRIDE_TARGETS: frozenset[LifecycleState] = frozenset(
+        {LifecycleState.CANCELLED, LifecycleState.UNFILLED}
+    )
+
+    @app.post(
+        "/sagas/{saga_id}/override",
+        response_model=StepRunResponse,
+        status_code=status.HTTP_200_OK,
+    )
+    async def override(
+        saga_id: UUID,
+        body: OverrideBody,
+        session: AsyncSession = Depends(_get_session),
+    ) -> StepRunResponse:
+        """Resolve a DISPUTED saga by force-setting it to CANCELLED or UNFILLED.
+
+        Writes an OBSERVATION event (``step=resolve``, ``outcome=committed``)
+        directly to the ledger, advancing ``saga.current_state`` atomically.
+        No outbox dispatch occurs — any open ILS loans must be settled
+        out-of-band by staff.
+
+        Returns 404 if the saga does not exist, 409 if the saga is not in
+        DISPUTED state, and 400 if ``target_state`` is not an allowed value.
+        """
+        try:
+            target = LifecycleState(body.target_state)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"invalid target_state {body.target_state!r}; "
+                    f"allowed: {sorted(s.value for s in _OVERRIDE_TARGETS)}"
+                ),
+            ) from exc
+
+        if target not in _OVERRIDE_TARGETS:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"target_state {target.value!r} is not allowed; "
+                    f"allowed: {sorted(s.value for s in _OVERRIDE_TARGETS)}"
+                ),
+            )
+
+        async with session.begin():
+            ledger = SagaLedger(session)
+            try:
+                saga = await ledger.get_saga(saga_id)
+            except SagaNotFoundError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+            current = LifecycleState(saga.current_state)
+            if current != LifecycleState.DISPUTED:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"saga {saga_id} is in state {current.value!r}; "
+                        "override only applies to sagas in 'disputed' state"
+                    ),
+                )
+
+            ev = await ledger.append(
+                NewSagaEvent(
+                    saga_id=saga_id,
+                    kind=EventKind.OBSERVATION,
+                    step=StepName.RESOLVE,
+                    state_before=current,
+                    state_after=target,
+                    actor=body.actor,
+                    idempotency_key=new_idempotency_key("override"),
+                    outcome=StepOutcome.COMMITTED,
+                    rationale=body.rationale,
+                    payload={"target_state": target.value},
+                )
+            )
+        return StepRunResponse.model_validate(ev.model_dump())
 
     return app
 
