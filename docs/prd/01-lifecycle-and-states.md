@@ -1,6 +1,6 @@
 # PRD 01 — Lifecycle & State Machine
 
-> Last reviewed against code: 2026-05-04 (post PRs #89/#90 — NCIP item-barcode + override endpoint).
+> Last reviewed against code: 2026-05-05 (post PRs #89–#93 — NCIP item-barcode + override endpoint + override HTMX form + saga browser).
 
 ## Lifecycle
 

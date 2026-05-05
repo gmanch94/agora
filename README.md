@@ -3,12 +3,13 @@
 > Research prototype. Multi-library consortium. Agents over FOLIO/ReShare.
 > Saga + idempotency. Human-approval at every state transition.
 
-> Last reviewed against code: 2026-05-04 (post PRs #41-#80 — adds
+> Last reviewed against code: 2026-05-05 (post PRs #41-#93 — adds
 > Vertex env-routing requirement for `eval-routing --llm`,
 > `sync-doc-counts` script + pytest gate as the single source of
 > truth for test/ADR counts, RoutingAgent format-affinity feature
 > (#79 closes routing-015), staff console UI first slice with
-> HTMX + Jinja2 (ADR-0015, #80)).
+> HTMX + Jinja2 (ADR-0015, #80), NCIP item-barcode (#89), override
+> endpoint (#90), override HTMX form (#92), saga browser (#93)).
 
 ## What this is
 
