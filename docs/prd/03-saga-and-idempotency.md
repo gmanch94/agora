@@ -1,7 +1,7 @@
 # PRD 03 — Saga & Idempotency
 
-> Last reviewed against code: 2026-05-03 (post RECEIVE step + RECEIVED
-> state + NCIP fan-out re-anchor SHIP→RECEIVE).
+> Last reviewed against code: 2026-05-04 (post PRs #89/#90 — NCIP item-barcode
+> + override endpoint + StepName.RESOLVE).
 
 ## Saga model
 

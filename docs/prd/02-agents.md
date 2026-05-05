@@ -1,10 +1,10 @@
 # PRD 02 — Agents
 
-> Last reviewed against code: 2026-05-03 (PR-2b RoutingAgent LLM
-> track shipped — real `AdkLlmTiebreaker` adapter via ADK
-> `LlmAgent` + Gemini Flash + factory `get_llm_tiebreaker()` + four
-> `AGORA_ROUTING_LLM_*` env vars + sibling
-> `.github/workflows/routing-eval-floor.yml` CI gate).
+> Last reviewed against code: 2026-05-04 (post PRs #89/#90 — NCIP item-barcode
+> + override endpoint; PR-2b RoutingAgent LLM track shipped — real
+> `AdkLlmTiebreaker` adapter via ADK `LlmAgent` + Gemini Flash +
+> factory `get_llm_tiebreaker()` + four `AGORA_ROUTING_LLM_*` env vars
+> + sibling `.github/workflows/routing-eval-floor.yml` CI gate).
 
 All agents are **advisory** in the prototype: they emit a recommendation
 + reasoning trace into the staff console. Staff commit by clicking

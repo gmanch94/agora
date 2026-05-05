@@ -1,6 +1,6 @@
 # Agora — Solution Design Document
 
-> Last reviewed against code: 2026-05-04 (post PRs #41-#80 — outbox
+> Last reviewed against code: 2026-05-04 (post PRs #41-#90 — outbox
 > schema sync + APPROVE-via-outbox + runbook env-var backfill +
 > DiscoveryAgent endpoint wiring (#46/#53) + routing-LLM tie-breaker
 > tuned (#51) + ISO 18626 XSD validation harness (#52) + Vertex
@@ -8,7 +8,8 @@
 > `sync-doc-counts` script + pytest gate as single source of truth
 > for test/ADR counts (#76) + RoutingAgent format-affinity feature
 > (#79 closes routing-015, baseline 20/20) + staff console UI first
-> slice via HTMX + Jinja2 (#80, ADR-0015)).
+> slice via HTMX + Jinja2 (#80, ADR-0015) + NCIP item-barcode (#89)
+> + override endpoint `POST /sagas/{id}/override` (#90)).
 
 Single-narrative design doc. Stitches together what the PRDs say
 should exist, what the ADRs decided, what the code does today, and

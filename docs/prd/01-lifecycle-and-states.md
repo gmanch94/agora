@@ -1,19 +1,19 @@
 # PRD 01 — Lifecycle & State Machine
 
-> Last reviewed against code: 2026-05-03 (post NCIP-checkout SHIP→RECEIVE re-anchor).
+> Last reviewed against code: 2026-05-04 (post PRs #89/#90 — NCIP item-barcode + override endpoint).
 
 ## Lifecycle
 
 Six user-facing states map onto the ISO 18626 supplier-side state machine:
 
 ```
-   ┌─────────┐    ┌────────┐    ┌──────────┐    ┌────────┐    ┌────────┐    ┌──────────┐
-   │Submitted│───▶│Routed  │───▶│Approved  │───▶│Shipped │───▶│Received│───▶│Returned  │
-   └─────────┘    └────────┘    └──────────┘    └────────┘    └────────┘    └──────────┘
-        │              │             │              │              │              │
-        ▼              ▼             ▼              ▼              ▼              ▼
-   Cancelled       Submitted     Cancelled       Disputed       Disputed       Disputed
-   (terminal)      (re-rank)     (terminal)      (recall)       (manual)       (manual)
+   ┌─────────┐    ┌────────┐    ┌──────────┐    ┌──────────┐    ┌────────┐    ┌────────┐    ┌──────────┐
+   │Submitted│───▶│Routed  │───▶│Approving │───▶│Approved  │───▶│Shipped │───▶│Received│───▶│Returned  │
+   └─────────┘    └────────┘    └──────────┘    └──────────┘    └────────┘    └────────┘    └──────────┘
+        │              │                               │              │              │              │
+        ▼              ▼                               ▼              ▼              ▼              ▼
+   Cancelled       Submitted                       Cancelled       Disputed       Disputed       Disputed
+   (terminal)      (re-rank)                       (terminal)      (recall)       (manual)       (manual)
 ```
 
 `LifecycleState` enum (in `src/agora/models/lifecycle.py`):
@@ -23,13 +23,12 @@ CANCELLED, UNFILLED, DISPUTED`.
 `RECEIVED` is **not** terminal (it's an active borrower-custody state
 that flows on to `RETURNED`).
 
-`APPROVING` is an in-flight intermediate added per ADR-0012. It marks
-"intent committed, supplier not yet acknowledged" — the APPROVE
-forward will enqueue a `send_request` outbox row and the worker will
-project the supplier ack into a transition to `APPROVED`. The
-diagram above still shows the user-facing happy path; today's code
-transitions directly `ROUTED → APPROVED` until the flow rewrite
-lands in the follow-up PR.
+`APPROVING` is an in-flight intermediate added per ADR-0012 (fully
+wired since PR #59). The APPROVE forward enqueues a `send_request`
+outbox row and advances the saga to `APPROVING`; the outbox worker
+calls the supplier and the projection callback advances the saga to
+`APPROVED`. Staff may not compensate during `APPROVING` — the
+`reshare_id` is not yet available (endpoint rejects with 400).
 
 ## Forward transitions
 

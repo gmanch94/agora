@@ -35,8 +35,9 @@ through `.env`.
 
 **Negative**
 - Resource-heavy (~4 GB RAM minimum for the full stack).
-- ReShare boot time is multi-minute; mitigated by a `make wait-ready`
-  helper that polls Okapi health.
+- ReShare boot time is multi-minute; a `make wait-ready` helper that
+  polls Okapi health was planned but later dropped from the Makefile —
+  the Postgres-only sandbox doesn't need it.
 - Requires Docker Desktop on Windows (user environment is Windows).
 
 ## Implementation note
