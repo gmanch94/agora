@@ -61,7 +61,28 @@
 </section>
 {% endif %}
 
-{% if not approve_step and not compensate_step %}
+{% if show_override %}
+<section class="card-base action-section">
+  <h2 class="action-section__title">Resolve Dispute</h2>
+  <form method="post" action="/ui/sagas/{{ saga.saga_id }}/override" class="action-form">
+    <label class="form-label">
+      Resolution
+      <select name="target_state" class="form-input" required>
+        <option value="cancelled">Cancelled — cancel the request</option>
+        <option value="unfilled">Unfilled — mark unable to fulfil</option>
+      </select>
+    </label>
+    <label class="form-label">
+      Rationale
+      <input type="text" name="rationale" class="form-input" value="Staff override." required />
+    </label>
+    <input type="hidden" name="actor" value="staff" />
+    <button type="submit" class="button-danger">Override dispute</button>
+  </form>
+</section>
+{% endif %}
+
+{% if not approve_step and not compensate_step and not show_override %}
 <section class="card-base action-section">
   <p class="empty__title">
     {% if saga.is_terminal %}Saga is in a terminal state — no further actions.
