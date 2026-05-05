@@ -160,6 +160,7 @@ commits the gate.
 | `POST /sagas/{id}/compensate`    | Run compensator for a previously committed forward.            |
 | `POST /sagas/{id}/discover`      | Run DiscoveryAgent against the saga's stored request; writes a ROUTE-anchored OBSERVATION (#53). Saga state unchanged. |
 | `POST /sagas/{id}/override`      | Resolve a DISPUTED saga → CANCELLED or UNFILLED (PR #90). Writes a ledger OBSERVATION (`step=resolve`, `outcome=committed`); no outbox dispatch. Open ILS loans must be settled out-of-band. |
+| `GET /browser`                   | Saga browser — filter all sagas by state, library, date. Read-only staff console page (PR #93). |
 
 ### 2.3 What `/approve` derives vs requires
 

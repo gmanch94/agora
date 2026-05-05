@@ -1,7 +1,7 @@
 # PRD 05 — Staff Console
 
-> Last reviewed against code: 2026-05-04 (post PRs #80/#82/#84/#90;
-> UI shell shipped; override JSON endpoint implemented).
+> Last reviewed against code: 2026-05-05 (post PRs #80/#82/#84/#90/#92/#93;
+> UI shell shipped; override HTMX form (#92) + saga browser (#93) added).
 
 The staff console is the **only UI in the prototype**. It is the
 human-in-the-loop surface for every state transition.
@@ -9,8 +9,8 @@ human-in-the-loop surface for every state transition.
 **UI shell status:** *shipped (slices 1–3)*. HTMX + Jinja2 server-rendered
 console (ADR-0015). Inbox (`GET /`), detail view (`GET /sagas/{id}/view`),
 approve / reject / compensate form endpoints, and a discover-candidates
-HTMX panel are live. Saga browser (filter by state/library/date) is not yet
-built.
+HTMX panel are live. Saga browser (filter by state/library/date) is live (`GET /browser`,
+PR #93).
 
 ## Users
 
@@ -63,11 +63,13 @@ POST   /sagas/{id}/override            # resolve DISPUTED saga → CANCELLED or 
 
 # Staff console UI (server-rendered HTML, ADR-0015)
 GET    /                               # inbox — all active sagas
+GET    /browser                        # saga browser — filter by state/library/date (PR #93)
 GET    /sagas/{id}/view                # detail view with event timeline
 POST   /ui/sagas/{id}/approve          # form submit → approve; 303 redirect to detail
 POST   /ui/sagas/{id}/reject           # form submit → reject;  303 redirect to detail
 POST   /ui/sagas/{id}/compensate       # form submit → compensate; 303 redirect to detail
 POST   /ui/sagas/{id}/discover         # HTMX partial → _discover_panel.html fragment
+POST   /ui/sagas/{id}/override         # form submit → resolve DISPUTED; 303 redirect to detail (PR #92)
 ```
 
 **Idempotency keys are minted server-side** — every saga event

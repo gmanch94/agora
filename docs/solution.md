@@ -1,6 +1,6 @@
 # Agora — Solution Design Document
 
-> Last reviewed against code: 2026-05-04 (post PRs #41-#90 — outbox
+> Last reviewed against code: 2026-05-05 (post PRs #41-#93 — outbox
 > schema sync + APPROVE-via-outbox + runbook env-var backfill +
 > DiscoveryAgent endpoint wiring (#46/#53) + routing-LLM tie-breaker
 > tuned (#51) + ISO 18626 XSD validation harness (#52) + Vertex
@@ -9,7 +9,8 @@
 > for test/ADR counts (#76) + RoutingAgent format-affinity feature
 > (#79 closes routing-015, baseline 20/20) + staff console UI first
 > slice via HTMX + Jinja2 (#80, ADR-0015) + NCIP item-barcode (#89)
-> + override endpoint `POST /sagas/{id}/override` (#90)).
+> + override endpoint `POST /sagas/{id}/override` (#90) + override
+> HTMX form (#92) + saga browser `GET /browser` (#93)).
 
 Single-narrative design doc. Stitches together what the PRDs say
 should exist, what the ADRs decided, what the code does today, and
@@ -30,7 +31,7 @@ references at the end.
 An agentic Inter-Library Loan (ILL) orchestrator for a multi-library
 **consortium**. Wraps **FOLIO/ReShare (mod-rs)** for the standards
 layer (ISO 18626, NCIP, SRU, OpenURL). Lifecycle is
-`Submitted → Routed → Approved → Shipped → Returned`, every
+`Submitted → Routed → Approved → Shipped → Received → Returned`, every
 transition gated by a human staff click. Compensators are paired to
 every forward step.
 
@@ -130,6 +131,8 @@ lifespan that spawns `OutboxWorker.run_forever` as an
 | `POST /sagas/{id}/reject`            | Mark a pending gate `failed`; no forward runs.             |
 | `POST /sagas/{id}/compensate`        | Run compensator for a previously committed forward.        |
 | `POST /sagas/{id}/discover`          | Run DiscoveryAgent against the saga's stored request; writes a ROUTE-anchored OBSERVATION (#53). Saga state unchanged. |
+| `POST /sagas/{id}/override`          | Resolve DISPUTED saga → CANCELLED or UNFILLED. Writes OBSERVATION (`step=resolve`, `outcome=committed`); no outbox dispatch (#90). |
+| `GET /browser`                       | Saga browser — filter all sagas by state, library, date. Read-only UI endpoint (#93). |
 
 `_APPROVABLE_STEPS = {ROUTE, APPROVE, SHIP, RETURN_ITEM}`. SUBMIT is
 not gated (commits inside `POST /requests`); compensator-only steps
@@ -148,7 +151,7 @@ intentionally not implemented — ADR-0007.
 | `ledger.py`     | `SagaLedger`. Append uses `begin_nested()` savepoint so duplicate-key inserts return the existing row instead of poisoning the caller's tx.   |
 | `coordinator.py`| `Coordinator`. The stateless orchestrator. Gate-required check before any forward.                                                            |
 | `steps.py`      | `StepRegistry`, `StepResult`, `OutboxIntent`. The contract a step implements.                                                                 |
-| `flows.py`      | The five forward+compensator pairs (SUBMIT, ROUTE, APPROVE, SHIP, RETURN_ITEM) registered into the global `StepRegistry`.                     |
+| `flows.py`      | The six forward+compensator pairs (SUBMIT, ROUTE, APPROVE, SHIP, RECEIVE, RETURN_ITEM) registered into the global `StepRegistry`.              |
 | `idempotency.py`| `new_idempotency_key()` (ULID + prefix); `inbox_*`, `outbox_*` helpers.                                                                       |
 | `outbox.py`     | `OutboxWorker.drain_once` / `drain_until_empty` / `run_forever`. Backoff, dead-letter, per-row session.                                       |
 | `context.py`    | `SagaContext` — the immutable input bundle a step receives.                                                                                   |
