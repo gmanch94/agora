@@ -13,6 +13,37 @@ an ADR.
 
 ## Saga / ledger
 
+### 2026-05-04 — Resolving a terminal saga requires OBSERVATION kind, not a normal forward
+`DISPUTED` is in `TERMINAL_STATES`. `SagaLedger.append` refuses
+non-OBSERVATION events on terminal sagas (ledger.py guard). The
+override endpoint resolves DISPUTED → CANCELLED/UNFILLED by writing
+`kind=OBSERVATION, step=RESOLVE, outcome=COMMITTED` — the same
+mechanism the outbox worker uses for projection callbacks. Because
+`outcome=COMMITTED` triggers `saga.current_state` promotion regardless
+of kind, the state advance is atomic with no special-casing needed.
+The `StepName.RESOLVE` enum value carries a comment that it has no
+`flows.py` registration (it's written only by the override endpoint,
+never by the Coordinator's forward/compensator paths). Lesson: when
+you need to bypass the forward/compensator machinery, the OBSERVATION
+kind is the intended escape hatch — it exists precisely for events
+that aren't part of the normal saga flow.
+*(PR #90 — see `api/app.py::override`, `saga/ledger.py`,
+`models/lifecycle.py::StepName.RESOLVE`.)*
+
+### 2026-05-04 — Override scope: DISPUTED only, not all terminals
+The initial design question was "should override accept any terminal
+state?" The answer is no — RETURNED is a correctly completed loan;
+CANCELLED and UNFILLED are already terminal outcomes. Only DISPUTED
+is a stuck state requiring a staff escape hatch. Accepting arbitrary
+source states would let the API create nonsensical transitions
+(e.g. RETURNED → CANCELLED). Restricting source to DISPUTED and
+targets to {CANCELLED, UNFILLED} is the minimum surface that unblocks
+the real use case (receipt dispute where compensators can't help).
+Document the scope rationale at the enum-value level
+(`StepName.RESOLVE` comment) and on the `OverrideBody` docstring so
+future contributors don't widen it without an ADR.
+*(PR #90.)*
+
 ### 2026-05-03 — Adding an independent scanner tier breaks tests that share fixtures
 PR #39 added tier-3 (`receipt-unconfirmed-{saga_id}`) to
 `OverdueScanner` alongside the existing tier-1 (`overdue`) and
