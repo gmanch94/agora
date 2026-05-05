@@ -19,12 +19,13 @@ import asyncio
 import contextlib
 import secrets
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from datetime import date as _date
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
+from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
@@ -508,6 +509,81 @@ def create_app() -> FastAPI:
             request,
             "inbox.html",
             {"sagas": ctx_sagas},
+        )
+
+    @app.get("/browser", response_class=HTMLResponse, include_in_schema=False)
+    async def saga_browser(
+        request: Request,
+        session: AsyncSession = Depends(_get_session),
+        _auth: None = Depends(_require_console_auth),
+        state: str | None = Query(default=None),
+        library: str | None = Query(default=None),
+        date_from: str | None = Query(default=None),
+        date_to: str | None = Query(default=None),
+    ) -> HTMLResponse:
+        """Saga browser — filter by state, requesting library, and/or date range.
+
+        All filters are optional and combinable. State must be a valid
+        ``LifecycleState`` value; unrecognised values are silently ignored.
+        Library is a case-insensitive substring match against
+        ``requesting_library.symbol`` in the stored request payload.
+        Date range applies to ``created_at`` (UTC).
+        """
+        async with session.begin():
+            stmt = select(Saga).order_by(Saga.created_at.desc()).limit(500)
+
+            # SQL-native filters (indexed columns).
+            if state:
+                try:
+                    LifecycleState(state)  # validate
+                    stmt = stmt.where(Saga.current_state == state)
+                except ValueError:
+                    state = None  # drop invalid value; show all states
+
+            if date_from:
+                try:
+                    df = _date.fromisoformat(date_from)
+                    stmt = stmt.where(
+                        Saga.created_at >= datetime(df.year, df.month, df.day, tzinfo=UTC)
+                    )
+                except ValueError:
+                    date_from = None
+
+            if date_to:
+                try:
+                    dt = _date.fromisoformat(date_to)
+                    # inclusive: up to end-of-day on date_to
+                    stmt = stmt.where(
+                        Saga.created_at
+                        < datetime(dt.year, dt.month, dt.day, tzinfo=UTC)
+                        + timedelta(days=1)
+                    )
+                except ValueError:
+                    date_to = None
+
+            rows = (await session.execute(stmt)).scalars().all()
+
+        # Python-side library filter (request_payload is JSON, not indexable).
+        ctx_sagas = [_to_inbox_row(saga) for saga in rows]
+        if library:
+            needle = library.strip().lower()
+            ctx_sagas = [
+                r for r in ctx_sagas if needle in r["patron_label"].lower()
+            ]
+
+        all_states = [s.value for s in LifecycleState]
+        return templates.TemplateResponse(
+            request,
+            "browser.html",
+            {
+                "sagas": ctx_sagas,
+                "all_states": all_states,
+                "filter_state": state or "",
+                "filter_library": library or "",
+                "filter_date_from": date_from or "",
+                "filter_date_to": date_to or "",
+                "total": len(ctx_sagas),
+            },
         )
 
     # ------------------------------------------------------------------

@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+
+{% block title %}Saga browser &middot; Agora{% endblock %}
+
+{% block content %}
+<nav class="breadcrumb">
+  <a href="/" class="breadcrumb__link">&larr; Inbox</a>
+</nav>
+
+<h1 class="page__title">Saga browser</h1>
+<p class="page__hint">Filter all sagas by state, library, or creation date. Read-only.</p>
+
+<section class="card-base action-section">
+  <form method="get" action="/browser" class="action-form">
+    <div class="action-row">
+      <label class="form-label">
+        State
+        <select name="state" class="form-input">
+          <option value="">— all states —</option>
+          {% for s in all_states %}
+          <option value="{{ s }}"{% if s == filter_state %} selected{% endif %}>{{ s }}</option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <label class="form-label">
+        Library symbol
+        <input type="text" name="library" class="form-input"
+               value="{{ filter_library }}" placeholder="e.g. LIB-A" />
+      </label>
+
+      <label class="form-label">
+        From (UTC)
+        <input type="date" name="date_from" class="form-input"
+               value="{{ filter_date_from }}" />
+      </label>
+
+      <label class="form-label">
+        To (UTC)
+        <input type="date" name="date_to" class="form-input"
+               value="{{ filter_date_to }}" />
+      </label>
+    </div>
+
+    <div class="action-row">
+      <button type="submit" class="button-primary">Filter</button>
+      <a href="/browser" class="button-secondary">Clear</a>
+    </div>
+  </form>
+</section>
+
+<section class="card-base">
+  <p class="page__hint">{{ total }} saga{{ 's' if total != 1 else '' }} found.</p>
+  {% if sagas %}
+  <table class="inbox-table" aria-label="Saga browser results">
+    <thead>
+      <tr>
+        <th scope="col">Saga</th>
+        <th scope="col">Patron / Library</th>
+        <th scope="col">Item</th>
+        <th scope="col">State</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for saga in sagas %}
+      <tr>
+        <td class="saga-id">
+          <a href="/sagas/{{ saga.saga_id }}/view" class="saga-link">{{ saga.saga_id_short }}</a>
+        </td>
+        <td>{{ saga.patron_label }}</td>
+        <td class="item-title">{{ saga.item_title }}</td>
+        <td>
+          <span class="state{% if saga.is_terminal %} state--terminal{% endif %}">
+            {{ saga.current_state }}
+          </span>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">
+    <p class="empty__title">No sagas match the current filters.</p>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}
