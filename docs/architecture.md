@@ -1,13 +1,13 @@
 # Agora — Architecture
 
 > Last reviewed against code: 2026-05-04 (post PRs #17/#18/#19/#24/
-> #25/#28/#41-#54 + RECEIVED state + state-aware SHIP comp + NCIP-checkout
-> SHIP→RECEIVE re-anchor + tier-3 receipt-unconfirmed watch +
+> #25/#28/#41-#54/#55-#90 + RECEIVED state + state-aware SHIP comp +
+> NCIP-checkout SHIP→RECEIVE re-anchor + tier-3 receipt-unconfirmed watch +
 > DiscoveryAgent endpoint wiring (#46/#53) + routing-LLM tie-breaker
-> tuned (#51) + ISO 18626 XSD validation harness (#52) —
-> APPROVING-via-outbox, NCIP fan-out, TrackingScanner lifespan task,
-> alembic-on-real-postgres CI, multi-worker outbox,
-> borrower-receipt state).
+> tuned (#51) + ISO 18626 XSD validation harness (#52) + NCIP item-barcode
+> (#89) + override endpoint (#90) — APPROVING-via-outbox, NCIP fan-out,
+> TrackingScanner lifespan task, alembic-on-real-postgres CI,
+> multi-worker outbox, borrower-receipt state).
 
 Diagrams pin `theme: neutral` so each block renders as a stable
 light-palette box (dark text on light fills) regardless of the

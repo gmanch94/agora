@@ -1,6 +1,6 @@
 # Agora Runbook
 
-> Last reviewed against code: 2026-05-04 (post PRs #41-#80 — PR-2b
+> Last reviewed against code: 2026-05-04 (post PRs #41-#90 — PR-2b
 > routing-LLM adapter adds `AGORA_ROUTING_LLM_*` env vars + a sibling
 > `routing-eval-floor.yml` CI workflow alongside `triple-gate` /
 > `audit` / `postgres-tests`; ε retuned to 0.03 (#51); DiscoveryAgent
@@ -10,7 +10,8 @@
 > mode noted on `AGORA_ROUTING_LLM_ENABLED` (#75); RoutingAgent
 > format-affinity feature in #79 closes `routing-015` and bumps
 > the LLM-augmented baseline to 20/20; staff console UI first slice
-> ships in #80 — `GET /` inbox via HTMX + Jinja2, ADR-0015).
+> ships in #80 — `GET /` inbox via HTMX + Jinja2, ADR-0015;
+> NCIP item-barcode wired (#89); override endpoint (#90)).
 
 Operational reference for the Agora ILL prototype. Covers bring-up,
 day-to-day operation (outbox, overdue scan, gate workflow), and
@@ -158,6 +159,7 @@ commits the gate.
 | `POST /sagas/{id}/reject`        | Mark a pending gate `failed` (no forward runs).                |
 | `POST /sagas/{id}/compensate`    | Run compensator for a previously committed forward.            |
 | `POST /sagas/{id}/discover`      | Run DiscoveryAgent against the saga's stored request; writes a ROUTE-anchored OBSERVATION (#53). Saga state unchanged. |
+| `POST /sagas/{id}/override`      | Resolve a DISPUTED saga → CANCELLED or UNFILLED (PR #90). Writes a ledger OBSERVATION (`step=resolve`, `outcome=committed`); no outbox dispatch. Open ILS loans must be settled out-of-band. |
 
 ### 2.3 What `/approve` derives vs requires
 
@@ -292,9 +294,9 @@ upstream design tension that the re-anchor removed — see
 though the forward now opens an ILS loan. The saga can't tell whether
 a receipt dispute is about non-receipt (loan should clear) or
 condition (loan should stay) — routing to DISPUTED preserves the
-"physically un-undoable" framing for staff resolution. A future PR
-may add a state-aware compensator (or a `/sagas/{id}/override`
-endpoint) once the staff console surfaces the necessary inputs.
+"physically un-undoable" framing for staff resolution. The `/sagas/{id}/override` endpoint is implemented (PR #90) — resolves
+DISPUTED → CANCELLED or UNFILLED via a ledger OBSERVATION event.
+A state-aware compensator with ILS check_in logic remains future work.
 
 ### 3.4 Backoff & dead-letter
 

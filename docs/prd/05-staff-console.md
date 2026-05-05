@@ -1,7 +1,7 @@
 # PRD 05 — Staff Console
 
-> Last reviewed against code: 2026-05-04 (post staff-console slices 1–3,
-> PRs #80/#82/#84; UI shell now built).
+> Last reviewed against code: 2026-05-04 (post PRs #80/#82/#84/#90;
+> UI shell shipped; override JSON endpoint implemented).
 
 The staff console is the **only UI in the prototype**. It is the
 human-in-the-loop surface for every state transition.
@@ -40,7 +40,8 @@ Single saga, full reasoning trace.
   - Rationale (≤3 sentences from the agent)
   - Inputs (collapsible: full request, candidate list, policy flags)
   - Idempotency key (debug aid)
-- Action buttons: Approve, Reject (with reason), Compensate, Override (DISPUTED only)
+- Action buttons: Approve, Reject (with reason), Compensate, Override (DISPUTED only —
+  JSON API `POST /sagas/{id}/override` implemented; no `/ui/` form endpoint yet)
 
 ### Saga browser
 Filter by state, library, date. Read-only. Useful for demo + debug.

@@ -1,6 +1,6 @@
 # PRD 00 — Agora Overview
 
-> Last reviewed against code: 2026-05-02.
+> Last reviewed against code: 2026-05-04 (post PRs #87–#90 — NCIP item-barcode + override endpoint).
 
 ## Problem
 
