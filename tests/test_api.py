@@ -771,3 +771,73 @@ async def test_ui_override_invalid_target_returns_400(client: AsyncClient) -> No
     )
     assert r.status_code == 400
     assert "invalid target_state" in r.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Saga browser: GET /browser
+# ---------------------------------------------------------------------------
+
+
+async def test_browser_no_filters_returns_all_sagas(client: AsyncClient) -> None:
+    """GET /browser with no filters returns all sagas as HTML."""
+    saga_id = (await client.post("/requests", json=_request_payload())).json()[
+        "saga_id"
+    ]
+    r = await client.get("/browser")
+    assert r.status_code == 200
+    assert "text/html" in r.headers["content-type"]
+    assert saga_id[:8] in r.text
+
+
+async def test_browser_state_filter_matches(client: AsyncClient) -> None:
+    """state=submitted returns only submitted sagas."""
+    saga_id = (await client.post("/requests", json=_request_payload())).json()[
+        "saga_id"
+    ]
+    r = await client.get("/browser?state=submitted")
+    assert r.status_code == 200
+    assert saga_id[:8] in r.text
+
+
+async def test_browser_state_filter_excludes(client: AsyncClient) -> None:
+    """state=shipped returns empty when only submitted sagas exist."""
+    await client.post("/requests", json=_request_payload())
+    r = await client.get("/browser?state=shipped")
+    assert r.status_code == 200
+    assert "No sagas match" in r.text
+
+
+async def test_browser_invalid_state_silently_ignored(client: AsyncClient) -> None:
+    """Unrecognised state value is dropped; all sagas returned."""
+    await client.post("/requests", json=_request_payload())
+    r = await client.get("/browser?state=not-a-state")
+    assert r.status_code == 200
+    # No 400; falls back to unfiltered list.
+    assert "Saga browser" in r.text
+
+
+async def test_browser_library_filter_matches(client: AsyncClient) -> None:
+    """library=A matches sagas whose patron_label contains 'a' (case-insensitive)."""
+    saga_id = (await client.post("/requests", json=_request_payload())).json()[
+        "saga_id"
+    ]
+    # _request_payload uses library_symbol "A" — patron_label = "p1 @ A"
+    r = await client.get("/browser?library=A")
+    assert r.status_code == 200
+    assert saga_id[:8] in r.text
+
+
+async def test_browser_library_filter_excludes(client: AsyncClient) -> None:
+    """library=ZZZNOMATCH returns empty."""
+    await client.post("/requests", json=_request_payload())
+    r = await client.get("/browser?library=ZZZNOMATCH")
+    assert r.status_code == 200
+    assert "No sagas match" in r.text
+
+
+async def test_browser_future_date_from_returns_empty(client: AsyncClient) -> None:
+    """date_from far in the future excludes all existing sagas."""
+    await client.post("/requests", json=_request_payload())
+    r = await client.get("/browser?date_from=2099-01-01")
+    assert r.status_code == 200
+    assert "No sagas match" in r.text

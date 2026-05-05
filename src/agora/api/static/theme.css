@@ -131,6 +131,23 @@ body {
   font-size: 14px;
 }
 
+.header__nav {
+  margin-left: auto;
+  display: flex;
+  gap: var(--space-xl);
+}
+
+.header__nav-link {
+  color: var(--color-steel);
+  font-size: 14px;
+  text-decoration: none;
+}
+
+.header__nav-link:hover {
+  color: var(--color-ink);
+  text-decoration: underline;
+}
+
 /* Page wrapper */
 .page {
   max-width: 1100px;
