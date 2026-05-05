@@ -366,17 +366,17 @@ def _wire(reg: StepRegistry, tx: TransactionAgent) -> None:
     # requires staff intervention; the current scanner does not yet
     # implement that tier-3 watch.
     #
-    # ``item_id = reshare_id`` approximation (per ADR-0011 known-gap)
-    # carries through unchanged: IllRequest has no real ILS barcode
-    # column today, the consortium-scoped reshare_id is the only
-    # stable handle. Idempotency-key suffix ``:ncip`` matches the
-    # convention SHIP/RETURN used pre-re-anchor — keeps the suffix
-    # uniform across all NCIP rows even though RECEIVE only emits
-    # one intent (no reshare row to disambiguate against).
+    # ``item_id`` resolution: prefer the supplying library's ILS barcode
+    # (``ctx.request.item.item_barcode``) when staff provided one at
+    # request submission; fall back to ``reshare_id`` otherwise. The
+    # fallback keeps the pre-existing approximation for sagas created
+    # before the barcode field was added. Idempotency-key suffix
+    # ``:ncip`` is uniform across all NCIP rows.
     async def receive_forward(ctx: SagaContext) -> StepResult:
         reshare_id = ctx.extras.get("reshare_id")
         if not reshare_id:
             raise ValueError("ctx.extras['reshare_id'] is required for receive step")
+        item_id = ctx.request.item.item_barcode or reshare_id
         return StepResult(
             state_after=LifecycleState.RECEIVED,
             payload={"reshare_id": reshare_id},
@@ -393,7 +393,7 @@ def _wire(reg: StepRegistry, tx: TransactionAgent) -> None:
                     payload={
                         "action": "check_out",
                         "args": {
-                            "item_id": reshare_id,
+                            "item_id": item_id,
                             "patron_id": ctx.request.patron.patron_id,
                         },
                     },
@@ -437,13 +437,13 @@ def _wire(reg: StepRegistry, tx: TransactionAgent) -> None:
     # Emits two outbox intents: (1) ReShare ``confirm_return`` for the
     # consortium peer, (2) NCIP ``check_in`` against the borrower's
     # local ILS so the loan opened by RECEIVE forward clears off the
-    # patron's record. Same ``item_id = reshare_id`` and ``:ncip``
-    # idempotency-key suffix approximations as RECEIVE — see RECEIVE
-    # comment block above for the canonical rationale.
+    # patron's record. ``item_id`` resolution same as RECEIVE: prefer
+    # ``item_barcode`` when present, fall back to ``reshare_id``.
     async def return_forward(ctx: SagaContext) -> StepResult:
         reshare_id = ctx.extras.get("reshare_id")
         if not reshare_id:
             raise ValueError("ctx.extras['reshare_id'] is required for return step")
+        item_id = ctx.request.item.item_barcode or reshare_id
         return StepResult(
             state_after=LifecycleState.RETURNED,
             payload={"reshare_id": reshare_id},
@@ -466,7 +466,7 @@ def _wire(reg: StepRegistry, tx: TransactionAgent) -> None:
                     idempotency_key=f"{ctx.idempotency_key}:ncip",
                     payload={
                         "action": "check_in",
-                        "args": {"item_id": reshare_id},
+                        "args": {"item_id": item_id},
                     },
                 ),
             ],

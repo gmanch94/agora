@@ -388,6 +388,68 @@ async def test_receive_forward_advances_to_received(session: AsyncSession) -> No
 
 
 @pytest.mark.asyncio
+async def test_receive_forward_uses_item_barcode_when_present(
+    session: AsyncSession,
+) -> None:
+    """When item_barcode is set, NCIP check_out uses it instead of reshare_id."""
+    saga_id = uuid4()
+    request = IllRequest(
+        request_type=RequestType.LOAN,
+        patron=PatronRef(library_symbol="A", patron_id="p1"),
+        requesting_library=LibraryRef(symbol="A"),
+        item=ItemMetadata(title="Dune", item_barcode="BARCODE-001"),
+        citation=Citation(raw="raw", parsed_from="freetext", parsed_at=datetime.now(UTC)),
+    )
+    registry = build_registry(TransactionAgent(MockReShareClient()))
+
+    async with session.begin():
+        await SagaLedger(session).create_saga(
+            saga_id=saga_id,
+            request_id=request.request_id,
+            request_payload=request.model_dump(mode="json"),
+            initial_state=LifecycleState.SHIPPED,
+        )
+
+    await _gate_and_run(
+        session, registry, saga_id, request, StepName.RECEIVE,
+        {"reshare_id": "rs-barcode-1"}, from_state=LifecycleState.SHIPPED,
+    )
+
+    async with session.begin():
+        rows = (await session.execute(select(OutboxRow).where(OutboxRow.saga_id == saga_id))).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].payload["args"]["item_id"] == "BARCODE-001"
+
+
+@pytest.mark.asyncio
+async def test_receive_forward_falls_back_to_reshare_id_without_barcode(
+    session: AsyncSession,
+) -> None:
+    """When item_barcode is absent, NCIP check_out falls back to reshare_id."""
+    saga_id = uuid4()
+    request = _build_request()  # no item_barcode
+    registry = build_registry(TransactionAgent(MockReShareClient()))
+
+    async with session.begin():
+        await SagaLedger(session).create_saga(
+            saga_id=saga_id,
+            request_id=request.request_id,
+            request_payload=request.model_dump(mode="json"),
+            initial_state=LifecycleState.SHIPPED,
+        )
+
+    await _gate_and_run(
+        session, registry, saga_id, request, StepName.RECEIVE,
+        {"reshare_id": "rs-fallback-1"}, from_state=LifecycleState.SHIPPED,
+    )
+
+    async with session.begin():
+        rows = (await session.execute(select(OutboxRow).where(OutboxRow.saga_id == saga_id))).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].payload["args"]["item_id"] == "rs-fallback-1"
+
+
+@pytest.mark.asyncio
 async def test_receive_compensator_lands_in_disputed(session: AsyncSession) -> None:
     """RECEIVE compensator records the contradiction by marking Disputed."""
     saga_id = uuid4()

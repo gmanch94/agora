@@ -16,7 +16,7 @@ Returned** with saga compensators paired to every forward step.
 .venv/Scripts/python.exe -m pip install -e ".[dev]"
 
 # Verify
-.venv/Scripts/python.exe -m pytest tests/ -q              # 239 tests (+6 postgres-only)
+.venv/Scripts/python.exe -m pytest tests/ -q              # 241 tests (+6 postgres-only)
 .venv/Scripts/python.exe -m ruff check src tests          # lint
 .venv/Scripts/python.exe -m mypy --strict                 # types
 make audit                                                # bandit + pip-audit + detect-secrets
@@ -58,7 +58,7 @@ agora/
 │   ├── saga/                    # ledger, coordinator, idempotency,
 │   │                            #   flows (forward+compensator pairs)
 │   ├── cli.py / config.py / logging.py
-├── tests/                       # 239 tests (unit + property + e2e)
+├── tests/                       # 241 tests (unit + property + e2e)
 ├── docker-compose.yml           # Postgres-only sandbox
 ├── Makefile / pyproject.toml
 ```
@@ -226,9 +226,10 @@ ISO 18626 message types — see table in `clients/reshare.py`.
   UNIQUE across all targets (see `saga/db.py`); RETURN's two intents
   share a base key with the reshare row taking the bare key and the
   NCIP row taking the suffix, RECEIVE's single NCIP intent uses the
-  same suffix for convention. Approximations documented in
-  `saga/flows.py` RECEIVE comment block: `item_id = reshare_id`
-  because IllRequest has no real ILS barcode today.
+  same suffix for convention. `item_id` resolution: prefer
+  `ctx.request.item.item_barcode` (optional field on `ItemMetadata`,
+  submitted at request creation) and fall back to `reshare_id` when
+  absent — see `saga/flows.py` RECEIVE comment block.
   - **NCIP `check_out` is anchored on RECEIVE forward** (re-anchored
     from SHIP). Anchoring at borrower-receipt rather than
     supplier-shipment is the correct circulation-timing model: the
