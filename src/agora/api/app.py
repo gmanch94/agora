@@ -597,6 +597,7 @@ def create_app() -> FastAPI:
                 break
 
         can_route = state == LifecycleState.SUBMITTED.value
+        show_override = state == LifecycleState.DISPUTED.value
         return templates.TemplateResponse(
             request,
             "detail.html",
@@ -607,6 +608,7 @@ def create_app() -> FastAPI:
                 "compensate_step": compensate_step,
                 "cached_discovery": cached_discovery,
                 "can_route": can_route,
+                "show_override": show_override,
                 "saga_id": str(saga_id),
             },
         )
@@ -807,6 +809,70 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        return RedirectResponse(url=f"/sagas/{saga_id}/view", status_code=303)
+
+    @app.post("/ui/sagas/{saga_id}/override", include_in_schema=False)
+    async def ui_saga_override(
+        saga_id: UUID,
+        session: AsyncSession = Depends(_get_session),
+        _auth: None = Depends(_require_console_auth),
+        target_state: str = Form(...),
+        rationale: str = Form("Staff override."),
+        actor: str = Form("staff"),
+    ) -> RedirectResponse:
+        """HTML form endpoint: resolve DISPUTED saga, then redirect to detail."""
+        try:
+            target = LifecycleState(target_state)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"invalid target_state {target_state!r}; "
+                    "allowed: cancelled, unfilled"
+                ),
+            ) from exc
+
+        if target not in {LifecycleState.CANCELLED, LifecycleState.UNFILLED}:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"target_state {target.value!r} is not allowed; "
+                    "allowed: cancelled, unfilled"
+                ),
+            )
+
+        async with session.begin():
+            ledger = SagaLedger(session)
+            try:
+                saga = await ledger.get_saga(saga_id)
+            except SagaNotFoundError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+            current = LifecycleState(saga.current_state)
+            if current != LifecycleState.DISPUTED:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"saga {saga_id} is in state {current.value!r}; "
+                        "override only applies to sagas in 'disputed' state"
+                    ),
+                )
+
+            await ledger.append(
+                NewSagaEvent(
+                    saga_id=saga_id,
+                    kind=EventKind.OBSERVATION,
+                    step=StepName.RESOLVE,
+                    state_before=current,
+                    state_after=target,
+                    actor=actor,
+                    idempotency_key=new_idempotency_key("override"),
+                    outcome=StepOutcome.COMMITTED,
+                    rationale=rationale,
+                    payload={"target_state": target.value},
+                )
+            )
 
         return RedirectResponse(url=f"/sagas/{saga_id}/view", status_code=303)
 

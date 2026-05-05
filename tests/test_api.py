@@ -709,3 +709,65 @@ async def test_override_unknown_saga_returns_404(client: AsyncClient) -> None:
         json={"target_state": "cancelled", "actor": "staff:test", "rationale": "bogus"},
     )
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# UI form endpoint: POST /ui/sagas/{id}/override
+# ---------------------------------------------------------------------------
+
+
+async def test_ui_override_resolves_disputed_to_cancelled(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    """Form POST to /ui/sagas/{id}/override resolves DISPUTED → CANCELLED.
+
+    Asserts 303 redirect to the detail view and that the saga's
+    current_state advances atomically.
+    """
+    saga_id = await _drive_to_disputed(app, client)
+    r = await client.post(
+        f"/ui/sagas/{saga_id}/override",
+        data={
+            "target_state": "cancelled",
+            "rationale": "patron withdrew dispute",
+            "actor": "staff",
+        },
+    )
+    assert r.status_code == 303, r.text
+    assert r.headers["location"] == f"/sagas/{saga_id}/view"
+
+    detail = (await client.get(f"/sagas/{saga_id}")).json()
+    assert detail["saga"]["current_state"] == "cancelled"
+    resolve_ev = next(
+        e for e in detail["events"] if e["step"] == "resolve"
+    )
+    assert resolve_ev["state_before"] == "disputed"
+    assert resolve_ev["state_after"] == "cancelled"
+    assert resolve_ev["outcome"] == "committed"
+
+
+async def test_ui_override_wrong_state_returns_409(client: AsyncClient) -> None:
+    """Form POST on a non-DISPUTED saga returns 409."""
+    saga_id = (await client.post("/requests", json=_request_payload())).json()[
+        "saga_id"
+    ]
+    # Saga is SUBMITTED — not DISPUTED.
+    r = await client.post(
+        f"/ui/sagas/{saga_id}/override",
+        data={"target_state": "cancelled", "rationale": "wrong state", "actor": "staff"},
+    )
+    assert r.status_code == 409
+    assert "disputed" in r.json()["detail"]
+
+
+async def test_ui_override_invalid_target_returns_400(client: AsyncClient) -> None:
+    """Form POST with an unrecognised target_state returns 400."""
+    saga_id = (await client.post("/requests", json=_request_payload())).json()[
+        "saga_id"
+    ]
+    r = await client.post(
+        f"/ui/sagas/{saga_id}/override",
+        data={"target_state": "not-a-state", "rationale": "bogus", "actor": "staff"},
+    )
+    assert r.status_code == 400
+    assert "invalid target_state" in r.json()["detail"]

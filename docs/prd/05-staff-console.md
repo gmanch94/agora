@@ -41,7 +41,7 @@ Single saga, full reasoning trace.
   - Inputs (collapsible: full request, candidate list, policy flags)
   - Idempotency key (debug aid)
 - Action buttons: Approve, Reject (with reason), Compensate, Override (DISPUTED only —
-  JSON API `POST /sagas/{id}/override` implemented; no `/ui/` form endpoint yet)
+  `POST /sagas/{id}/override` JSON API + `/ui/sagas/{id}/override` HTMX form both implemented)
 
 ### Saga browser
 Filter by state, library, date. Read-only. Useful for demo + debug.
