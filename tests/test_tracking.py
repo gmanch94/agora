@@ -18,7 +18,7 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from agora.agents.tracking import OverdueRecord, OverdueScanner
+from agora.agents.tracking import OverdueRecord, OverdueScanner, TrackingAgent, _parse_iso
 from agora.agents.transaction import TransactionAgent
 from agora.clients.reshare import MockReShareClient
 from agora.models.events import NewSagaEvent
@@ -751,3 +751,73 @@ async def test_overdue_scanner_run_forever_swallows_pass_errors(
         await task
 
     assert calls["n"] >= 2, "loop must continue past a single scan failure"
+
+
+# ---------------------------------------------------------------------------
+# TrackingAgent — __init__ + observe (lines 84, 87)
+# ---------------------------------------------------------------------------
+
+
+def test_tracking_agent_stores_coordinator() -> None:
+    """TrackingAgent.__init__ stores coordinator (line 84)."""
+    from unittest.mock import MagicMock
+
+    coord = MagicMock()
+    agent = TrackingAgent(coord)
+    assert agent._coord is coord
+
+
+@pytest.mark.asyncio
+async def test_tracking_agent_observe_delegates_to_coordinator() -> None:
+    """TrackingAgent.observe delegates to coordinator.record_observation (line 87)."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from agora.agents.tracking import Observation
+
+    coord = MagicMock()
+    coord.record_observation = AsyncMock(return_value=None)
+    agent = TrackingAgent(coord)
+
+    obs = Observation(
+        saga_id=uuid4(),
+        step=StepName.SHIP,
+        actor="scanner",
+        payload={"key": "val"},
+        rationale="test",
+    )
+    await agent.observe(obs)
+
+    coord.record_observation.assert_awaited_once_with(
+        saga_id=obs.saga_id,
+        step=obs.step,
+        actor=obs.actor,
+        payload=obs.payload,
+        rationale=obs.rationale,
+    )
+
+
+# ---------------------------------------------------------------------------
+# _parse_iso — error + timezone-naive paths (lines 437-438, 440)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_iso_invalid_string_returns_none() -> None:
+    """_parse_iso returns None on malformed input (lines 437-438)."""
+    assert _parse_iso("not-a-date") is None
+    assert _parse_iso("2024-99-99") is None
+
+
+def test_parse_iso_valid_with_timezone() -> None:
+    """_parse_iso parses a UTC-qualified timestamp correctly."""
+    dt = _parse_iso("2024-06-15T12:00:00+00:00")
+    assert dt is not None
+    assert dt.tzinfo is not None
+
+
+def test_parse_iso_naive_datetime_gets_utc() -> None:
+    """_parse_iso attaches UTC when parsed datetime has no tzinfo (line 440)."""
+    dt = _parse_iso("2024-06-15T12:00:00")  # no timezone
+    assert dt is not None
+    assert dt.tzinfo is not None
+    assert dt.year == 2024
+    assert dt.hour == 12

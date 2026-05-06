@@ -1418,3 +1418,41 @@ async def test_compensate_step_without_compensator_raises(session: AsyncSession)
         )
         with pytest.raises(CoordinatorError, match="has no compensator"):
             await coord2.run_compensator(ctx=comp_ctx, step=StepName.SUBMIT)
+
+
+# ---------------------------------------------------------------------------
+# make_reshare_handler validation guards (lines 405, 407)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reshare_handler_missing_action_raises() -> None:
+    """make_reshare_handler raises ValueError when payload has no 'action' (line 405)."""
+    handler = make_reshare_handler(MockReShareClient())
+    # Handler = Callable[[dict, str], Awaitable[Any]] — positional-only in mypy.
+    with pytest.raises(ValueError, match="missing 'action'"):
+        await handler({}, "k1")
+
+
+@pytest.mark.asyncio
+async def test_reshare_handler_non_dict_args_raises() -> None:
+    """make_reshare_handler raises ValueError when 'args' is not a dict (line 407)."""
+    handler = make_reshare_handler(MockReShareClient())
+    with pytest.raises(ValueError, match="'args' must be dict"):
+        await handler({"action": "send_request", "args": "bad"}, "k2")
+
+
+# ---------------------------------------------------------------------------
+# make_reshare_on_success — non-ReShareSendResult result type (lines 465-471)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reshare_on_success_skips_non_result_type(session: AsyncSession) -> None:
+    """on_success logs warning and returns early when result is not ReShareSendResult (lines 461-471)."""
+    on_success = make_reshare_on_success()
+    saga_id = uuid4()
+    # Must not raise even with a non-ReShareSendResult result.
+    async with session.begin():
+        # Callable type OnSuccess is positional-only in mypy; call positionally.
+        await on_success(session, 1, saga_id, {"action": "send_request"}, "k3", "unexpected-string")
