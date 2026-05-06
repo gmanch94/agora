@@ -66,3 +66,7 @@ NEXT_SESSION.md
 RECOMMENDATION.md
 DOCS_STALE_PUNCHLIST.md
 DESIGN.md
+
+# Generated artifacts (built from scripts/build_deck.py, scripts/gen_exec_brief.py)
+agora_deck.pdf
+docs/*.docx
