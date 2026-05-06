@@ -52,7 +52,8 @@ from agora.api.schemas import (
     SubmitRequestResponse,
 )
 from agora.clients.crossref import CrossrefClient, get_crossref_client
-from agora.clients.ncip import MockNcipClient, NcipClient
+from agora.clients.ncip import NcipClient
+from agora.clients.ncip import get_client as get_ncip_client
 from agora.clients.reshare import ReShareClient
 from agora.clients.reshare import get_client as get_reshare_client
 from agora.clients.sru import SruClient, get_sru_client
@@ -324,10 +325,11 @@ def create_app() -> FastAPI:
     # ``settings.reshare_enabled`` and returns ``HttpReShareClient``
     # in production / ``MockReShareClient`` for offline dev + tests.
     reshare = get_reshare_client()
-    # NCIP client is mock-only today (CLAUDE.md known-gap). Constructed
-    # here so the handler is wired into the outbox worker once and shares
-    # process lifetime with the API.
-    ncip = MockNcipClient()
+    # NCIP client: real HttpNcipClient when NCIP_BASE_URL is set,
+    # MockNcipClient otherwise (offline dev + tests). Source-review-only
+    # against mod-ncip master (2026-05-06) — live tenant probe still
+    # needed before production use. See CLAUDE.md known-gaps.
+    ncip = get_ncip_client()
     transaction = TransactionAgent(reshare)
     registry = build_registry(transaction)
 
@@ -425,6 +427,9 @@ def create_app() -> FastAPI:
             # closes the underlying ``httpx.AsyncClient``.
             await reshare.aclose()
             log.info("api.reshare_client.closed")
+            # NCIP: mock no-ops; HttpNcipClient closes its httpx pool.
+            await ncip.aclose()
+            log.info("api.ncip_client.closed")
             # Same shape for the discovery clients: mocks no-op, http
             # impls release the underlying ``httpx.AsyncClient`` pool.
             await crossref.aclose()
