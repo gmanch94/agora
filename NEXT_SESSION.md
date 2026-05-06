@@ -1,73 +1,72 @@
 # Next session resume note
 
-**Last updated:** 2026-05-06 (PR #96 open — master clean, PR-C awaiting merge).
+**Last updated:** 2026-05-06 (PR #97 open — merge me first).
 
 ## Repo state
 
-- `master` is fully synced and clean.
-- Test count: **257** (248 passing + 9 skipped postgres/reshare).
-- ADR count: **15**.
-- Open PR: **#96** (feat(reshare): probe findings — ready to merge).
+- `master` clean at PR #96 (d3bce32).
+- Test count: **251** (248 passing + 9 skipped postgres/reshare/iso).
+- ADR count: **16**.
+- Open PR: **#97** (ADR-0016 / recall via manualClose — ready to merge).
 
-## PRs landed / open this session
+## PRs this session (in order)
 
 | PR | Title | Status |
 |----|-------|--------|
-| #96 | feat(reshare): document probe findings from live mod-rs sandbox | **Open — merge me** |
+| #96 | feat(reshare): probe findings from live mod-rs sandbox | Merged |
+| #97 | feat(reshare): ADR-0016 — recall_request via manualClose | **Open — merge me** |
 
-## What PR #96 resolves
+## What to do at session start
 
-Probe ran against `mod-rs:2.19.0-rc17` via `make reshare-probe`:
+```
+gh pr merge 97 --squash   # merge PR-D
+git checkout master && git pull
+pytest -q                 # 251 pass, 9 skip
+ruff check src tests      # clean
+```
 
-1. **Body shape confirmed** — camelCase fields accepted by mod-rs.
-   Caveat: probe created a Responder-side record (RES_IDLE) because
-   `supplyingInstitutionSymbol` was included. Requester-side (REQ_*)
-   creation still unconfirmed against a real borrower-tenant.
-2. **Response fields confirmed** — `id` = UUID, `hrid` may be null,
-   `state` dict with `.code`, `isoMessageId`/`supplyingAgencyId` absent.
-3. **Recall confirmed absent** — `Actions.groovy` has no recall action.
-   `recall_request` keeps `ClientError`. Compensate-SHIP path needs ADR.
+## What PR #97 does
 
-Also fixed: probe Unicode crashes on Windows, FOLIO tenant ID hyphen
-(Postgres schema name error), two lessons.md entries added.
+ADR-0016 resolves the compensate-SHIP path. `recall_request` now calls
+`performAction` with `action="manualClose"` (force-close; no supplier
+notification). SHIP compensator outbox row delivers instead of
+dead-lettering. Saga reaches DISPUTED as designed. 3 new respx unit
+tests added.
 
-## Immediate next step
+## Backlog (current, prioritised)
 
-Merge PR #96, then address the ADR decision for compensate-SHIP:
-
-**ADR-0016 (proposed): Compensate-SHIP path in mod-rs**
-
-Two options:
-- **Option A** — ISO 18626 Cancel via `message` performAction with
-  reason code (protocol-correct; needs wire-level testing).
-- **Option B** — `manualClose` force-close (local-only; no supplier
-  notification; rename `recall_request` to `force_close_request`).
-
-Write ADR, implement choice, update `HttpReShareClient.recall_request`,
-add test. This unblocks the SHIP compensator.
-
-## Backlog (current)
+### Immediate (self-contained)
+- **None** — all self-contained work is done.
 
 ### Sandbox-blocked
-1. Real ReShare wire (PR-D) — PR-C landed; ADR for recall path needed
-2. Real NCIP HTTP/SOAP client
-3. WorldCat holdings lookup (OCLC sandbox key)
+1. **Real NCIP HTTP/SOAP client** — `MockNcipClient` still in use;
+   real `mod-ncip` integration future work.
+2. **WorldCat holdings lookup** — paid OCLC sandbox key needed.
 
-### ADR needed
-- ADR-0016: compensate-SHIP path (recall vs force-close; see above)
+### Needs ADR / design decision
+- **ADR-0016 follow-up (production recall)**: Option A (ISO 18626
+  Cancel via `message` performAction) is the production path. Needs
+  two-tenant sandbox and wire-level testing. Not urgent for prototype.
 
 ### Revisit later
-- **FOLIO community sandbox**: https://wiki.folio.org/display/COMMUNITY/FOLIO+Reference+Environments
-- **Index Data / OLE**: email info@indexdata.com or FOLIO Slack `#reshare`
+- FOLIO community sandbox: folio-snapshot.dev.folio.org
+- Index Data / OLE: info@indexdata.com, FOLIO Slack #reshare
+
+## Key gotchas (session 2026-05-06)
+
+- **FOLIO tenant IDs: alphanumeric only.** `consortium-a` → Postgres
+  schema syntax error in mod-rs. Use `diku`.
+- **mod-rs probe creates Responder-side record** when
+  `supplyingInstitutionSymbol` is set. Requester-side (REQ_*)
+  creation via direct API still unverified.
+- **No requester recall action in mod-rs.** Actions.groovy confirmed.
+  manualClose used as prototype stand-in (ADR-0016).
 
 ## Resume protocol
 
-- Merge PR #96 first (`gh pr merge 96 --squash`).
+- Merge PR #97 first.
 - Triple gate: `pytest -q`, `ruff check src tests`, `mypy --strict`, `make audit`.
+- `scripts/sync_doc_counts.py --fix` after test count changes.
 - GPG signing disabled (`commit.gpgsign=false`).
 - Python: `.venv/Scripts/python.exe`.
 - **Always branch + PR, never commit directly to master.**
-- **FOLIO tenant IDs must be alphanumeric only** — hyphens cause Postgres
-  schema name syntax error in mod-rs (`consortium-a` -> use `diku`).
-- **Docker daemon polling:** if `docker` hangs once, stop. Tell user to
-  confirm Docker Desktop fully started then retry.
