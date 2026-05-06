@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from uuid import uuid4
 
 import pytest
@@ -209,3 +210,53 @@ async def test_find_committed_forward_returns_latest(session: AsyncSession) -> N
         ev = await ledger.find_committed_forward(saga_id, "approve")
     assert ev is not None
     assert ev.payload == {"reshare_id": "rs-1"}
+
+
+@pytest.mark.asyncio
+async def test_append_reraises_non_idempotency_integrity_error(session: AsyncSession) -> None:
+    """IntegrityError NOT caused by an idempotency-key collision is re-raised
+    (line 142 in ledger.py — the 'real conflict' code path).
+
+    Simulated by patching ``begin_nested`` to raise ``IntegrityError`` directly
+    and patching ``_find_by_idempotency`` to return None, as would happen when
+    the conflict is on the (saga_id, seq) unique constraint from a concurrent
+    writer with a *different* idempotency key.
+    """
+    from contextlib import asynccontextmanager
+    from unittest.mock import AsyncMock, patch
+
+    from sqlalchemy.exc import IntegrityError
+
+    saga_id = uuid4()
+    async with session.begin():
+        ledger = SagaLedger(session)
+        await ledger.create_saga(saga_id=saga_id, request_id=uuid4(), request_payload={})
+
+    event = NewSagaEvent(
+        saga_id=saga_id,
+        kind=EventKind.FORWARD,
+        step=StepName.SUBMIT,
+        state_before=LifecycleState.SUBMITTED,
+        state_after=LifecycleState.SUBMITTED,
+        actor="test",
+        idempotency_key=new_idempotency_key(),
+        payload={},
+        outcome=StepOutcome.COMMITTED,
+    )
+
+    async with session.begin():
+        ledger = SagaLedger(session)
+
+        @asynccontextmanager
+        async def _failing_nested() -> AsyncIterator[None]:
+            raise IntegrityError(
+                "(saga_id, seq) conflict",
+                {},
+                Exception("UNIQUE constraint failed: saga_event.saga_id, saga_event.seq"),
+            )
+            yield  # pragma: no cover — unreachable; makes this an async generator
+
+        with patch.object(session, "begin_nested", _failing_nested), patch.object(
+            ledger, "_find_by_idempotency", AsyncMock(return_value=None)
+        ), pytest.raises(IntegrityError):
+            await ledger.append(event)

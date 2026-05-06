@@ -821,3 +821,36 @@ def test_parse_iso_naive_datetime_gets_utc() -> None:
     assert dt.tzinfo is not None
     assert dt.year == 2024
     assert dt.hour == 12
+
+
+@pytest.mark.asyncio
+async def test_scanner_skips_shipped_saga_with_no_ship_event(engine: AsyncEngine) -> None:
+    """A SHIPPED saga with no committed SHIP forward event is silently
+    skipped — covers the 'ship_event is None → continue' branch (line 211).
+
+    This is a data-inconsistency scenario (saga state advanced without an
+    event, e.g. via a direct DB patch). The scanner must not crash.
+    """
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    sm = async_sessionmaker(bind=engine, expire_on_commit=False)
+    saga_id = uuid4()
+    request = _build_request()
+
+    # Create a SHIPPED saga but deliberately omit the SHIP forward event.
+    async with sm() as session, session.begin():
+        ledger = SagaLedger(session)
+        await ledger.create_saga(
+            saga_id=saga_id,
+            request_id=request.request_id,
+            request_payload=request.model_dump(mode="json"),
+            initial_state=LifecycleState.SHIPPED,
+        )
+        # Intentionally no ledger.append() for the SHIP step.
+
+    now = datetime(2026, 6, 1, tzinfo=UTC)
+    scanner = OverdueScanner(sm, now_fn=lambda: now)
+    records = await scanner.scan()
+
+    # The inconsistent saga must not appear in results.
+    assert all(r.saga_id != saga_id for r in records)
