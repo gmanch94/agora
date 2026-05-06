@@ -66,7 +66,9 @@ NEXT_SESSION.md
 RECOMMENDATION.md
 DOCS_STALE_PUNCHLIST.md
 DESIGN.md
+MORNING_SUMMARY.md
 
 # Generated artifacts (built from scripts/build_deck.py, scripts/gen_exec_brief.py)
-agora_deck.pdf
-docs/*.docx
+# Outputs land in artifacts/ — kept out of git, regenerate locally.
+artifacts/*
+!artifacts/.gitkeep

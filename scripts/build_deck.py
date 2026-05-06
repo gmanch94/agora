@@ -1025,5 +1025,5 @@ def build(output_path: str) -> None:
 
 
 if __name__ == "__main__":
-    out = sys.argv[1] if len(sys.argv) > 1 else "agora_deck.pdf"
+    out = sys.argv[1] if len(sys.argv) > 1 else "artifacts/agora_deck.pdf"
     build(out)

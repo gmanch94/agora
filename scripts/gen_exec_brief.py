@@ -5,7 +5,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 
-OUTPUT = "docs/agora-executive-brief.docx"
+OUTPUT = "artifacts/agora-executive-brief.docx"
 
 # ---------------------------------------------------------------------------
 # Palette  (RGB tuples → hex strings)
