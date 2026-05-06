@@ -15,6 +15,7 @@ from agora.saga.idempotency import (
     outbox_mark_delivered,
     outbox_mark_failed,
     outbox_pending,
+    outbox_release_claim,
 )
 
 
@@ -107,3 +108,55 @@ async def test_outbox_mark_failed_dead_letters_after_max_attempts(session: Async
     assert refreshed is not None
     assert refreshed.status == "dead_letter"
     assert refreshed.attempts == 3
+
+
+# ---------------------------------------------------------------------------
+# Row-not-found guard paths (lines 193-194, 195-196, 205-206, 229-230)
+# ---------------------------------------------------------------------------
+
+_MISSING_ROW_ID = 999_999_999  # guaranteed absent in test DB
+
+
+@pytest.mark.asyncio
+async def test_outbox_release_claim_missing_row_is_noop(session: AsyncSession) -> None:
+    """outbox_release_claim returns silently when row doesn't exist (line 193-194)."""
+    async with session.begin():
+        await outbox_release_claim(session, _MISSING_ROW_ID)  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_outbox_release_claim_not_in_flight_is_noop(session: AsyncSession) -> None:
+    """outbox_release_claim returns silently when row status != in_flight (line 195-196)."""
+    saga_id = uuid4()
+    async with session.begin():
+        row = await outbox_enqueue(
+            session,
+            saga_id=saga_id,
+            target="reshare",
+            idempotency_key=new_idempotency_key(),
+            payload={},
+        )
+        row_id = row.id
+        # Row is 'pending', not 'in_flight' — release_claim should be a no-op.
+        await outbox_release_claim(session, row_id)
+
+    async with session.begin():
+        from agora.saga.db import OutboxRow
+
+        refreshed = await session.get(OutboxRow, row_id)
+    assert refreshed is not None
+    assert refreshed.status == "pending"  # unchanged
+
+
+@pytest.mark.asyncio
+async def test_outbox_mark_delivered_missing_row_is_noop(session: AsyncSession) -> None:
+    """outbox_mark_delivered returns silently when row doesn't exist (line 205-206)."""
+    async with session.begin():
+        await outbox_mark_delivered(session, _MISSING_ROW_ID)  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_outbox_mark_failed_missing_row_is_noop(session: AsyncSession) -> None:
+    """outbox_mark_failed returns silently when row doesn't exist (line 229-230)."""
+    async with session.begin():
+        await outbox_mark_failed(session, _MISSING_ROW_ID, error="boom")  # must not raise

@@ -29,7 +29,7 @@ from agora.models.request import (
     RequestType,
 )
 from agora.saga.context import SagaContext
-from agora.saga.coordinator import Coordinator, GateRequiredError
+from agora.saga.coordinator import Coordinator, CoordinatorError, GateRequiredError
 from agora.saga.db import OutboxRow
 from agora.saga.flows import build_registry, register_default_flows
 from agora.saga.idempotency import new_idempotency_key
@@ -1365,3 +1365,56 @@ def test_register_default_flows_populates_registry(
     assert fresh.has(StepName.SHIP)
     assert fresh.has(StepName.RECEIVE)
     assert fresh.has(StepName.RETURN_ITEM)
+
+
+# ---------------------------------------------------------------------------
+# Coordinator — no compensator registered (line 218)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_compensate_step_without_compensator_raises(session: AsyncSession) -> None:
+    """run_compensator raises CoordinatorError when the step has no compensator (line 218)."""
+    saga_id = uuid4()
+    request = _build_request()
+    full_registry = build_registry(TransactionAgent(MockReShareClient()))
+
+    async with session.begin():
+        await SagaLedger(session).create_saga(
+            saga_id=saga_id,
+            request_id=request.request_id,
+            request_payload=request.model_dump(mode="json"),
+        )
+
+    # Persist a committed SUBMIT forward so find_committed_forward returns it.
+    async with session.begin():
+        coord = Coordinator(session=session, registry=full_registry)
+        fwd_ctx = SagaContext(
+            saga_id=saga_id,
+            request=request,
+            current_state=LifecycleState.SUBMITTED,
+            idempotency_key=new_idempotency_key(prefix="submit-fwd-nc"),
+            actor="patron",
+            extras={},
+        )
+        await coord.run_forward(ctx=fwd_ctx, step=StepName.SUBMIT, require_gate=False)
+
+    # Build a registry with SUBMIT forward but NO compensator.
+    async def _noop_fwd(ctx: SagaContext) -> Any:
+        raise NotImplementedError  # never called — only the compensator path is exercised
+
+    no_comp_registry = StepRegistry()
+    no_comp_registry.register(name=StepName.SUBMIT, forward=_noop_fwd)
+
+    async with session.begin():
+        coord2 = Coordinator(session=session, registry=no_comp_registry)
+        comp_ctx = SagaContext(
+            saga_id=saga_id,
+            request=request,
+            current_state=LifecycleState.SUBMITTED,
+            idempotency_key=new_idempotency_key(prefix="comp-nc"),
+            actor="staff",
+            extras={},
+        )
+        with pytest.raises(CoordinatorError, match="has no compensator"):
+            await coord2.run_compensator(ctx=comp_ctx, step=StepName.SUBMIT)
