@@ -1,13 +1,13 @@
 # Agora — common dev commands
 
-.PHONY: help install fmt lint type test test-fast cov audit up down logs db-reset migrate api demo eval-routing eval-routing-llm sync-doc-counts reshare-up reshare-down reshare-logs reshare-probe reshare-smoke clean
+.PHONY: help install fmt lint type test test-fast cov audit up down logs db-reset migrate api demo deck brief eval-routing eval-routing-llm sync-doc-counts reshare-up reshare-down reshare-logs reshare-probe reshare-smoke clean
 
 help:
 	@echo "Common targets:"
 	@echo "  install     pip install -e .[dev,adk]"
 	@echo "  fmt         ruff format"
 	@echo "  lint        ruff check"
-	@echo "  type        mypy"
+	@echo "  type        mypy --strict (src/ + tests/)"
 	@echo "  test        pytest (all)"
 	@echo "  test-fast   pytest -m 'not slow and not integration'"
 	@echo "  cov         pytest with coverage"
@@ -19,6 +19,8 @@ help:
 	@echo "  migrate     alembic upgrade head"
 	@echo "  api         run FastAPI app locally"
 	@echo "  demo        run scripted happy-path demo"
+	@echo "  deck        generate leadership PDF deck → artifacts/agora_deck.pdf"
+	@echo "  brief       generate executive brief → artifacts/agora-executive-brief.docx"
 	@echo "  eval-routing run RoutingAgent eval harness (rules-only); rewrite evals/routing/baseline-rules.json"
 	@echo "  eval-routing-llm  run LLM-augmented eval (--no-write); requires Vertex/ADC env (see CLAUDE.md)"
 	@echo "  sync-doc-counts  rewrite test count + ADR count in docs to match runtime truth"
@@ -39,7 +41,7 @@ lint:
 	ruff check src tests
 
 type:
-	mypy src
+	mypy --strict
 
 test:
 	pytest
@@ -95,6 +97,12 @@ api:
 
 demo:
 	python -m agora.demos.happy_path
+
+deck:
+	python scripts/build_deck.py
+
+brief:
+	python scripts/gen_exec_brief.py
 
 # Score the rules-baseline RoutingAgent against the committed eval set
 # (evals/routing/scenarios.json) and rewrite evals/routing/baseline-rules.json
