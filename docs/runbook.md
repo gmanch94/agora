@@ -61,7 +61,7 @@ the process env. Defaults target local dev (Postgres on `localhost:5433`).
 | `RESHARE_TENANT`                    | `consortium-a`                                         | Maps to mod-rs `X-Okapi-Tenant` (login + data requests).   |
 | `RESHARE_USER` / `RESHARE_PASSWORD` | `""`                                                   | HTTP Basic for dev; reused as Okapi creds when `OKAPI_URL` is set (ADR-0013). |
 | `OKAPI_URL`                         | `""`                                                   | When set, `HttpReShareClient` authenticates via FOLIO Okapi token flow (`POST {OKAPI_URL}/authn/login`) instead of HTTP Basic. See ADR-0013. |
-| `NCIP_BASE_URL`                     | `""`                                                   | Mock-only today.                                           |
+| `NCIP_BASE_URL`                     | `""`                                                   | Empty → `MockNcipClient`. Non-empty → `HttpNcipClient` (PR #98/#99; source-review-only; live probe pending). |
 | `NCIP_AGENCY_ID`                    | `AGORA-DEV`                                            | Agency symbol stamped on NCIP requests.                    |
 | `AGORA_SRU_ENABLED`                 | `false`                                                | Opt-in for `agora.clients.sru.get_sru_client()`. `false` → factory returns the in-memory mock; `true` → live HTTP client against `SRU_LOC_URL`. Explicit boolean rather than URL-presence (the default URL is non-empty). |
 | `SRU_LOC_URL`                       | `https://lx2.loc.gov/voyager`                          | Library of Congress SRU.                                   |
@@ -102,9 +102,9 @@ fresh databases:
 ```
 
 Tests bypass Alembic and call `Base.metadata.create_all()` against an
-in-memory SQLite engine (see `tests/conftest.py`). The Alembic path
-itself has only been exercised against SQLite; first run against real
-Postgres is still pending — flagged in `CLAUDE.md`.
+in-memory SQLite engine (see `tests/conftest.py`). The Alembic path is
+exercised against `postgres:15-alpine` on every CI run via
+`tests/test_alembic_postgres.py` + `postgres-tests.yml` (PR #24).
 
 ### 1.4 Smoke tests
 

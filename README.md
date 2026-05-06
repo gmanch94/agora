@@ -41,7 +41,7 @@ detect-secrets, pytest + ruff + mypy --strict, alembic+ORM parity
 against `postgres:15-alpine`, routing-eval rules-floor regression check.
 
 See `docs/prd/` for product requirements, `docs/adr/` for architecture
-decisions (15 ADRs through 0015), `docs/architecture.md` for the
+decisions (16 ADRs through 0016), `docs/architecture.md` for the
 hand-drawn diagrams, `docs/runbook.md` for operations, `docs/solution.md`
 for the solution doc, `docs/lessons.md` for accumulated gotchas, and
 `prompts/build-agora.md` to bootstrap a fresh dev session.
@@ -53,7 +53,7 @@ agora/
 ├── prompts/             # Project bootstrap prompt
 ├── docs/
 │   ├── prd/             # Product requirements (00-06)
-│   ├── adr/             # Architecture decisions (0001-0015)
+│   ├── adr/             # Architecture decisions (0001-0016)
 │   ├── architecture.md  # Hand-drawn Mermaid diagrams
 │   ├── runbook.md       # Operations / on-call notes
 │   ├── solution.md      # Solution overview
@@ -113,7 +113,7 @@ make api
 | Standard | Role | Implementation strategy |
 |---|---|---|
 | ISO 18626:2021 | Peer-to-peer ILL messaging | Delegated to ReShare `mod-rs`; XSD validation harness in `scripts/validate_iso18626.py` for the day Agora emits XML directly |
-| NCIP / Z39.83 | Library ↔ ILS circulation | Delegated to FOLIO `mod-ncip` (mock today; real client deferred) |
+| NCIP / Z39.83 | Library ↔ ILS circulation | `HttpNcipClient` (source-review-only, PR #98/#99); `MockNcipClient` default; live mod-ncip probe pending |
 | SRU | Catalog discovery | Direct HTTP client (`agora.clients.sru`) |
 | CrossRef REST | DOI → bibliographic record | Direct HTTP client (`agora.clients.crossref`) |
 | OpenURL | Citation resolution | Pure-Python parser |
@@ -133,10 +133,10 @@ make api
 - [Runbook](docs/runbook.md)
 - [Solution overview](docs/solution.md)
 - [Lessons learned](docs/lessons.md)
-- [ADRs](docs/adr/) — 15 records, latest are
-  [ADR-0013 (Okapi token auth)](docs/adr/0013-okapi-token-auth.md),
+- [ADRs](docs/adr/) — 16 records, latest are
   [ADR-0014 (routing LLM tie-breaker)](docs/adr/0014-routing-llm-tiebreaker.md),
-  and [ADR-0015 (staff console HTMX + Jinja2)](docs/adr/0015-staff-console-htmx-jinja2.md)
+  [ADR-0015 (staff console HTMX + Jinja2)](docs/adr/0015-staff-console-htmx-jinja2.md),
+  and [ADR-0016 (recall via manualClose)](docs/adr/0016-recall-via-manual-close.md)
 - [Bootstrap prompt](prompts/build-agora.md)
 
 ## License

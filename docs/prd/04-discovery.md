@@ -29,8 +29,8 @@ OpenURL/citation
        │
        ▼
   Identifier confirmation (DOI → CrossRef: PR-A client + PR-B agent
-                            integration; OCLC# → WorldCat: future,
-                            sandbox blocker)
+                            integration; OCLC# → WorldCat: structural
+                            gap — no open holdings API; see § Out of scope)
        │
        ▼
   Holdings search (SRU; LoC default; consortium union catalog planned)
@@ -45,8 +45,10 @@ client; uses the confirmed ISBN/ISSN/title to seed the SRU search
 (preferring CrossRef-confirmed values over the patron's own); then
 searches SRU by ISBN → ISSN → title in that order of preference.
 Existing callers that built the agent without `crossref=` keep
-working unchanged. WorldCat and consortium-union SRU remain
-unimplemented.
+working unchanged. When SRU returns no MARC 852 holdings,
+`DiscoveryAgent` falls back to `AGORA_CONSORTIUM_MEMBERS` and
+synthesises `HolderCandidate(status="unverified_holdings")` per
+member (PR #100). WorldCat is a structural gap (see § Out of scope).
 
 **Two clients, two roles — sequential pipeline, not a merge.**
 CrossRef confirms *bibliographic identity* for a DOI (title, ISSN,
@@ -138,7 +140,7 @@ Each `HolderCandidate` (`src/agora/models/candidate.py`):
 class HolderCandidate(BaseModel):
     symbol: str                 # ISIL or consortium-local
     name: str | None = None
-    status: str = "unknown"     # 'available'|'on_loan'|'reference_only'|'unknown'
+    status: str = "unknown"     # 'available'|'on_loan'|'reference_only'|'unknown'|'unverified_holdings'
     distance_km: float | None = None
     is_consortium_member: bool = False
     preferred_score: float = 0.0  # 0..1; 1.0 if in consortium today
@@ -148,7 +150,8 @@ class HolderCandidate(BaseModel):
 The `IllRequest.item` already carries title / author / ISBN / ISSN /
 DOI / OCLC# (see `src/agora/models/request.py`). The CrossRef client
 covers DOI→identity in isolation; OCLC#-keyed WorldCat lookups
-remain out of scope until the WorldCat sandbox integration lands.
+are a structural gap — no freely accessible union holdings API
+exists (see § Out of scope).
 
 ## Failure modes
 
@@ -161,7 +164,12 @@ remain out of scope until the WorldCat sandbox integration lands.
 
 ## Out of scope (prototype)
 
-- Inter-consortium discovery beyond LoC + sandbox union catalog
-- Real WorldCat (paid API; mock with a static holders fixture)
+- Inter-consortium discovery beyond LoC
+- WorldCat: structural gap — OCLC v1 EOL'd Dec 2024; v2 requires paid
+  subscription; open SRU targets (DNB, GBV K10plus, SWB, SUDOC, Library
+  Hub, LoC) carry bib-only MARCXML with no MARC 852 holdings.
+  POC substitute: consortium-member fallback via `AGORA_CONSORTIUM_MEMBERS`
+  (PR #100; `status="unverified_holdings"`). Revisit if institutional
+  OCLC access materialises.
 - Z39.50 binary protocol
 - Article-level full-text discovery (defer to OpenURL link resolver)

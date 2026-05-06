@@ -177,7 +177,7 @@ console commits the gate.
 | --------------------- | -------------------------------------------------------------------------------------- |
 | `MockReShareClient`   | In-process default. Returns deterministic `reshare_id` strings.                        |
 | `HttpReShareClient`   | Real HTTP wrapper for mod-rs. Endpoint paths verified against UrlMappings.groovy / PatronRequestController.groovy / Actions.groovy / ModuleDescriptor-template.json (see module docstring). Auth = HTTP Basic; production needs Okapi token. mod-rs ignores `Idempotency-Key` headers — replay-safety lives in the saga ledger UNIQUE. |
-| `MockNcipClient`      | Mock-only. NCIP is on the roadmap but not yet implemented.                             |
+| `MockNcipClient` / `HttpNcipClient` | `MockNcipClient` is the default. `HttpNcipClient` (PR #98, wired PR #99) is a real NCIP 2.0 XML client; source-review-only against mod-ncip master; live probe still pending. |
 | SRU client            | Implemented; talks to LoC by default. `get_sru_client()` factory selects mock vs HTTP via `AGORA_SRU_ENABLED` (default mock). |
 | CrossRef client       | Implemented (#46); DOI → bibliographic identity (title, ISSN, ISBN, container, year). `get_crossref_client()` factory selects mock vs HTTP via `AGORA_CROSSREF_ENABLED` (default mock). |
 | OpenURL parser        | Implemented; KEV format only.                                                          |
@@ -368,6 +368,8 @@ during the APPROVING window (supplier ack still pending) returns
 | APPROVE forward via outbox + `APPROVING` waypoint state      | 0012   | Closes the inline-wire-call gap on APPROVE; supplier ack lands as a projection that writes `reshare_id`. |
 | FOLIO Okapi token auth for `HttpReShareClient`               | 0013   | HTTP Basic for dev; setting `OKAPI_URL` switches to the FOLIO Okapi token flow for production. |
 | Routing LLM tie-breaker (rules-first, LLM on near-ties only) | 0014   | Default-off seam + ADK Gemini Flash adapter; rules pick stays the bulk decision, LLM fires only when top-2 score gap ≤ ε. |
+| Staff console — HTMX + Jinja2                                | 0015   | Server-side rendering for the staff approval console; HTMX for dynamic panel swaps; no JS framework. |
+| Recall via `manualClose` (compensate-SHIP path)              | 0016   | No requester-initiated recall action exists in mod-rs; `manualClose` is the force-close staff override until ISO 18626 Cancel via `message` is wire-tested. |
 
 ---
 
@@ -396,18 +398,18 @@ during the APPROVING window (supplier ack still pending) returns
 
 ### 7.3 Scalability limits (today)
 
-- One outbox drainer per DB. The `SELECT pending` query has no
-  row-level lock; running two workers double-delivers. Postgres fix
-  is `SELECT ... FOR UPDATE SKIP LOCKED`; SQLite cannot. Out of
-  scope for prototype.
+- Outbox multi-worker safety shipped PR #25: `SELECT ... FOR UPDATE
+  SKIP LOCKED` acquires disjoint row sets, flips claimed rows to
+  `status='in_flight'` with `claimed_at`, and commits. Orphan recovery
+  sweeps stale `in_flight` rows back to `pending`. SQLite serialises
+  writers naturally so the same code works in tests.
 - API is async-first but has not been load-tested.
 - No connection pooling tuning beyond `db_pool_size=10`.
 
 ### 7.4 Type safety
 
-- `mypy --strict` runs clean against `src/` (36 files); CI gate.
-- `tests/` is intentionally excluded — has stale `# type: ignore`
-  markers and missing annotations. Future cleanup.
+- `mypy --strict` runs clean against `src/` AND `tests/`
+  (`pyproject.toml` `files = ["src", "tests"]`); CI gate.
 - Package ships a `py.typed` marker (PEP 561) so downstream consumers
   pick up inline types.
 
@@ -476,10 +478,10 @@ catalogs publish SRU anyway. SRU covers the prototype scope.
 | `HttpReShareClient`           | Create-request body shape unverified vs `PatronRequest` Grails domain. Recall mapping unverified — raises until confirmed. |
 | Auth                          | HTTP Basic only. Production needs Okapi token flow.                                                                       |
 | ReconciliationAgent           | Thin wrapper today; lacks failure-classification policy (when to run which compensator automatically).                     |
-| NCIP client                   | Mock-only.                                                                                                                |
+| NCIP client                   | `HttpNcipClient` shipped (PR #98/#99; source-review-only); live mod-ncip probe pending (see `tests/test_ncip_http_smoke.py`). |
 | ISO 18626 XSD validation      | Validation harness (`scripts/validate_iso18626.py`) + minimal XSD/XML fixtures shipped #52; CI exercises plumbing on every PR. The real ISO 18626 v1.3 XSD is an opt-in cache step at `docs/standards/iso18626/` — not bundled. Wire-level conformance still delegated to mod-rs. |
 | Observability (traces)        | structlog only. No OpenTelemetry yet.                                                                                     |
-| PRD/architecture drift        | Stale-check pass ran 2026-05-04 (post PRs #25/#27/#28); 26 drift candidates across 6 files captured for follow-up PRs.    |
+| PRD/architecture drift        | Stale-check pass ran 2026-05-06 (post PR #101); 20 drift candidates across 6 files fixed in this PR.                      |
 | Python version                | CI gates on 3.11 (`triple-gate.yml` + `audit.yml` + `postgres-tests.yml`); local dev on 3.14.3. No 3.12/3.13 matrix.       |
 
 > **Recently closed** (kept here for changelog continuity; remove on next refresh):

@@ -216,8 +216,10 @@ unconfirmed-receipt saga still needs an overdue threshold.
 
 **NCIP outcomes do not gate saga state.** Failure surfaces as a
 stuck outbox row for staff review; the saga continues. The NCIP
-HTTP/SOAP client itself remains a mock today (`MockNcipClient`) —
-real `mod-ncip` integration is future work.
+HTTP/SOAP client ships as `HttpNcipClient` (PR #98, wired PR #99;
+source-review-only against mod-ncip master; live mod-ncip probe
+still pending — see NEXT_SESSION.md § Backlog). `MockNcipClient`
+remains the default for prototype / tests.
 
 ### SHIP compensator (post-RECEIVE re-anchor)
 
