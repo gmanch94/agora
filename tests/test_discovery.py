@@ -423,3 +423,118 @@ async def test_request_item_is_not_mutated() -> None:
 
     assert req.item.issn == issn_before == "9999-9999"  # unchanged
     assert req.item.title == title_before == "x"
+
+
+# ---------------------------------------------------------------------------
+# Consortium-member fallback (PR-C: no-holdings SRU path)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fallback_fires_when_sru_returns_no_records() -> None:
+    """When SRU finds no records at all and consortium members are
+    configured, the agent synthesises one candidate per member with
+    status='unverified_holdings'."""
+    sru = MockSruClient(records=[])  # empty — nothing found
+    agent = DiscoveryAgent(sru, consortium_members={"MEMBER1", "MEMBER2"})
+
+    rec = await agent.run(_request(title="Rare Book", isbn="9780000000001"))
+
+    assert rec.has_candidates
+    symbols = {c.symbol for c in rec.candidates}
+    assert symbols == {"MEMBER1", "MEMBER2"}
+    for c in rec.candidates:
+        assert c.status == "unverified_holdings"
+        assert c.is_consortium_member is True
+        assert c.raw == {"src": "consortium_fallback"}
+
+
+@pytest.mark.asyncio
+async def test_fallback_fires_when_sru_records_have_no_852() -> None:
+    """When SRU returns bib-only records (holdings=[]) and consortium
+    members are configured, the fallback still fires — the 852-empty
+    case is structurally identical to no records."""
+    bib_only = SruRecord(
+        title="Some Title",
+        authors=["Author"],
+        isbn="9780000000001",
+        issn=None,
+        holdings=[],          # bib-only, no 852
+        raw_marcxml="",
+    )
+    sru = MockSruClient(records=[bib_only])
+    agent = DiscoveryAgent(sru, consortium_members={"MEMBER1"})
+
+    rec = await agent.run(_request(title="Some Title", isbn="9780000000001"))
+
+    assert rec.has_candidates
+    assert rec.candidates[0].symbol == "MEMBER1"
+    assert rec.candidates[0].status == "unverified_holdings"
+
+
+@pytest.mark.asyncio
+async def test_fallback_suppressed_when_sru_returns_852_holdings() -> None:
+    """When SRU returns real 852 holdings the fallback must NOT fire —
+    confirmed holdings take priority over the unverified roster."""
+    sru = MockSruClient(
+        records=[
+            SruRecord(
+                title="Known Book",
+                authors=[],
+                isbn="9780060850524",
+                issn=None,
+                holdings=["EXTERNAL-LIB"],
+                raw_marcxml="",
+            )
+        ]
+    )
+    agent = DiscoveryAgent(sru, consortium_members={"MEMBER1"})
+
+    rec = await agent.run(_request(title="Known Book", isbn="9780060850524"))
+
+    assert rec.has_candidates
+    symbols = {c.symbol for c in rec.candidates}
+    assert "EXTERNAL-LIB" in symbols
+    assert "MEMBER1" not in symbols  # member not in 852 → not synthesised
+    assert all(c.status == "unknown" for c in rec.candidates)
+
+
+@pytest.mark.asyncio
+async def test_no_fallback_and_unfilled_when_no_members_configured() -> None:
+    """When SRU returns nothing AND no consortium members are configured
+    the recommendation stays empty (Unfilled path)."""
+    sru = MockSruClient(records=[])
+    agent = DiscoveryAgent(sru)  # no consortium_members
+
+    rec = await agent.run(_request(title="Ghost Title", isbn="9780000000001"))
+
+    assert not rec.has_candidates
+    assert any("Unfilled" in d for d in rec.diagnostics)
+
+
+@pytest.mark.asyncio
+async def test_fallback_diagnostic_text() -> None:
+    """The fallback diagnostic must mention count and 'unverified'."""
+    sru = MockSruClient(records=[])
+    agent = DiscoveryAgent(sru, consortium_members={"MEMBER1", "MEMBER2"})
+
+    rec = await agent.run(_request(title="x", isbn="9780000000001"))
+
+    diag_text = " | ".join(rec.diagnostics)
+    assert "852" in diag_text
+    assert "unverified" in diag_text
+
+
+@pytest.mark.asyncio
+async def test_fallback_rationale_text() -> None:
+    """The rationale for the fallback path mentions 'unverified' and
+    'no freely accessible union catalog', not the SRU-success wording."""
+    sru = MockSruClient(records=[])
+    agent = DiscoveryAgent(sru, consortium_members={"MEMBER1"})
+
+    rec = await agent.run(_request(title="x", isbn="9780000000001"))
+
+    assert "unverified" in rec.rationale
+    assert "union catalog" in rec.rationale
+    # Must NOT contain the normal-path wording
+    assert "holder(s) for" not in rec.rationale
