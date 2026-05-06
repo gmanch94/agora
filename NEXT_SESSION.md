@@ -1,11 +1,11 @@
 # Next session resume note
 
-**Last updated:** 2026-05-06 (PR #100 merged — master is clean).
+**Last updated:** 2026-05-06 (PR #101 merged — master is clean).
 
 ## Repo state
 
-- `master` clean at PR #100.
-- Test count: **271** (262 passing + 9 skipped postgres/reshare/ncip-smoke).
+- `master` clean at PR #101.
+- Test count: **271** (260 passing + 11 skipped — postgres/reshare/ncip-smoke).
 - ADR count: **16**.
 - No open PRs.
 
@@ -18,12 +18,13 @@
 | #98 | feat(ncip): HttpNcipClient — NCIP 2.0 XML client | Merged |
 | #99 | feat(ncip): wire HttpNcipClient factory into app.py lifespan | Merged |
 | #100 | feat(discovery): consortium-member fallback when SRU yields no holdings | Merged |
+| #101 | test(ncip): NCIP HTTP smoke test — health + checkout/checkin round-trip | Merged |
 
 ## What to do at session start
 
 ```
 git checkout master && git pull
-pytest -q                 # 271 pass, 9 skip
+pytest -q                 # 271 pass, 11 skip
 ruff check src tests      # clean
 mypy --strict             # clean
 ```
@@ -32,9 +33,14 @@ mypy --strict             # clean
 
 ### Sandbox-blocked
 1. **NCIP live probe** — need a real FOLIO tenant with mod-ncip
-   deployed + configured. Set `NCIP_BASE_URL` + `NCIP_AGENCY_ID` and
-   run a checkout/checkin round-trip. Add smoke test like
-   `test_reshare_http_smoke.py` (skips when `AGORA_TEST_NCIP_URL` unset).
+   deployed + configured. Smoke test is ready (`test_ncip_http_smoke.py`,
+   PR #101). Set `AGORA_TEST_NCIP_URL` + `RESHARE_TENANT` + `NCIP_AGENCY_ID`
+   and run:
+   ```
+   pytest tests/test_ncip_http_smoke.py -v
+   ```
+   For the checkout/checkin round-trip also set `AGORA_TEST_NCIP_ITEM_ID`
+   and `AGORA_TEST_NCIP_PATRON_ID` (mutates ILS state — use a test tenant).
 2. **WorldCat holdings lookup** — **structural gap; POC uses consortium
    roster as fallback (PR #100 shipped).**
    WorldCat Search API v2 (the only current OCLC API; v1 EOL'd Dec 2024)
