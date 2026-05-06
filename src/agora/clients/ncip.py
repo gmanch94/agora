@@ -82,7 +82,7 @@ Notes from source review (2026-05-06):
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, cast
 
 import httpx
 from lxml import etree
@@ -228,7 +228,7 @@ def _build_checkout_xml(agency_id: str, patron_id: str, item_id: str) -> bytes:
     _e(item, "AgencyId", agency_id)
     _e(item, "ItemIdentifierValue", item_id)
 
-    return etree.tostring(msg, xml_declaration=True, encoding="UTF-8")
+    return cast(bytes, etree.tostring(msg, xml_declaration=True, encoding="UTF-8"))
 
 
 def _build_checkin_xml(agency_id: str, item_id: str) -> bytes:
@@ -266,7 +266,7 @@ def _build_checkin_xml(agency_id: str, item_id: str) -> bytes:
     _e(item, "AgencyId", agency_id)
     _e(item, "ItemIdentifierValue", item_id)
 
-    return etree.tostring(msg, xml_declaration=True, encoding="UTF-8")
+    return cast(bytes, etree.tostring(msg, xml_declaration=True, encoding="UTF-8"))
 
 
 def _parse_response(status_code: int, content: bytes) -> None:
