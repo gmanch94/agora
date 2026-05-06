@@ -31,7 +31,7 @@ from agora.models.request import (
 from agora.saga.context import SagaContext
 from agora.saga.coordinator import Coordinator, GateRequiredError
 from agora.saga.db import OutboxRow
-from agora.saga.flows import build_registry
+from agora.saga.flows import build_registry, register_default_flows
 from agora.saga.idempotency import new_idempotency_key
 from agora.saga.ledger import SagaLedger
 from agora.saga.outbox import (
@@ -41,6 +41,7 @@ from agora.saga.outbox import (
     make_reshare_on_success,
 )
 from agora.saga.steps import StepRegistry
+from agora.saga.steps import StepRegistry as _StepRegistry
 
 
 def _build_request() -> IllRequest:
@@ -1095,3 +1096,272 @@ async def test_replayed_forward_does_not_double_enqueue(session: AsyncSession) -
     assert len(rows) == 1, "replayed forward must not enqueue duplicate outbox rows"
     assert rows[0].target == "reshare"
     assert rows[0].payload["action"] == "confirm_shipment"
+
+
+# ---------------------------------------------------------------------------
+# SUBMIT step — forward and compensator (require_gate=False path)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_submit_forward_runs_without_gate(session: AsyncSession) -> None:
+    """submit_forward can be driven via require_gate=False (lines 91-95 in flows.py)."""
+    saga_id = uuid4()
+    request = _build_request()
+    registry = build_registry(TransactionAgent(MockReShareClient()))
+
+    async with session.begin():
+        ledger = SagaLedger(session)
+        await ledger.create_saga(
+            saga_id=saga_id,
+            request_id=request.request_id,
+            request_payload=request.model_dump(mode="json"),
+        )
+
+    async with session.begin():
+        coord = Coordinator(session=session, registry=registry)
+        ctx = SagaContext(
+            saga_id=saga_id,
+            request=request,
+            current_state=LifecycleState.SUBMITTED,
+            idempotency_key=new_idempotency_key(prefix="submit-fwd"),
+            actor="patron",
+            extras={},
+        )
+        ev = await coord.run_forward(ctx=ctx, step=StepName.SUBMIT, require_gate=False)
+
+    assert ev.state_after == LifecycleState.SUBMITTED
+    assert ev.step == StepName.SUBMIT
+    assert ev.outcome == StepOutcome.COMMITTED
+
+
+@pytest.mark.asyncio
+async def test_submit_compensator_cancels_saga(session: AsyncSession) -> None:
+    """submit_compensator transitions to CANCELLED (line 98 in flows.py)."""
+    saga_id = uuid4()
+    request = _build_request()
+    registry = build_registry(TransactionAgent(MockReShareClient()))
+
+    async with session.begin():
+        ledger = SagaLedger(session)
+        await ledger.create_saga(
+            saga_id=saga_id,
+            request_id=request.request_id,
+            request_payload=request.model_dump(mode="json"),
+        )
+
+    # Commit the SUBMIT forward so the compensator has a target.
+    async with session.begin():
+        coord = Coordinator(session=session, registry=registry)
+        ctx = SagaContext(
+            saga_id=saga_id,
+            request=request,
+            current_state=LifecycleState.SUBMITTED,
+            idempotency_key=new_idempotency_key(prefix="submit-fwd2"),
+            actor="patron",
+            extras={},
+        )
+        await coord.run_forward(ctx=ctx, step=StepName.SUBMIT, require_gate=False)
+
+    # Now run the compensator.
+    async with session.begin():
+        coord = Coordinator(session=session, registry=registry)
+        ctx = SagaContext(
+            saga_id=saga_id,
+            request=request,
+            current_state=LifecycleState.SUBMITTED,
+            idempotency_key=new_idempotency_key(prefix="submit-comp"),
+            actor="staff",
+            extras={},
+        )
+        ev = await coord.run_compensator(ctx=ctx, step=StepName.SUBMIT)
+
+    assert ev.state_after == LifecycleState.CANCELLED
+    assert ev.outcome == StepOutcome.COMMITTED
+
+
+# ---------------------------------------------------------------------------
+# flows.py missing-extras guards (ValueError paths in forward functions)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_approve_forward_missing_supplier_raises(session: AsyncSession) -> None:
+    """approve_forward raises ValueError when chosen_supplier absent (line 146)."""
+    saga_id = uuid4()
+    request = _build_request()
+    registry = build_registry(TransactionAgent(MockReShareClient()))
+
+    async with session.begin():
+        await SagaLedger(session).create_saga(
+            saga_id=saga_id,
+            request_id=request.request_id,
+            request_payload=request.model_dump(mode="json"),
+        )
+
+    async with session.begin():
+        coord = Coordinator(session=session, registry=registry)
+        ctx = SagaContext(
+            saga_id=saga_id,
+            request=request,
+            current_state=LifecycleState.ROUTED,
+            idempotency_key=new_idempotency_key(prefix="approve-no-sup"),
+            actor="staff",
+            extras={},  # missing chosen_supplier
+        )
+        with pytest.raises(ValueError, match="chosen_supplier"):
+            await coord.run_forward(ctx=ctx, step=StepName.APPROVE, require_gate=False)
+
+
+@pytest.mark.asyncio
+async def test_ship_forward_missing_reshare_id_raises(session: AsyncSession) -> None:
+    """ship_forward raises ValueError when reshare_id absent (line 242)."""
+    saga_id = uuid4()
+    request = _build_request()
+    registry = build_registry(TransactionAgent(MockReShareClient()))
+
+    async with session.begin():
+        await SagaLedger(session).create_saga(
+            saga_id=saga_id,
+            request_id=request.request_id,
+            request_payload=request.model_dump(mode="json"),
+        )
+
+    async with session.begin():
+        coord = Coordinator(session=session, registry=registry)
+        ctx = SagaContext(
+            saga_id=saga_id,
+            request=request,
+            current_state=LifecycleState.APPROVED,
+            idempotency_key=new_idempotency_key(prefix="ship-no-rid"),
+            actor="staff",
+            extras={},  # missing reshare_id
+        )
+        with pytest.raises(ValueError, match="reshare_id"):
+            await coord.run_forward(ctx=ctx, step=StepName.SHIP, require_gate=False)
+
+
+@pytest.mark.asyncio
+async def test_receive_forward_missing_reshare_id_raises(session: AsyncSession) -> None:
+    """receive_forward raises ValueError when reshare_id absent (line 378)."""
+    saga_id = uuid4()
+    request = _build_request()
+    registry = build_registry(TransactionAgent(MockReShareClient()))
+
+    async with session.begin():
+        await SagaLedger(session).create_saga(
+            saga_id=saga_id,
+            request_id=request.request_id,
+            request_payload=request.model_dump(mode="json"),
+        )
+
+    async with session.begin():
+        coord = Coordinator(session=session, registry=registry)
+        ctx = SagaContext(
+            saga_id=saga_id,
+            request=request,
+            current_state=LifecycleState.SHIPPED,
+            idempotency_key=new_idempotency_key(prefix="receive-no-rid"),
+            actor="staff",
+            extras={},  # missing reshare_id
+        )
+        with pytest.raises(ValueError, match="reshare_id"):
+            await coord.run_forward(ctx=ctx, step=StepName.RECEIVE, require_gate=False)
+
+
+@pytest.mark.asyncio
+async def test_return_forward_missing_reshare_id_raises(session: AsyncSession) -> None:
+    """return_forward raises ValueError when reshare_id absent (line 445)."""
+    saga_id = uuid4()
+    request = _build_request()
+    registry = build_registry(TransactionAgent(MockReShareClient()))
+
+    async with session.begin():
+        await SagaLedger(session).create_saga(
+            saga_id=saga_id,
+            request_id=request.request_id,
+            request_payload=request.model_dump(mode="json"),
+        )
+
+    async with session.begin():
+        coord = Coordinator(session=session, registry=registry)
+        ctx = SagaContext(
+            saga_id=saga_id,
+            request=request,
+            current_state=LifecycleState.RECEIVED,
+            idempotency_key=new_idempotency_key(prefix="return-no-rid"),
+            actor="staff",
+            extras={},  # missing reshare_id
+        )
+        with pytest.raises(ValueError, match="reshare_id"):
+            await coord.run_forward(ctx=ctx, step=StepName.RETURN_ITEM, require_gate=False)
+
+
+@pytest.mark.asyncio
+async def test_ship_compensator_missing_reshare_id_raises(session: AsyncSession) -> None:
+    """ship_compensator raises ValueError when forward payload lacks reshare_id (line 276)."""
+    saga_id = uuid4()
+    request = _build_request()
+    registry = build_registry(TransactionAgent(MockReShareClient()))
+
+    async with session.begin():
+        ledger = SagaLedger(session)
+        await ledger.create_saga(
+            saga_id=saga_id,
+            request_id=request.request_id,
+            request_payload=request.model_dump(mode="json"),
+        )
+        # Manually append a SHIP FORWARD with an empty payload (no reshare_id).
+        await ledger.append(
+            NewSagaEvent(
+                saga_id=saga_id,
+                kind=EventKind.FORWARD,
+                step=StepName.SHIP,
+                state_before=LifecycleState.APPROVED,
+                state_after=LifecycleState.SHIPPED,
+                actor="staff",
+                idempotency_key=new_idempotency_key(prefix="ship-empty"),
+                payload={},  # no reshare_id
+                outcome=StepOutcome.COMMITTED,
+            )
+        )
+
+    async with session.begin():
+        coord = Coordinator(session=session, registry=registry)
+        ctx = SagaContext(
+            saga_id=saga_id,
+            request=request,
+            current_state=LifecycleState.SHIPPED,
+            idempotency_key=new_idempotency_key(prefix="ship-comp-no-rid"),
+            actor="staff",
+            extras={},
+        )
+        with pytest.raises(ValueError, match="reshare_id"):
+            await coord.run_compensator(ctx=ctx, step=StepName.SHIP)
+
+
+# ---------------------------------------------------------------------------
+# register_default_flows — wires the global registry (lines 77-79)
+# ---------------------------------------------------------------------------
+
+
+def test_register_default_flows_populates_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """register_default_flows wires steps into the global registry."""
+    import agora.saga.flows as flows_mod
+    import agora.saga.steps as steps_mod
+
+    fresh = _StepRegistry()
+    monkeypatch.setattr(flows_mod, "get_global_registry", lambda: fresh)
+    monkeypatch.setattr(steps_mod, "_global_registry", fresh)
+
+    result = register_default_flows(TransactionAgent(MockReShareClient()))
+
+    assert result is fresh
+    assert fresh.has(StepName.SUBMIT)
+    assert fresh.has(StepName.ROUTE)
+    assert fresh.has(StepName.APPROVE)
+    assert fresh.has(StepName.SHIP)
+    assert fresh.has(StepName.RECEIVE)
+    assert fresh.has(StepName.RETURN_ITEM)
