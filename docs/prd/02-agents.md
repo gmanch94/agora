@@ -35,7 +35,12 @@ item + holder list.
   PRD-04 for the full flow.
 
 **Tools (planned, not yet wired):**
-- WorldCat sandbox (OCLC# → holdings), consortium-union SRU.
+- WorldCat: structural gap — no freely accessible union holdings API
+  exists (OCLC v1 EOL'd Dec 2024; v2 requires paid subscription; open
+  SRU targets carry bib-only MARCXML, no MARC 852). When SRU returns
+  no holdings, `DiscoveryAgent` falls back to `AGORA_CONSORTIUM_MEMBERS`
+  and synthesises `HolderCandidate(status="unverified_holdings")` per
+  member (PR #100). Revisit if institutional OCLC access materialises.
 
 **Failure modes:** zero holders → `DiscoveryRecommendation.diagnostics`
 records `"zero holders matched; saga will be Unfilled"`; staff sees
@@ -80,7 +85,7 @@ Flash via Vertex AI by default (`AGORA_ROUTING_LLM_MODEL`),
 `src/agora/agents/routing_tiebreak_prompt.py` — same module as the
 prompt template, kept separate from the adapter so prompt-wording
 diffs stand alone). Per-call timeout via `asyncio.wait_for` —
-defaults to 5s (`AGORA_ROUTING_LLM_TIMEOUT_SECS`). Lazy
+defaults to 30s (`AGORA_ROUTING_LLM_TIMEOUT_SECS`; bumped from 5s — Gemini 2.5 cold-start exceeds the old default). Lazy
 `google.adk` import in `__init__` so a base install (no `[adk]`
 extra) doesn't crash. Factory at
 `agora.agents.factories.get_llm_tiebreaker()` returns `None`
