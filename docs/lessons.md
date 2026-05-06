@@ -868,6 +868,45 @@ readiness. Daemon health cannot be polled reliably from inside a
 sandboxed shell that itself blocks on the daemon socket.
 *(Session 2026-05-05 — PR #95 bring-up attempt.)*
 
+### 2026-05-06 — FOLIO tenant IDs must be lowercase alphanumeric only (no hyphens)
+
+The probe script defaulted to `RESHARE_TENANT=consortium-a`. mod-rs
+uses the tenant ID as a Postgres schema name suffix
+(`mod_rs_<tenant>`). The hyphen makes that an invalid SQL identifier
+and Postgres raises `PSQLException: syntax error at "-"` during the
+Liquibase schema init, causing `POST /_/tenant` to fail and every
+subsequent `/rs/*` call to return 500 (TenantNotFoundException). The
+fix is simple — use lowercase alphanumeric IDs only (e.g. `diku`,
+`consortiuma`). The Makefile, `docker-compose.yml` healthcheck, probe
+defaults, and any `.env.example` entries should all agree on the same
+value. If FOLIO's own reference environment uses `diku` as the default
+tenant, default to `diku` in the sandbox.
+*(Session 2026-05-06 — `make reshare-probe` bring-up; probe script
+and docker-compose.yml healthcheck both fixed in this session.)*
+
+### 2026-05-06 — mod-rs has no requester-initiated recall action from REQ_SHIPPED
+
+`Actions.groovy` in mod-rs defines no `recall`, `requesterRecall`, or
+`borrowerRecall` action. `REQ_RECALLED` is a *destination* state the
+supplier drives via an incoming ISO 18626 message; the requester cannot
+trigger it via `performAction`. From `REQ_SHIPPED` the only manual
+`performAction` available to the borrower is `requesterReceived`. The
+probe tried seven candidates (including `requesterCancel`, `sendMessage`,
+`message`, `patronRecall`, `escalate`) — all returned HTTP 400.
+`requesterCancel` exists but is not wired to `REQ_SHIPPED`; it is
+valid in earlier states (REQ_IDLE through REQ_CONDITIONAL_ANSWER_RECEIVED).
+
+The compensate-SHIP path in `HttpReShareClient.recall_request` keeps
+its `ClientError` guard. Before wiring real traffic, an ADR is needed
+to choose between: (A) ISO 18626 Cancel via the `message` performAction
+with a reason code (protocol-correct, needs wire-level testing) or
+(B) `manualClose` as a force-close staff override (local-only, no
+supplier notification). Do not swap `recall_request` to `manualClose`
+silently — the saga treats a successful return as "supplier notified",
+which would be false for option B.
+*(Session 2026-05-06 — `make reshare-probe` + Actions.groovy source
+review via GitHub; `src/agora/clients/reshare.py` comments updated.)*
+
 ### 2026-05-03 — `output_schema` on ADK `LlmAgent` is the structured-output primitive; don't fight it
 ADK's `LlmAgent(output_schema=Foo)` automatically derives
 `response_mime_type="application/json"` and `response_schema=Foo`

@@ -114,16 +114,23 @@ ISO 18626 message types — see table in `clients/reshare.py`.
   `RESHARE_BASE_URL` is set and `MockReShareClient` otherwise. Auth
   is HTTP Basic by default; setting `OKAPI_URL` switches to the
   FOLIO Okapi token flow via `OkapiAuth` (ADR-0013, PR #34).
-  Remaining unverified surface: (a) the create-request body shape
-  (binds to the `PatronRequest` Grails domain class — caller's
-  `request_payload` is passed through verbatim with the supplier
-  merged under `supplyingInstitutionSymbol`), (b) response field
-  names beyond `id`/`hrid`/`state`, (c) the recall-request mapping
-  — mod-rs has no first-class action so `recall_request` raises
-  `ClientError` until confirmed against a live tenant. (a)–(c) are
-  blocked on a sandbox tenant for live-payload probing — see
-  backlog #9 PR-C / PR-D. mod-rs does not honour `Idempotency-Key`
-  — replay-safety lives in the saga ledger's UNIQUE constraint,
+  Sandbox probe (2026-05-06, `make reshare-probe` against mod-rs
+  2.19.0-rc17) resolved most unknowns: (a) body shape confirmed —
+  camelCase fields `title`, `author`, `isbn`,
+  `requestingInstitutionSymbol`, `supplyingInstitutionSymbol`,
+  `patronIdentifier`, `patronType`, `pickupLocation`, `neededBy`
+  all accepted; (b) response: `id` is UUID reshare_id, `hrid`
+  may be null, `state` is a dict with `.code`, `isoMessageId` and
+  `supplyingAgencyId` absent from basic responses; (c) recall —
+  confirmed no requester-initiated recall action exists in
+  `Actions.groovy`; `recall_request` keeps its `ClientError` until
+  an ADR resolves the compensate-SHIP path (ISO 18626 Cancel via
+  `message` or `manualClose` force-close). One remaining gap:
+  probe created a Responder-side record (`RES_IDLE`) because
+  `supplyingInstitutionSymbol` was set; Requester-side creation
+  flow (REQ_* states) is still unconfirmed against a real
+  borrower-tenant. mod-rs does not honour `Idempotency-Key` —
+  replay-safety lives in the saga ledger's UNIQUE constraint,
   not the wire.
 - RoutingAgent uses a deterministic rules-only weighted-sum baseline
   + a pluggable `LlmTiebreaker` seam (PR-2a) + a real

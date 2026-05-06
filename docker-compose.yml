@@ -93,7 +93,7 @@ services:
         - "CMD-SHELL"
         - |
           wget -qO- 'http://localhost:8080/rs/patronrequests?perPage=0' \
-            --header 'X-Okapi-Tenant: consortium-a' > /dev/null 2>&1 \
+            --header 'X-Okapi-Tenant: diku' > /dev/null 2>&1 \
             || exit 1
       interval: 15s
       timeout: 10s
