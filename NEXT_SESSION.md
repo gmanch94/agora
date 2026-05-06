@@ -1,47 +1,53 @@
 # Next session resume note
 
-**Last updated:** 2026-05-06 (PR #97 open — merge me first).
+**Last updated:** 2026-05-06 (PR #100 merged — master is clean).
 
 ## Repo state
 
-- `master` clean at PR #96 (d3bce32).
-- Test count: **251** (248 passing + 9 skipped postgres/reshare/iso).
+- `master` clean at PR #100.
+- Test count: **271** (262 passing + 9 skipped postgres/reshare/ncip-smoke).
 - ADR count: **16**.
-- Open PR: **#97** (ADR-0016 / recall via manualClose — ready to merge).
+- No open PRs.
 
 ## PRs this session (in order)
 
 | PR | Title | Status |
 |----|-------|--------|
 | #96 | feat(reshare): probe findings from live mod-rs sandbox | Merged |
-| #97 | feat(reshare): ADR-0016 — recall_request via manualClose | **Open — merge me** |
+| #97 | feat(reshare): ADR-0016 — recall_request via manualClose | Merged |
+| #98 | feat(ncip): HttpNcipClient — NCIP 2.0 XML client | Merged |
+| #99 | feat(ncip): wire HttpNcipClient factory into app.py lifespan | Merged |
+| #100 | feat(discovery): consortium-member fallback when SRU yields no holdings | Merged |
 
 ## What to do at session start
 
 ```
-gh pr merge 97 --squash   # merge PR-D
 git checkout master && git pull
-pytest -q                 # 251 pass, 9 skip
+pytest -q                 # 271 pass, 9 skip
 ruff check src tests      # clean
+mypy --strict             # clean
 ```
-
-## What PR #97 does
-
-ADR-0016 resolves the compensate-SHIP path. `recall_request` now calls
-`performAction` with `action="manualClose"` (force-close; no supplier
-notification). SHIP compensator outbox row delivers instead of
-dead-lettering. Saga reaches DISPUTED as designed. 3 new respx unit
-tests added.
 
 ## Backlog (current, prioritised)
 
-### Immediate (self-contained)
-- **None** — all self-contained work is done.
-
 ### Sandbox-blocked
-1. **Real NCIP HTTP/SOAP client** — `MockNcipClient` still in use;
-   real `mod-ncip` integration future work.
-2. **WorldCat holdings lookup** — paid OCLC sandbox key needed.
+1. **NCIP live probe** — need a real FOLIO tenant with mod-ncip
+   deployed + configured. Set `NCIP_BASE_URL` + `NCIP_AGENCY_ID` and
+   run a checkout/checkin round-trip. Add smoke test like
+   `test_reshare_http_smoke.py` (skips when `AGORA_TEST_NCIP_URL` unset).
+2. **WorldCat holdings lookup** — **structural gap; POC uses consortium
+   roster as fallback (PR #100 shipped).**
+   WorldCat Search API v2 (the only current OCLC API; v1 EOL'd Dec 2024)
+   requires a paid OCLC subscription — no free or developer tier.
+   Probed open SRU union catalogs (DNB, GBV K10plus, SWB, SUDOC, Library
+   Hub, LoC): none carry MARC 852 holdings in accessible MARCXML form —
+   national-library SRU targets are bibliographic-only. No freely
+   accessible union holdings catalog exists.
+   **POC resolution (PR #100):** `DiscoveryAgent._records_to_candidates`
+   falls back to `AGORA_CONSORTIUM_MEMBERS` when SRU returns no 852
+   holdings, synthesising candidates with `status='unverified_holdings'`.
+   Revisit when institutional OCLC access or a live multi-tenant pilot
+   materialises.
 
 ### Needs ADR / design decision
 - **ADR-0016 follow-up (production recall)**: Option A (ISO 18626
@@ -52,19 +58,24 @@ tests added.
 - FOLIO community sandbox: folio-snapshot.dev.folio.org
 - Index Data / OLE: info@indexdata.com, FOLIO Slack #reshare
 
-## Key gotchas (session 2026-05-06)
+## Key gotchas
 
-- **FOLIO tenant IDs: alphanumeric only.** `consortium-a` → Postgres
+- **FOLIO tenant IDs: alphanumeric only.** `consortium-a` -> Postgres
   schema syntax error in mod-rs. Use `diku`.
-- **mod-rs probe creates Responder-side record** when
-  `supplyingInstitutionSymbol` is set. Requester-side (REQ_*)
-  creation via direct API still unverified.
-- **No requester recall action in mod-rs.** Actions.groovy confirmed.
-  manualClose used as prototype stand-in (ADR-0016).
+- **HttpNcipClient source-review-only** — unverified against live
+  mod-ncip tenant. Wire-in done; live probe still needed.
+- **MockNcipClient._state removed** — check_in now returns patron_id=""
+  (symmetric with Http client). No test reads patron_id after check_in.
+- **WorldCat v1 EOL'd Dec 2024.** Any code referencing the old
+  `worldcat.org/webservices` endpoint is dead. v2 API requires
+  institutional OCLC subscription.
+- **No open SRU union holdings catalog exists.** DNB/SUDOC/GBV/SWB/LoC
+  all carry bib-only MARCXML — no MARC 852 subfields. POC routes via
+  `AGORA_CONSORTIUM_MEMBERS` fallback (PR #100). Do not re-probe
+  these targets expecting 852 data.
 
 ## Resume protocol
 
-- Merge PR #97 first.
 - Triple gate: `pytest -q`, `ruff check src tests`, `mypy --strict`, `make audit`.
 - `scripts/sync_doc_counts.py --fix` after test count changes.
 - GPG signing disabled (`commit.gpgsign=false`).

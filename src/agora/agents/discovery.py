@@ -57,7 +57,16 @@ class DiscoveryAgent:
     agent with only the SRU client keep working unchanged — without
     a CrossRef client, DOI inputs are passed through as today (no
     identity confirmation, just whatever ISBN/ISSN/title the patron
-    typed). WorldCat support is still future work.
+    typed).
+
+    **Holdings source.** SRU is searched for MARC 852 subfield-a
+    symbols. In practice, publicly accessible union catalogs that carry
+    852 holdings do not exist: national-library SRU targets (DNB,
+    SUDOC, LoC) are bibliographic-only; WorldCat requires a paid OCLC
+    subscription. When SRU returns no 852 holdings the agent falls back
+    to synthesising candidates from ``consortium_members`` with
+    ``status='unverified_holdings'``, allowing the POC to route requests
+    within the configured roster even without live holdings data.
     """
 
     def __init__(
@@ -110,6 +119,11 @@ class DiscoveryAgent:
 
         if not candidates:
             diagnostics.append("zero holders matched; saga will be Unfilled")
+        elif any(c.status == "unverified_holdings" for c in candidates):
+            diagnostics.append(
+                f"SRU returned no 852 holdings; falling back to "
+                f"{len(candidates)} consortium member(s) as unverified candidates"
+            )
 
         rationale = self._make_rationale(
             request, candidates, cr_record, eff_isbn, eff_issn, eff_title
@@ -181,6 +195,16 @@ class DiscoveryAgent:
         )
 
     def _records_to_candidates(self, records: list[SruRecord]) -> list[HolderCandidate]:
+        """Deduplicate MARC 852 holders into ``HolderCandidate`` objects.
+
+        When SRU records carry no 852 holdings (bibliographic-only catalogs)
+        AND the agent was built with a non-empty ``consortium_members`` set,
+        every member is synthesised as a candidate with
+        ``status='unverified_holdings'``.  This lets the POC route within the
+        configured consortium even without live holdings data — WorldCat or a
+        freely accessible union catalog would supply verified coverage in
+        production.
+        """
         seen: dict[str, HolderCandidate] = {}
         for rec in records:
             for symbol in rec.holdings:
@@ -196,7 +220,26 @@ class DiscoveryAgent:
                     preferred_score=1.0 if clean in self._members else 0.5,
                     raw={"src": "sru"},
                 )
-        return list(seen.values())
+
+        if seen:
+            return list(seen.values())
+
+        # No 852 holdings found via SRU.  Fall back to the configured
+        # consortium roster so the POC can still route without a paid
+        # union-catalog subscription.
+        if self._members:
+            return [
+                HolderCandidate(
+                    symbol=m,
+                    status="unverified_holdings",
+                    is_consortium_member=True,
+                    preferred_score=0.5,
+                    raw={"src": "consortium_fallback"},
+                )
+                for m in sorted(self._members)
+            ]
+
+        return []
 
     @staticmethod
     def _make_rationale(
@@ -228,6 +271,18 @@ class DiscoveryAgent:
                 f"No SRU holdings matched (seed: {seed}); recommend marking Unfilled."
             )
             return " ".join(parts)
+        # Consortium fallback path: SRU returned no 852 holdings so the
+        # roster was used directly.  Make the caveat explicit in rationale.
+        if all(c.status == "unverified_holdings" for c in candidates):
+            n = len(candidates)
+            parts.append(
+                f"SRU search (seed: {seed}) returned no 852 holdings — "
+                f"no freely accessible union catalog available. "
+                f"Synthesised {n} consortium member(s) as unverified candidates; "
+                f"holdings not confirmed."
+            )
+            return " ".join(parts)
+        # Normal SRU path: at least one 852 holder was found.
         consortium = sum(1 for c in candidates if c.is_consortium_member)
         title_for_msg = (cr.title if cr else None) or request.item.title
         parts.append(
