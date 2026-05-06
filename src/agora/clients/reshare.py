@@ -15,7 +15,7 @@ specific ISO 18626 messages internally:
 | cancel_request | RequestingAgencyMessage Cancel | ``requesterCancel`` |
 | confirm_shipment | (lender side) SupplyingAgencyMessage Loaned | ``supplierMarkShipped`` |
 | confirm_return | RequestingAgencyMessage Returned | ``patronReturnedItem`` (borrower side) |
-| recall_request | RequestingAgencyMessage Recall | *(no first-class action — see method)* |
+| recall_request | RequestingAgencyMessage Recall | ``manualClose`` (force-close — ADR-0016) |
 
 **API verification (2026-05-02).** Endpoint paths, action vocabulary,
 request/response shapes verified against mod-rs master:
@@ -63,10 +63,10 @@ Notes from static source review (2026-05-02) and local sandbox probe
    the supplier drives; it is not reachable by the requester via
    ``performAction``. From ``REQ_SHIPPED``, only ``requesterReceived``
    is a manual action; all others are inbound ISO 18626 protocol
-   triggers. ``recall_request`` therefore keeps its ``ClientError``
-   guard until an ADR decides how to handle the compensate-SHIP path
-   (options: ISO 18626 Cancel via the ``message`` action with a reason
-   code, or ``manualClose`` as a force-close staff override).
+   triggers. ADR-0016 (2026-05-06) resolved this: ``recall_request``
+   calls ``manualClose`` (force-close; no supplier notification) as a
+   prototype expedient. Option A (ISO 18626 Cancel via ``message``)
+   is the production path — see ADR-0016 for trade-offs.
 """
 
 from __future__ import annotations
@@ -160,10 +160,13 @@ class HttpReShareClient:
     """
 
     # Action strings honoured by mod-rs's PatronRequestController.
-    # Source: service/src/main/groovy/org/olf/rs/statemodel/Actions.groovy
+    # Source: service/src/main/groovy/org/orf/rs/statemodel/Actions.groovy
     _ACTION_REQUESTER_CANCEL = "requesterCancel"
     _ACTION_SUPPLIER_MARK_SHIPPED = "supplierMarkShipped"
     _ACTION_PATRON_RETURNED_ITEM = "patronReturnedItem"
+    # Force-close: valid at all states (AvailableActionData.groovy).
+    # Used by recall_request per ADR-0016 (no first-class recall exists).
+    _ACTION_MANUAL_CLOSE = "manualClose"
 
     def __init__(self, settings: Settings | None = None):
         s = settings or get_settings()
@@ -307,29 +310,22 @@ class HttpReShareClient:
     async def recall_request(
         self, *, idempotency_key: str, reshare_id: str, reason: str
     ) -> ReShareSendResult:
-        # Probe-confirmed (2026-05-06): mod-rs has NO requester-initiated
-        # recall action.  ``Actions.groovy`` defines no ``recall``,
-        # ``requesterRecall``, or ``borrowerRecall``.  ``REQ_RECALLED``
-        # is a destination state the *supplier* drives via an incoming
-        # ISO 18626 message — it is not reachable by the requester via
-        # ``performAction``.  From ``REQ_SHIPPED`` the only manual action
-        # available to the requester is ``requesterReceived``.
-        #
-        # Resolving the compensate-SHIP path requires an ADR decision:
-        #   Option A — ISO 18626 Cancel: send a RequestingAgencyMessage
-        #              Cancel via the ``message`` performAction with an
-        #              appropriate reason code (needs wire-level testing).
-        #   Option B — ``manualClose``: force-closes the local mod-rs
-        #              record with no protocol message to the supplier.
-        #
-        # Until that ADR lands, fail loudly so the saga surfaces the
-        # unresolved compensator to staff rather than silently no-op.
-        raise ClientError(
-            "recall_request: mod-rs has no requester-initiated recall "
-            "action (probe-confirmed 2026-05-06 against mod-rs 2.19.0-rc17). "
-            "Compensate-SHIP path needs an ADR before wire traffic. "
-            f"reshare_id={reshare_id} reason={reason!r}"
+        # ADR-0016 (2026-05-06): mod-rs has no requester-initiated recall
+        # action.  ``manualClose`` is used as a prototype force-close:
+        # it closes the local mod-rs record immediately with **no ISO
+        # 18626 message sent to the supplier**.  Staff must follow up
+        # manually after the saga reaches DISPUTED.  The method name
+        # ``recall_request`` reflects the saga's intent; the wire
+        # mechanism is force-close until a two-tenant sandbox confirms
+        # Option A (ISO 18626 Cancel via ``message`` performAction).
+        # See ADR-0016 for the full trade-off analysis.
+        data = await self._perform_action(
+            reshare_id=reshare_id,
+            idempotency_key=idempotency_key,
+            action=self._ACTION_MANUAL_CLOSE,
+            action_params={"reason": reason},
         )
+        return _parse(data)
 
     async def health(self) -> bool:
         # mod-rs does not declare /admin/health. Use a cheap
