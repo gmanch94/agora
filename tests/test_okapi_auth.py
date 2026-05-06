@@ -258,3 +258,52 @@ def test_reshare_client_falls_back_to_basic_when_no_okapi() -> None:
         del client
 
 
+async def test_relogin_failure_raises_client_error() -> None:
+    """401 on data request followed by non-201 re-login raises ClientError (line 183)."""
+
+    login_count: list[int] = [0]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == LOGIN_URL:
+            login_count[0] += 1
+            if login_count[0] == 1:
+                return _login_ok("TOKEN-1")
+            # Second login attempt (re-login) fails.
+            return httpx.Response(403, json={"error": "re-login denied"})
+        # Data request always returns 401 to trigger re-login.
+        return httpx.Response(401, json={"error": "expired"})
+
+    transport = httpx.MockTransport(handler)
+    auth = _make_auth()
+
+    async with httpx.AsyncClient(transport=transport, auth=auth) as client:
+        with pytest.raises(ClientError, match="Okapi re-login failed: status=403"):
+            await client.get(DATA_URL)
+
+
+async def test_concurrent_refresh_uses_cached_token() -> None:
+    """When another flow refreshes the token under the lock, the stale
+    flow reuses the cached value instead of re-logging in (line 193).
+
+    Driven by pumping the async_auth_flow generator directly so we can
+    inject the updated token between phase-2 yield and the lock check.
+    """
+    auth = _make_auth()
+    auth._token = "TOKEN-1"  # pre-seed so phase 1 is skipped
+
+    request = httpx.Request("GET", DATA_URL)
+    gen = auth.async_auth_flow(request)
+
+    # Phase 2: generator yields the data request with TOKEN-1.
+    data_req = await gen.__anext__()
+    assert data_req.headers.get("X-Okapi-Token") == "TOKEN-1"
+
+    # Simulate another concurrent flow refreshing the token before
+    # this flow acquires the lock in phase 3.
+    auth._token = "TOKEN-2"
+
+    # Phase 3: send 401; cached != stale_token → else branch (line 193).
+    retry_req = await gen.asend(httpx.Response(401, json={"error": "expired"}))
+    assert retry_req.headers.get("X-Okapi-Token") == "TOKEN-2"
+
+    await gen.aclose()

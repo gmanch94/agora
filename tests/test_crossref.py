@@ -20,6 +20,8 @@ from agora.clients.crossref import (
     CrossrefRecord,
     HttpCrossrefClient,
     MockCrossrefClient,
+    _extract_year,
+    _first_str,
     _normalise_doi,
     _parse_message,
 )
@@ -369,3 +371,53 @@ async def test_mock_client_returns_seeded_record() -> None:
 async def test_mock_client_returns_none_for_unknown_doi() -> None:
     mock = MockCrossrefClient({})
     assert await mock.lookup_doi("10.0/never.seen") is None
+
+
+# ---------------------------------------------------------------------------
+# _first_str — line 265 (exhausted list returns None)
+# ---------------------------------------------------------------------------
+
+
+def test_first_str_all_non_string_items_returns_none() -> None:
+    """_first_str returns None when no list item is a non-empty string (line 265)."""
+    assert _first_str([None, 42, "", "  "]) is None
+
+
+# ---------------------------------------------------------------------------
+# _extract_year — line 274 (empty parts list)
+# ---------------------------------------------------------------------------
+
+
+def test_extract_year_empty_parts_list_returns_none() -> None:
+    """_extract_year returns None when date-parts is an empty list (line 274)."""
+    assert _extract_year({"date-parts": []}) is None
+
+
+# ---------------------------------------------------------------------------
+# _extract_year — line 277 (first element is empty list)
+# ---------------------------------------------------------------------------
+
+
+def test_extract_year_empty_first_part_returns_none() -> None:
+    """_extract_year returns None when date-parts[0] is an empty list (line 277)."""
+    assert _extract_year({"date-parts": [[]]}) is None
+
+
+# ---------------------------------------------------------------------------
+# _extract_year — lines 281-282 (digit string candidate → int)
+# ---------------------------------------------------------------------------
+
+
+def test_extract_year_digit_string_returns_int() -> None:
+    """_extract_year converts a digit-string year to int (lines 281-282)."""
+    assert _extract_year({"date-parts": [["1975"]]}) == 1975
+
+
+# ---------------------------------------------------------------------------
+# _extract_year — line 283 (non-digit string candidate → None)
+# ---------------------------------------------------------------------------
+
+
+def test_extract_year_non_digit_string_returns_none() -> None:
+    """_extract_year returns None when candidate is a non-digit string (line 283)."""
+    assert _extract_year({"date-parts": [["abc"]]}) is None
