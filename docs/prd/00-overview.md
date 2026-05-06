@@ -62,7 +62,7 @@ compliance burden.
   (`src/agora/demos/happy_path.py`).
 - `pytest` passes with property-based saga + idempotency tests
   (`tests/test_property_saga.py`, Hypothesis). **Implemented** —
-  260 tests green at time of review (+6 postgres-only).
+  274 tests green at time of review (+6 postgres-only).
 - Architecture & decisions documented under `docs/` — PRDs, ADRs
   (16), runbook, and SDD. **Implemented**.
 - ~~Chaos test (`make chaos`)~~: **dropped** — never wired and the
