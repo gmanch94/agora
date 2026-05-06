@@ -25,7 +25,9 @@ request/response shapes verified against mod-rs master:
 - ``service/src/main/groovy/org/olf/rs/statemodel/Actions.groovy``
 - ``service/src/main/okapi/ModuleDescriptor-template.json``
 
-Notes from that probe:
+Notes from static source review (2026-05-02) and local sandbox probe
+(2026-05-06, ``make reshare-probe`` against
+``ghcr.io/openlibraryenvironment/mod-rs:2.19.0-rc17``):
 
 1. mod-rs does **not** honour an ``Idempotency-Key`` header. We send it
    anyway (Okapi forwards unknown headers harmlessly); replay-safety
@@ -39,6 +41,32 @@ Notes from that probe:
 4. Auth in production is the Okapi token flow (``X-Okapi-Token`` from
    ``POST /authn/login``). HTTP Basic against the module's direct port
    works only when permissions are disabled — kept here as a dev path.
+5. **POST /rs/patronrequests body shape (probe-confirmed).**
+   camelCase fields ``title``, ``author``, ``isbn``,
+   ``requestingInstitutionSymbol``, ``supplyingInstitutionSymbol``,
+   ``patronIdentifier``, ``patronType``, ``pickupLocation``,
+   ``neededBy`` are all accepted and stored by mod-rs. Passing
+   ``supplyingInstitutionSymbol`` caused mod-rs to create the record
+   under the *Responder* state model (``RES_IDLE``); the Requester
+   state model (``REQ_*``) applies when the borrowing tenant creates the
+   request without a pre-set supplier — Requester-side creation via
+   direct API is still unconfirmed against a real borrower-tenant.
+6. **Response field names (probe-confirmed).**
+   ``id`` carries the UUID reshare_id. ``hrid`` may be absent/null.
+   ``state`` is a refdata dict; its ``code`` key is the state string.
+   ``isoMessageId`` and ``supplyingAgencyId`` are **not** present on
+   basic create/GET responses — they appear only in ISO 18626
+   protocol-level contexts (if at all).
+7. **No requester-initiated recall action exists (probe-confirmed).**
+   ``Actions.groovy`` defines no ``recall``, ``requesterRecall``, or
+   ``borrowerRecall`` action. ``REQ_RECALLED`` is a *destination* state
+   the supplier drives; it is not reachable by the requester via
+   ``performAction``. From ``REQ_SHIPPED``, only ``requesterReceived``
+   is a manual action; all others are inbound ISO 18626 protocol
+   triggers. ``recall_request`` therefore keeps its ``ClientError``
+   guard until an ADR decides how to handle the compensate-SHIP path
+   (options: ISO 18626 Cancel via the ``message`` action with a reason
+   code, or ``manualClose`` as a force-close staff override).
 """
 
 from __future__ import annotations
@@ -115,14 +143,14 @@ class HttpReShareClient:
     """Real HTTP client for FOLIO mod-rs.
 
     Paths and action strings verified against mod-rs master (see module
-    docstring for source files). The remaining unverified surface is
-    the **create-request body shape** — mod-rs binds the POST body
-    directly onto its ``PatronRequest`` Grails domain object, so the
-    exact field names depend on that class. We pass the caller's
-    ``request_payload`` through as the top-level body and merge the
-    chosen supplier under ``supplyingInstitutionSymbol``; if the
-    domain class uses different keys, callers must shape
-    ``request_payload`` accordingly.
+    docstring for source files and probe notes). Body shape
+    (probe-confirmed 2026-05-06): camelCase fields are bound directly
+    onto the ``PatronRequest`` Grails domain object — pass the caller's
+    ``request_payload`` through verbatim and merge the chosen supplier
+    under ``supplyingInstitutionSymbol``. Note that including
+    ``supplyingInstitutionSymbol`` causes mod-rs to create the record
+    under the *Responder* state model; Requester-side creation via the
+    direct API is still unconfirmed against a real borrower-tenant.
 
     Auth: HTTP Basic is dev-only (works when hitting the module's
     direct port with permissions disabled). When ``OKAPI_URL`` is set
@@ -279,15 +307,27 @@ class HttpReShareClient:
     async def recall_request(
         self, *, idempotency_key: str, reshare_id: str, reason: str
     ) -> ReShareSendResult:
-        # mod-rs's Actions.groovy has no first-class "recall" action.
-        # ISO 18626 recall is a RequestingAgencyMessage; the right
-        # mod-rs mapping (probably ``message`` with a recall reason
-        # body, or a state-specific action we haven't found) needs
-        # confirmation against a live ReShare instance before we drive
-        # real traffic. Fail loudly rather than silently 4xx.
+        # Probe-confirmed (2026-05-06): mod-rs has NO requester-initiated
+        # recall action.  ``Actions.groovy`` defines no ``recall``,
+        # ``requesterRecall``, or ``borrowerRecall``.  ``REQ_RECALLED``
+        # is a destination state the *supplier* drives via an incoming
+        # ISO 18626 message — it is not reachable by the requester via
+        # ``performAction``.  From ``REQ_SHIPPED`` the only manual action
+        # available to the requester is ``requesterReceived``.
+        #
+        # Resolving the compensate-SHIP path requires an ADR decision:
+        #   Option A — ISO 18626 Cancel: send a RequestingAgencyMessage
+        #              Cancel via the ``message`` performAction with an
+        #              appropriate reason code (needs wire-level testing).
+        #   Option B — ``manualClose``: force-closes the local mod-rs
+        #              record with no protocol message to the supplier.
+        #
+        # Until that ADR lands, fail loudly so the saga surfaces the
+        # unresolved compensator to staff rather than silently no-op.
         raise ClientError(
-            "recall_request: mod-rs action mapping unverified — "
-            "needs confirmation against running ReShare. "
+            "recall_request: mod-rs has no requester-initiated recall "
+            "action (probe-confirmed 2026-05-06 against mod-rs 2.19.0-rc17). "
+            "Compensate-SHIP path needs an ADR before wire traffic. "
             f"reshare_id={reshare_id} reason={reason!r}"
         )
 
@@ -310,9 +350,14 @@ def _parse(data: dict[str, Any], *, supplier_default: str = "") -> ReShareSendRe
 
     mod-rs returns Grails-marshalled JSON. ``state`` is a refdata
     association (``{"code": "...", "label": "..."}``) — we flatten to
-    its ``code``. ``isoMessageId`` / ``supplyingAgencyId`` are not
-    standard top-level fields on the create response; until we have
-    sample payloads from a live tenant they may come back empty.
+    its ``code``.
+
+    Probe-confirmed (2026-05-06): ``isoMessageId`` and
+    ``supplyingAgencyId`` are **absent** from basic create/GET
+    responses — they are not top-level fields on ``PatronRequest``.
+    ``reshare_id`` is populated from ``id`` (UUID); ``hrid`` may be
+    absent/null. ``iso_message_id`` and ``supplier_symbol`` will be
+    empty strings unless the caller passes ``supplier_default``.
     """
     state = data.get("state")
     if isinstance(state, dict):
