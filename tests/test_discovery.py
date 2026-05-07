@@ -538,3 +538,60 @@ async def test_fallback_rationale_text() -> None:
     assert "union catalog" in rec.rationale
     # Must NOT contain the normal-path wording
     assert "holder(s) for" not in rec.rationale
+
+
+# --- Empty and duplicate symbol de-dup (lines 213, 215) --------------------
+
+
+@pytest.mark.asyncio
+async def test_discovery_skips_empty_symbol_in_holdings() -> None:
+    """Holdings entry that is blank after strip() is silently skipped (line 213)."""
+    sru = MockSruClient(
+        records=[
+            SruRecord(
+                title="Test book",
+                authors=[],
+                isbn="9780000000001",
+                issn=None,
+                holdings=["", "  ", "MEMBER1"],  # blanks skipped, MEMBER1 kept
+                raw_marcxml="",
+            )
+        ]
+    )
+    agent = DiscoveryAgent(sru, consortium_members={"MEMBER1"})
+    rec = await agent.run(_request(title="Test book", isbn="9780000000001"))
+    symbols = [c.symbol for c in rec.candidates]
+    assert "MEMBER1" in symbols
+    assert "" not in symbols
+
+
+@pytest.mark.asyncio
+async def test_discovery_deduplicates_repeated_symbol_across_records() -> None:
+    """The same symbol appearing in two separate SruRecord holdings is
+    de-duplicated — the second occurrence hits the `if clean in seen` branch
+    (line 215) and is silently skipped."""
+    sru = MockSruClient(
+        records=[
+            SruRecord(
+                title="Book A",
+                authors=[],
+                isbn="9780000000001",
+                issn=None,
+                holdings=["MEMBER1"],
+                raw_marcxml="",
+            ),
+            SruRecord(
+                title="Book B",
+                authors=[],
+                isbn="9780000000001",
+                issn=None,
+                holdings=["MEMBER1", "MEMBER2"],  # MEMBER1 already seen
+                raw_marcxml="",
+            ),
+        ]
+    )
+    agent = DiscoveryAgent(sru, consortium_members={"MEMBER1", "MEMBER2"})
+    rec = await agent.run(_request(title="x", isbn="9780000000001"))
+    symbols = [c.symbol for c in rec.candidates]
+    assert symbols.count("MEMBER1") == 1  # de-duped
+    assert "MEMBER2" in symbols
