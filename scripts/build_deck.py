@@ -767,12 +767,12 @@ def slide_shipped(c: rl_canvas.Canvas, pn: int, total: int) -> None:
     y_right -= 6
 
     right_items = [
-        "282 tests: unit + property (Hypothesis) + e2e",
+        "401 tests: unit + property (Hypothesis) + e2e",
         "+6 postgres-only in CI (Alembic + ORM parity)",
         "Multi-worker outbox: SKIP LOCKED + claim lease",
         "CI: audit / triple-gate / postgres / routing-eval floor",
         "16 ADRs, 7 PRDs, runbook, architecture diagrams",
-        "mypy --strict: src/ AND tests/ (70 source files)",
+        "mypy --strict: src/ AND tests/ (76 source files)",
         "Idempotency: ULID keys, UNIQUE on ledger + outbox",
     ]
     for item in right_items:
@@ -790,8 +790,8 @@ def slide_shipped(c: rl_canvas.Canvas, pn: int, total: int) -> None:
 
     # Stat badges at bottom
     stats = [
-        ("282", "Tests collected"),
-        ("271", "Passing locally"),
+        ("401", "Tests collected"),
+        ("390", "Passing locally"),
         ("16",  "ADRs"),
         ("7",   "PRDs"),
         ("4",   "CI workflows"),

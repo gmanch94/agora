@@ -420,8 +420,8 @@ def build():
             ("ISO 18626 XSD validation harness", "Implemented"),
             ("LLM routing tie-breaker (Gemini 2.5 Flash via Vertex AI)", "Implemented"),
             ("Alembic migrations on real Postgres + CI gate", "Implemented"),
-            ("247 automated tests (unit + property-based + end-to-end)", "Green"),
-            ("15 Architecture Decision Records", "Written"),
+            ("401 automated tests (unit + property-based + end-to-end)", "Green"),
+            ("16 Architecture Decision Records", "Written"),
         ],
         col_widths_in=[4.85, 1.75],
         status_col=1,
@@ -515,9 +515,9 @@ def build():
     pPr.append(pb)
 
     footer_run = footer_p.add_run(
-        "Full technical documentation: docs/ - PRDs (7), ADRs (15), architecture diagrams, "
+        "Full technical documentation: docs/ - PRDs (7), ADRs (16), architecture diagrams, "
         "runbook, solution design. Source code: src/agora/. "
-        "247 automated tests. Repository: github.com/gmanch94/agora."
+        "401 automated tests. Repository: github.com/gmanch94/agora."
     )
     footer_run.italic = True
     footer_run.font.size = Pt(8)
