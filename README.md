@@ -141,4 +141,4 @@ make api
 
 ## License
 
-Apache 2.0 (placeholder; verify before publishing).
+Apache 2.0. See [LICENSE](LICENSE).
