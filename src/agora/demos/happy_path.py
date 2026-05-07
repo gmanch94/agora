@@ -103,11 +103,11 @@ async def main() -> None:
     print(f"  discovery: {discovery_rec.rationale}")
     print(f"  routing:   {routing_rec.rationale}")
     print(f"  policy:    {policy_decision.rationale}")
-    if policy_decision.hard_flags:
+    if policy_decision.hard_flags:  # pragma: no cover — demo abort guard
         print("  policy BLOCKED -- aborting demo")
         await engine.dispose()
         return
-    if not routing_rec.chosen:
+    if not routing_rec.chosen:  # pragma: no cover — demo abort guard
         print("  no supplier chosen -- aborting")
         await engine.dispose()
         return
@@ -233,5 +233,5 @@ async def main() -> None:
     await engine.dispose()
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     asyncio.run(main())
