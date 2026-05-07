@@ -123,6 +123,24 @@ class OverrideBody(BaseModel):
     rationale: str = Field(description="Mandatory reason recorded on the ledger event.")
 
 
+class RenewBody(BaseModel):
+    """Patron renewal request payload.
+
+    Extends the loan by ``extension_days`` days from today. Staff commits
+    the gate and runs the RENEW forward in one transaction. The saga stays
+    at RECEIVED; the new due date lands on the ledger event payload.
+    """
+
+    actor: str = Field(description="Staff or patron identifier")
+    rationale: str
+    extension_days: int = Field(
+        default=28,
+        ge=1,
+        le=180,
+        description="Number of days to extend the loan from today.",
+    )
+
+
 class DiscoverBody(BaseModel):
     """Optional payload for ``POST /sagas/{id}/discover``.
 

@@ -484,3 +484,75 @@ def _wire(reg: StepRegistry, tx: TransactionAgent) -> None:
         forward=return_forward,
         compensator=return_compensator,
     )
+
+    # ----- RENEW ---------------------------------------------------
+    # Patron-initiated loan extension. Saga stays at RECEIVED — no
+    # physical state changes. The forward stores the new due date and
+    # enqueues a ReShare renewal intent. On the HTTP client this raises
+    # ClientError (sandbox-blocked; no mod-rs renewal action verified)
+    # so the outbox worker surfaces a dead-letter row for staff review
+    # while the saga continues at RECEIVED. MockReShareClient succeeds
+    # so tests and demo remain green. See CLAUDE.md known-gaps.
+    #
+    # Multiple renewals compose naturally: each forward appends a new
+    # RENEW event; the portal reads the most recent RENEW event for the
+    # effective due date, falling back to the SHIP forward.
+    async def renew_forward(ctx: SagaContext) -> StepResult:
+        reshare_id = ctx.extras.get("reshare_id")
+        if not reshare_id:
+            raise ValueError("ctx.extras['reshare_id'] is required for renew step")
+        extension_days = int(ctx.extras.get("extension_days") or DEFAULT_LOAN_PERIOD_DAYS)
+        new_due_at = datetime.now(UTC) + timedelta(days=extension_days)
+        return StepResult(
+            state_after=LifecycleState.RECEIVED,
+            payload={
+                "reshare_id": reshare_id,
+                "extension_days": extension_days,
+                "new_due_at": new_due_at.isoformat(),
+            },
+            rationale=(
+                f"Loan renewed for {extension_days} days; new due date "
+                f"{new_due_at.date().isoformat()}. Renewal enqueued via "
+                "outbox worker (sandbox-blocked on HTTP client pending "
+                "ADR-0017; mock succeeds)."
+            ),
+            outbox=[
+                OutboxIntent(
+                    target="reshare",
+                    idempotency_key=ctx.idempotency_key,
+                    payload={
+                        "action": "renew_request",
+                        "args": {
+                            "reshare_id": reshare_id,
+                            "extension_days": extension_days,
+                        },
+                    },
+                )
+            ],
+        )
+
+    async def renew_compensator(
+        ctx: SagaContext, fwd_payload: dict[str, Any]
+    ) -> StepResult:
+        # Reverting a renewal leaves the saga at RECEIVED with the
+        # original due date restored in the event record. No outbox
+        # intent — no confirmed mod-rs renewal action exists to undo.
+        # Staff must notify the patron of the reverted due date.
+        return StepResult(
+            state_after=LifecycleState.RECEIVED,
+            payload={
+                "reshare_id": fwd_payload.get("reshare_id"),
+                "renewal_cancelled": True,
+                "reverted_new_due_at": fwd_payload.get("new_due_at"),
+            },
+            rationale=(
+                "Renewal cancelled; saga remains at Received. "
+                "Staff must notify patron of the reverted due date."
+            ),
+        )
+
+    reg.register(
+        name=StepName.RENEW,
+        forward=renew_forward,
+        compensator=renew_compensator,
+    )
