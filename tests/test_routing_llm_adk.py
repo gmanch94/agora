@@ -247,3 +247,118 @@ def test_render_prompt_includes_raw_signals() -> None:
     assert "raw.on_time_rate=0.95" in body
     assert "raw.holds_format='digital'" in body
     assert "raw.delivery='electronic'" in body
+
+
+# --- _invoke_model body coverage (lines 157-180) ---------------------------
+
+
+def _fake_event(text: str | None) -> object:
+    """Build a stub ADK event compatible with _invoke_model's iteration.
+
+    `is_final_response()` returns True; `content.parts[0].text` is the
+    canned JSON. A None text models the empty-response branch.
+    """
+
+    class _Part:
+        def __init__(self, t: str | None) -> None:
+            self.text = t
+
+    class _Content:
+        def __init__(self, t: str | None) -> None:
+            self.parts = [_Part(t)]
+
+    class _Event:
+        def __init__(self, t: str | None) -> None:
+            self.content = _Content(t)
+
+        def is_final_response(self) -> bool:
+            return True
+
+    return _Event(text)
+
+
+class _FakeSession:
+    id = "sess-1"
+
+
+class _FakeSessionService:
+    async def create_session(self, *, app_name: str, user_id: str) -> _FakeSession:
+        return _FakeSession()
+
+
+class _FakeRunner:
+    """Stub runner: drives `_invoke_model` end-to-end without GCP."""
+
+    def __init__(self, events: list[object]) -> None:
+        self.session_service = _FakeSessionService()
+        self._events = events
+
+    async def run_async(self, *, user_id: str, session_id: str, new_message: object) -> object:
+        for ev in self._events:
+            yield ev
+
+
+def _adapter_with_runner(monkeypatch: pytest.MonkeyPatch, runner: _FakeRunner) -> AdkLlmTiebreaker:
+    """Build an AdkLlmTiebreaker and replace its runner with `runner`."""
+    adapter = AdkLlmTiebreaker()
+    monkeypatch.setattr(adapter, "_runner", runner)
+    return adapter
+
+
+@pytest.mark.asyncio
+async def test_invoke_model_parses_final_response_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Happy path: runner yields a final event with valid JSON →
+    `_invoke_model` returns a parsed `TiebreakDecisionSchema`
+    (lines 157-180 except the empty-response raise)."""
+    payload = '{"chosen_symbol": "MEM-A", "rationale": "test"}'
+    runner = _FakeRunner([_fake_event(payload)])
+    adapter = _adapter_with_runner(monkeypatch, runner)
+    schema = await adapter._invoke_model("prompt-text")
+    assert isinstance(schema, TiebreakDecisionSchema)
+    assert schema.chosen_symbol == "MEM-A"
+    assert schema.rationale == "test"
+
+
+@pytest.mark.asyncio
+async def test_invoke_model_raises_when_no_final_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Final event with empty text → RuntimeError (line 178)."""
+    # Event with text=None → joined "" → final_text stays empty
+    runner = _FakeRunner([_fake_event(None)])
+    adapter = _adapter_with_runner(monkeypatch, runner)
+    with pytest.raises(RuntimeError, match="no final response"):
+        await adapter._invoke_model("prompt")
+
+
+@pytest.mark.asyncio
+async def test_invoke_model_concatenates_multi_part_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Multiple parts in the final event are concatenated (line 174)."""
+
+    class _MultiPartEvent:
+        def __init__(self) -> None:
+            class _P:
+                def __init__(self, t: str) -> None:
+                    self.text = t
+
+            class _C:
+                def __init__(self) -> None:
+                    self.parts = [
+                        _P('{"chosen_symbol": "MEM-A", '),
+                        _P('"rationale": "merged"}'),
+                    ]
+
+            self.content = _C()
+
+        def is_final_response(self) -> bool:
+            return True
+
+    runner = _FakeRunner([_MultiPartEvent()])
+    adapter = _adapter_with_runner(monkeypatch, runner)
+    schema = await adapter._invoke_model("prompt")
+    assert schema.chosen_symbol == "MEM-A"
+    assert schema.rationale == "merged"
