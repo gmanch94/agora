@@ -1,17 +1,24 @@
 # Agora Runbook
 
-> Last reviewed against code: 2026-05-04 (post PRs #41-#90 — PR-2b
-> routing-LLM adapter adds `AGORA_ROUTING_LLM_*` env vars + a sibling
-> `routing-eval-floor.yml` CI workflow alongside `triple-gate` /
-> `audit` / `postgres-tests`; ε retuned to 0.03 (#51); DiscoveryAgent
-> wired with `POST /sagas/{id}/discover` endpoint (#46/#53); ISO
-> 18626 XSD validation harness shipped (#52); Vertex env-routing
-> rows added for `eval-routing --llm` and silent-fallback failure
-> mode noted on `AGORA_ROUTING_LLM_ENABLED` (#75); RoutingAgent
-> format-affinity feature in #79 closes `routing-015` and bumps
-> the LLM-augmented baseline to 20/20; staff console UI first slice
-> ships in #80 — `GET /` inbox via HTMX + Jinja2, ADR-0015;
-> NCIP item-barcode wired (#89); override endpoint (#90)).
+> Last reviewed against code: 2026-05-07 (post PRs #100/#101/#102/#116/#117/#134
+> — DiscoveryAgent consortium-member fallback when SRU yields no MARC
+> 852 (#100; `AGORA_CONSORTIUM_MEMBERS` synthesises
+> `unverified_holdings` candidates), NCIP HTTP smoke test scaffolding
+> (#101; `AGORA_TEST_NCIP_*` env vars added), drift sweep including
+> `HttpNcipClient` shipped (#102), RENEW saga step + JSON
+> `POST /sagas/{id}/renew` + HTMX `POST /ui/sagas/{id}/renew` (#116;
+> `renew_request` outbox intent — sandbox-blocked on HTTP client per
+> ADR-0017; mock succeeds), read-only patron portal at `GET /portal`,
+> `GET /portal/requests`, `GET /portal/requests/{saga_id}` (#117),
+> post-merge strict-grade fixes (#134 — extension_days bounds-check
+> chokepoint, compensator-aware portal due date, portal privacy
+> posture). Earlier baseline: PRs #41-#90 — PR-2b routing-LLM
+> adapter adds `AGORA_ROUTING_LLM_*` env vars + sibling
+> `routing-eval-floor.yml` CI workflow; ε retuned to 0.03 (#51);
+> DiscoveryAgent wired with `POST /sagas/{id}/discover` (#46/#53);
+> ISO 18626 XSD validation harness (#52); staff console UI first
+> slice (#80, ADR-0015); NCIP item-barcode (#89); override
+> endpoint (#90)).
 
 Operational reference for the Agora ILL prototype. Covers bring-up,
 day-to-day operation (outbox, overdue scan, gate workflow), and
@@ -165,7 +172,11 @@ commits the gate.
 | `POST /sagas/{id}/compensate`    | Run compensator for a previously committed forward.            |
 | `POST /sagas/{id}/discover`      | Run DiscoveryAgent against the saga's stored request; writes a ROUTE-anchored OBSERVATION (#53). Saga state unchanged. |
 | `POST /sagas/{id}/override`      | Resolve a DISPUTED saga → CANCELLED or UNFILLED (PR #90). Writes a ledger OBSERVATION (`step=resolve`, `outcome=committed`); no outbox dispatch. Open ILS loans must be settled out-of-band. |
+| `POST /sagas/{id}/renew`         | Commit RENEW gate + run forward (PR #116). Saga must be at RECEIVED; stays at RECEIVED. Records new `due_at` on the ledger event; emits `renew_request` outbox intent (sandbox-blocked on HTTP client per ADR-0017 — surfaces as `dead_letter`; mock succeeds). |
 | `GET /browser`                   | Saga browser — filter all sagas by state, library, date. Read-only staff console page (PR #93). |
+| `GET /portal`                    | Patron portal landing — patron_id lookup form (PR #117). |
+| `GET /portal/requests`           | List a patron's sagas via `?patron_id=...`. SQL-side JSON-path filter so the LIMIT 200 caps the **patron's** rows, not the table's (post-#134 advisor-leftover fix). |
+| `GET /portal/requests/{saga_id}` | Patron-facing read-only saga detail. 404 only when the saga UUID is unknown — `patron_id` is a UX label echoed into the page, not an access gate (post-#134 privacy posture; saga UUID is the only access secret in the prototype). |
 
 ### 2.3 What `/approve` derives vs requires
 

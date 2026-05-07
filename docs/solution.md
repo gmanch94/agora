@@ -1,16 +1,22 @@
 # Agora — Solution Design Document
 
-> Last reviewed against code: 2026-05-05 (post PRs #41-#93 — outbox
-> schema sync + APPROVE-via-outbox + runbook env-var backfill +
-> DiscoveryAgent endpoint wiring (#46/#53) + routing-LLM tie-breaker
-> tuned (#51) + ISO 18626 XSD validation harness (#52) + Vertex
-> env-routing requirement for `eval-routing --llm` (#75) +
-> `sync-doc-counts` script + pytest gate as single source of truth
-> for test/ADR counts (#76) + RoutingAgent format-affinity feature
-> (#79 closes routing-015, baseline 20/20) + staff console UI first
-> slice via HTMX + Jinja2 (#80, ADR-0015) + NCIP item-barcode (#89)
-> + override endpoint `POST /sagas/{id}/override` (#90) + override
-> HTMX form (#92) + saga browser `GET /browser` (#93)).
+> Last reviewed against code: 2026-05-07 (post PRs #100/#101/#102/#116/#117/#134
+> — DiscoveryAgent consortium-member fallback (#100,
+> `unverified_holdings` when SRU yields no MARC 852), NCIP HTTP smoke
+> test scaffolding (#101), drift sweep including `HttpNcipClient`
+> shipped (#102), RENEW saga step (#116) — JSON
+> `POST /sagas/{id}/renew` + HTMX `POST /ui/sagas/{id}/renew`,
+> `renew_request` outbox intent sandbox-blocked on HTTP client per
+> ADR-0017, mock succeeds, saga stays at RECEIVED — read-only patron
+> portal at `/portal/*` (#117), strict-grade post-merge fixes (#134
+> — extension_days bounds-check chokepoint, compensator-aware portal
+> due date, portal privacy posture). Earlier baseline: PRs #41-#93
+> — outbox schema sync, APPROVE-via-outbox, DiscoveryAgent endpoint
+> (#46/#53), routing-LLM tie-breaker tuned (#51), ISO 18626 XSD
+> validation harness (#52), `sync-doc-counts` pytest gate (#76),
+> RoutingAgent format-affinity (#79), staff console UI (#80,
+> ADR-0015), NCIP item-barcode (#89), override endpoint (#90),
+> override HTMX form (#92), saga browser (#93)).
 
 Single-narrative design doc. Stitches together what the PRDs say
 should exist, what the ADRs decided, what the code does today, and
@@ -133,7 +139,11 @@ overdue/recall/receipt-unconfirmed scanner). Endpoints:
 | `POST /sagas/{id}/compensate`        | Run compensator for a previously committed forward.        |
 | `POST /sagas/{id}/discover`          | Run DiscoveryAgent against the saga's stored request; writes a ROUTE-anchored OBSERVATION (#53). Saga state unchanged. |
 | `POST /sagas/{id}/override`          | Resolve DISPUTED saga → CANCELLED or UNFILLED. Writes OBSERVATION (`step=resolve`, `outcome=committed`); no outbox dispatch (#90). |
+| `POST /sagas/{id}/renew`             | Commit RENEW gate + run forward (#116). Saga must be at RECEIVED; stays at RECEIVED. Records new `due_at`; emits `renew_request` outbox intent (sandbox-blocked on HTTP client per ADR-0017 — surfaces as `dead_letter`; mock succeeds). |
 | `GET /browser`                       | Saga browser — filter all sagas by state, library, date. Read-only UI endpoint (#93). |
+| `GET /portal`                        | Patron portal landing — patron_id lookup form (#117). |
+| `GET /portal/requests`               | List a patron's sagas via `?patron_id=...`. SQL-side JSON-path filter so the LIMIT 200 caps the patron's rows, not the table's (post-#134). |
+| `GET /portal/requests/{saga_id}`     | Patron-facing read-only saga detail (#117). 404 only when saga UUID is unknown — `patron_id` is a UX label echoed into the page, not an access gate (post-#134 privacy posture; saga UUID is the only access secret in the prototype). |
 
 `_APPROVABLE_STEPS = {ROUTE, APPROVE, SHIP, RETURN_ITEM}`. SUBMIT is
 not gated (commits inside `POST /requests`); compensator-only steps
