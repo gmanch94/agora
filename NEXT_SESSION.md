@@ -1,14 +1,15 @@
 # Next session resume note
 
-**Last updated:** 2026-05-07 (PRs #133 + #134 merged; master at 491 tests / 99% coverage).
+**Last updated:** 2026-05-07 (PRs #133-#139 merged; master at 503 collected / 492 pass + 11 skipped / 99% coverage).
 
 ## Repo state
 
-- `master` clean at `9bc6a32` (PR #134 — RENEW/portal blocker fixes).
-- Test count **491** on master (480 pass + 11 skipped env-gated). 10 new RENEW/portal regression tests landed in #134.
+- `master` clean at `5e77360` (PR #139 — `security_scan.py` Windows path-normalization).
+- Test count **503 collected** on master (492 pass + 11 skipped env-gated).
 - ADR count: **17** (ADR-0017 documents `renew_request` sandbox gap).
 - Overall coverage: **99%** (`pytest --cov=src/agora`).
 - LLM routing baseline: **top-1 1.0000 / mean Spearman 1.0000** (40 scenarios, gemini-2.5-flash).
+- Security audit: **bandit 0 / pip-audit 0 / detect-secrets 0** (post #139 — script no longer false-positives on Windows).
 
 ## PRs this session (in order)
 
@@ -16,14 +17,18 @@
 |----|--------|-------|--------|
 | #133 | `docs/prd-refresh-2026-05-07` | docs(prd): refresh all 7 PRDs against code (post #100/#101/#102/#116/#117) | Merged |
 | #134 | `fix/renew-portal-blockers` | fix(renew,portal): close three ship-blockers from post-#117 strict review | Merged |
+| #135 | `chore/next-session-post-134` | chore: update NEXT_SESSION.md after PRs #133-#134 | Merged |
+| #136 | `docs/lessons-post-134` | docs(lessons): capture three post-#134 lessons | Merged |
+| #137 | `fix/portal-requests-sql-filter` | fix(portal): SQL-side patron_id filter — patrons with sagas outside the top-200 now show | Merged |
+| #138 | `docs/stale-check-post-117` | docs: stale-check sweep — 11 drift fixes across 4 files (post #100-#134) | Merged |
+| #139 | `fix/security-audit-script-windows` | fix(security-audit): two false-positive sources in bundled detect-secrets filter | Merged |
 
-### PR #134 substance (now landed on master)
+### Notable code changes landed
 
-Three real bugs caught by an advisor strict-grade pass over the RENEW + portal slice:
-
-1. **`extension_days` validation moved into `renew_forward`** — single chokepoint serving JSON (`RenewBody`) + HTMX (`Form`). Previously `int(...) or DEFAULT` rewrote `0 → 28` silently and let `-5` through truthy (past due date). Now explicit None-fallback + `1 <= extension_days <= 180` raises ValueError.
-2. **`_portal_due_date` made compensator-aware** — walks events in `seq` order maintaining a `renew_stack`; `forward.renew` pushes, `compensator.renew` pops. Previously a cancelled renewal left the portal showing the rolled-back due date.
-3. **`portal_saga_detail` patron-id 404 dropped** — saga UUID is now explicitly the privacy boundary; `patron_id` is a UX label. The 404 was false reassurance because `portal_requests` accepts arbitrary patron-ids and lists their saga UUIDs anyway. PRD-05 § Patron portal documents the prototype-grade posture.
+- **#134**: `renew_forward` validates `extension_days ∈ [1, 180]` (single chokepoint for JSON + HTMX); `_portal_due_date` is compensator-aware (renew stack push/pop); patron-id 404 dropped from `portal_saga_detail` (saga UUID is the secret, patron-id is a UX label). Lessons in `docs/lessons.md` 2026-05-07 entries.
+- **#137**: `portal_requests` filters via SQL JSON path `Saga.request_payload['patron']['patron_id'].astext == patron_id` so the LIMIT 200 caps the patron's rows, not the table's. Closes the post-#134 advisor-leftover false-negative.
+- **#138**: README ADR count fixed (16 → 17), broken ADR-0016 link fixed, RENEW + portal coverage added to runbook + solution API tables and architecture.md state machine + layer cake.
+- **#139**: `security_scan.py` filter now normalises Windows backslashes to forward slashes for baseline lookup, and skips `.secrets.baseline` itself in scan-result post-processing. Aligns local audit with CI behaviour.
 
 ## What to do at session start
 
@@ -31,9 +36,10 @@ Three real bugs caught by an advisor strict-grade pass over the RENEW + portal s
 git checkout master && git pull
 
 # Verify
-.venv/Scripts/python.exe -m pytest tests/ -q  # expect 491 pass, 11 skip
+.venv/Scripts/python.exe -m pytest tests/ -q          # expect 492 pass, 11 skip (503 collected)
 .venv/Scripts/python.exe -m ruff check src tests      # clean
 .venv/Scripts/python.exe -m mypy --strict             # clean
+.venv/Scripts/python.exe .claude/skills/security-audit/scripts/security_scan.py .  # 0 findings
 ```
 
 ## Backlog (prioritised)
@@ -60,8 +66,8 @@ git checkout master && git pull
    `pytest tests/test_ncip_http_smoke.py -v`
 2. **WorldCat holdings lookup** — no freely accessible union holdings catalog. Revisit when institutional OCLC access materialises.
 
-### Code-only backlog (advisor leftovers from #134 review)
-- **`portal_requests` 200-row Python-side filter** — patron with sagas outside the table-wide most-recent-200 sees an empty list (false negative). Fix: denormalised `patron_id` column + index, or paginate. Self-contained PR. Not urgent — prototype scale.
+### Code-only backlog
+*(Empty.)* The post-#134 advisor leftover (`portal_requests` 200-row Python-side filter) closed in #137 via SQL-side JSON-path filter. No open code-only backlog at the prototype's scale.
 
 ### Revisit later
 - FOLIO community sandbox: folio-snapshot.dev.folio.org
@@ -80,6 +86,8 @@ git checkout master && git pull
 - **Portal uses `ev.step.value` string comparison** in `_portal_due_date` — avoids import issues across feature branches.
 - **`_portal_due_date` is compensator-aware (post-#134)** — walks events maintaining a `renew_stack` so `forward.renew` push + `compensator.renew` pop restore the prior due date. Don't refactor back to last-write-wins.
 - **Portal privacy posture (post-#134): saga UUID is the secret token.** `patron_id` query param is a UX label, not an access gate. Don't add patron-id 404s without also gating `/portal/requests` (which can't be gated without auth).
+- **`portal_requests` filters SQL-side via JSON path (post-#137).** `Saga.request_payload['patron']['patron_id'].astext == patron_id` compiles cross-DB via `_json_type` (`JSONB().with_variant(JSON(), "sqlite")`). Don't refactor back to "load 200, filter Python-side" — patrons with older sagas would silently disappear.
+- **`security_scan.py` baseline filter is path-normalised + skips the baseline file (post-#139).** detect-secrets reports OS-native separators; baseline is forward-slash. Don't break the `lookup_key.replace("\\\\", "/")` line or the baseline-file-skip without re-running on Windows + Linux to verify both.
 - **`SagaEvent` requires `id: int` and `iso_message_id: str | None`** when constructed directly in unit tests (PR #129).
 - **Always branch + PR, never commit directly to master.**
 - **GCP ADC for LLM eval refresh:** needs all of `GOOGLE_GENAI_USE_VERTEXAI=true` + `GOOGLE_CLOUD_PROJECT` + `GOOGLE_CLOUD_LOCATION=us-central1` + `AGORA_ROUTING_LLM_ENABLED=1` + `AGORA_ROUTING_LLM_MODEL=gemini-2.5-flash` + `AGORA_ROUTING_LLM_TIMEOUT_SECS=30`. Without `GOOGLE_GENAI_USE_VERTEXAI=true` SDK silently falls back to API-key auth and 401s every call.
