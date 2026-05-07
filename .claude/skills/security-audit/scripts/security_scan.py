@@ -161,7 +161,18 @@ def check_secrets(project_path: Path) -> ScanResult:
 
         findings = []
         for file_path, secrets in scan_results.items():
-            known = baseline_hashes.get(file_path, set())
+            # detect-secrets reports OS-native separators (backslashes on
+            # Windows); the baseline is committed in forward-slash form
+            # so CI on Linux matches. Normalise the lookup key so a
+            # baseline-known finding still filters out on Windows.
+            lookup_key = file_path.replace("\\", "/")
+            # Skip the baseline file itself — detect-secrets re-flags
+            # its own stored hex hashes as high-entropy strings.
+            # `detect-secrets-hook` excludes the baseline implicitly
+            # because callers don't pass it as a target.
+            if lookup_key.endswith(".secrets.baseline"):
+                continue
+            known = baseline_hashes.get(lookup_key, set())
             for secret in secrets:
                 if secret.get("hashed_secret") in known:
                     continue
