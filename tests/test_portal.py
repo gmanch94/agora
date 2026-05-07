@@ -114,6 +114,34 @@ async def test_portal_requests_shows_state(client: AsyncClient) -> None:
     assert "submitted" in r.text
 
 
+async def test_portal_requests_finds_patron_outside_top_200(
+    client: AsyncClient,
+) -> None:
+    """Patron's saga must surface even when 200+ newer sagas belong to others.
+
+    Pre-fix `portal_requests` took the table-wide most-recent 200 then
+    filtered in Python — a patron whose saga fell outside that window
+    saw an empty list (false negative). Post-fix the WHERE clause runs
+    SQL-side via the JSON path so the cap is the patron's most recent
+    200, not the table's. Regression for the bug surfaced by the
+    post-#134 advisor backlog.
+    """
+    target_saga_id = (await client.post("/requests", json=_PAYLOAD_A)).json()["saga_id"]
+
+    # Push target_saga_id outside any table-wide 200-row window by
+    # submitting 201 sagas for a different patron afterwards.
+    other = dict(_PAYLOAD_B)
+    other["patron"] = {"library_symbol": "LIB-A", "patron_id": "noise-patron"}
+    for _ in range(201):
+        await client.post("/requests", json=other)
+
+    r = await client.get("/portal/requests?patron_id=portal-p1")
+    assert r.status_code == 200
+    assert "Dune" in r.text  # target saga's title is still there
+    assert target_saga_id in r.text  # exact saga id present
+    assert "Foundation" not in r.text  # noise patron's items not shown
+
+
 # ------------------------------------------------------------------ /portal/requests/{id}
 
 
