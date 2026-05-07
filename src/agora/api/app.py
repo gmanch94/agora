@@ -1499,9 +1499,13 @@ def create_app() -> FastAPI:
         return StepRunResponse.model_validate(ev.model_dump())
 
     # ----------------------------------------------------------------- patron portal
-    # Read-only patron-facing views. No staff auth guard — patron_id is the
-    # only credential (prototype limitation per ADR-0007). Wrong patron_id on
-    # the detail view returns 404 rather than 403 to avoid leaking saga IDs.
+    # Read-only patron-facing views. Privacy posture for the prototype:
+    # the saga UUID is the only access secret. The ``patron_id`` query
+    # parameter is a UX label echoed into the page, not an access gate
+    # (PR #134 dropped the patron-id 404 on the detail view since
+    # ``/portal/requests?patron_id=...`` accepts arbitrary IDs anyway —
+    # gating one without the other was false reassurance). Production
+    # needs real patron auth, see ADR-0007.
 
     @app.get("/portal", response_class=HTMLResponse, include_in_schema=False)
     async def portal_home(request: Request) -> HTMLResponse:
@@ -1516,19 +1520,24 @@ def create_app() -> FastAPI:
     ) -> HTMLResponse:
         """List all sagas belonging to this patron ID.
 
-        Loads the most recent 200 sagas and filters in Python — sufficient
-        for the prototype; a production build would add a DB index on the
-        JSON patron_id field or a denormalised column.
+        Filters via JSON-path WHERE clause so the cap is the **patron's**
+        most recent 200 sagas, not the table's. Pre-fix took most-recent
+        200 table-wide and filtered in Python — patrons whose sagas fell
+        outside that window saw an empty list (false negative). Portable
+        across Postgres JSONB and SQLite JSON via ``_json_type``.
         """
         async with session.begin():
-            stmt = select(Saga).order_by(Saga.updated_at.desc()).limit(200)
+            stmt = (
+                select(Saga)
+                .where(Saga.request_payload["patron"]["patron_id"].astext == patron_id)
+                .order_by(Saga.updated_at.desc())
+                .limit(200)
+            )
             rows = (await session.execute(stmt)).scalars().all()
 
         patron_rows = []
         for saga in rows:
             raw = saga.request_payload or {}
-            if str((raw.get("patron") or {}).get("patron_id") or "") != patron_id:
-                continue
             item = raw.get("item") or {}
             requesting = raw.get("requesting_library") or {}
             state = saga.current_state
