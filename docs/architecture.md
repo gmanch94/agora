@@ -1,14 +1,18 @@
 # Agora — Architecture
 
-> Last reviewed against code: 2026-05-05 (post PRs #17/#18/#19/#24/
-> #25/#28/#41-#54/#55-#93 + RECEIVED state + state-aware SHIP comp +
-> NCIP-checkout SHIP→RECEIVE re-anchor + tier-3 receipt-unconfirmed watch +
-> DiscoveryAgent endpoint wiring (#46/#53) + routing-LLM tie-breaker
-> tuned (#51) + ISO 18626 XSD validation harness (#52) + NCIP item-barcode
-> (#89) + override endpoint (#90) + override HTMX form (#92) + saga
-> browser (#93) — APPROVING-via-outbox, NCIP fan-out,
-> TrackingScanner lifespan task, alembic-on-real-postgres CI,
-> multi-worker outbox, borrower-receipt state).
+> Last reviewed against code: 2026-05-07 (post PRs #100/#101/#102/#116/#117/#134
+> — DiscoveryAgent consortium-member fallback (#100), NCIP HTTP smoke
+> test (#101), RENEW saga step (#116) added to layer cake + state
+> machine, read-only patron portal at `/portal/*` (#117) added to
+> layer cake, post-merge strict-grade fixes (#134). Earlier baseline:
+> PRs #17/#18/#19/#24/#25/#28/#41-#54/#55-#93 + RECEIVED state +
+> NCIP-checkout SHIP→RECEIVE re-anchor + tier-3 receipt-unconfirmed
+> watch + DiscoveryAgent endpoint wiring (#46/#53) + routing-LLM
+> tie-breaker tuned (#51) + ISO 18626 XSD validation harness (#52) +
+> NCIP item-barcode (#89) + override endpoint (#90) + override HTMX
+> form (#92) + saga browser (#93) — APPROVING-via-outbox, NCIP
+> fan-out, TrackingScanner lifespan task, alembic-on-real-postgres
+> CI, multi-worker outbox, borrower-receipt state).
 
 Diagrams pin `theme: neutral` so each block renders as a stable
 light-palette box (dark text on light fills) regardless of the
@@ -35,6 +39,13 @@ flowchart TB
         UI_SAGA["GET /sagas/:id"]
         UI_APPROVE["POST /sagas/:id/approve"]
         UI_DISCOVER["POST /sagas/:id/discover"]
+        UI_RENEW["POST /sagas/:id/renew<br/>(PR #116)"]
+    end
+
+    subgraph PORTAL["Patron portal (read-only, PR #117)"]
+        P_HOME["GET /portal"]
+        P_LIST["GET /portal/requests"]
+        P_DETAIL["GET /portal/requests/:id"]
     end
 
     subgraph AGENTS["Advisory agents (Google ADK style)"]
@@ -74,6 +85,11 @@ flowchart TB
     UI_APPROVE --> COORD
     UI_SAGA --> SAGAS
     UI_DISCOVER --> DISC
+    UI_RENEW --> COORD
+
+    P_LIST --> SAGAS
+    P_DETAIL --> SAGAS
+    P_DETAIL --> LEDGER
 
     COORD --> LEDGER
     COORD --> SAGAS
@@ -116,6 +132,7 @@ stateDiagram-v2
     Approving --> Approved: outbox worker<br/>delivered + projection<br/>writes reshare_id
     Approved --> Shipped: lender confirms<br/>SupplierMarkShipped<br/>(reshare confirm_shipment only)
     Shipped --> Received: borrower confirms<br/>physical receipt<br/>(ItemReceived note —<br/>+ NCIP check_out fan-out)
+    Received --> Received: RENEW forward (PR #116)<br/>loan extension; new_due_at<br/>recorded; renew_request<br/>outbox intent
     Received --> Returned: borrower confirms<br/>RequesterMarkReturned<br/>(+ NCIP check_in fan-out)
     Returned --> [*]
 

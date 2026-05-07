@@ -3,13 +3,18 @@
 > Research prototype. Multi-library consortium. Agents over FOLIO/ReShare.
 > Saga + idempotency. Human-approval at every state transition.
 
-> Last reviewed against code: 2026-05-05 (post PRs #41-#93 — adds
-> Vertex env-routing requirement for `eval-routing --llm`,
-> `sync-doc-counts` script + pytest gate as the single source of
-> truth for test/ADR counts, RoutingAgent format-affinity feature
-> (#79 closes routing-015), staff console UI first slice with
-> HTMX + Jinja2 (ADR-0015, #80), NCIP item-barcode (#89), override
-> endpoint (#90), override HTMX form (#92), saga browser (#93)).
+> Last reviewed against code: 2026-05-07 (post PRs #100/#101/#102/#116/#117/#134
+> — DiscoveryAgent consortium-member fallback (#100, `unverified_holdings`
+> when SRU yields no MARC 852), NCIP HTTP smoke test (#101), drift
+> sweep including HttpNcipClient shipped (#102), RENEW saga step +
+> JSON + HTMX endpoints (#116), read-only patron portal `/portal/*`
+> (#117), strict-grade post-merge bug fixes (#134 — extension_days
+> bounds-check chokepoint, compensator-aware portal due date,
+> portal privacy posture). Earlier baseline: PRs #41-#93 — staff
+> console UI HTMX + Jinja2 (ADR-0015, #80), NCIP item-barcode (#89),
+> override endpoint (#90), override HTMX form (#92), saga browser
+> (#93), `sync-doc-counts` pytest gate as the single source of truth
+> for test/ADR counts).
 
 ## What this is
 
@@ -28,16 +33,23 @@ reimplement them.
 ## Status
 
 **Working prototype.** End-to-end demo runs via `make demo`
+(`agora.demos.happy_path`). **503 tests** green (+6 postgres-only in CI).
+Saga + outbox + APPROVING-via-outbox (ADR-0012), multi-worker outbox
 (`agora.demos.happy_path`). **503 tests** green (+6 postgres-only in CI).Saga + outbox + APPROVING-via-outbox (ADR-0012), multi-worker outbox
 safety (`SELECT … FOR UPDATE SKIP LOCKED`), TrackingAgent three-tier
 overdue scanner (overdue / recall-proposed / receipt-unconfirmed) wired
 into the FastAPI lifespan, NCIP fan-out on RECEIVE / RETURN forwards,
-DiscoveryAgent with CrossRef + SRU clients (`POST /sagas/{id}/discover`
-endpoint), RoutingAgent LLM tie-breaker (ADR-0014, top-1 0.95 against
-the 20-scenario eval), ISO 18626 XSD validation harness, and
-Alembic-on-real-Postgres all shipped. CI gates: bandit + pip-audit +
-detect-secrets, pytest + ruff + mypy --strict, alembic+ORM parity
-against `postgres:15-alpine`, routing-eval rules-floor regression check.
+DiscoveryAgent with CrossRef + SRU clients + consortium-member fallback
+when SRU yields no holdings (`POST /sagas/{id}/discover` endpoint),
+RoutingAgent LLM tie-breaker (ADR-0014, top-1 0.95 against the
+20-scenario eval), RENEW saga step (PR #116, JSON + HTMX endpoints,
+`renew_request` outbox intent — sandbox-blocked on `HttpReShareClient`
+per ADR-0017; mock succeeds), read-only patron portal at `/portal/*`
+(PR #117, status + due date + renewal count), ISO 18626 XSD validation
+harness, and Alembic-on-real-Postgres all shipped. CI gates: bandit +
+pip-audit + detect-secrets, pytest + ruff + mypy --strict, alembic+ORM
+parity against `postgres:15-alpine`, routing-eval rules-floor regression
+check.
 
 See `docs/prd/` for product requirements, `docs/adr/` for architecture
 decisions (17 ADRs through 0017), `docs/architecture.md` for the
@@ -131,10 +143,10 @@ make api
 - [Runbook](docs/runbook.md)
 - [Solution overview](docs/solution.md)
 - [Lessons learned](docs/lessons.md)
-- [ADRs](docs/adr/) — 16 records, latest are
-  [ADR-0014 (routing LLM tie-breaker)](docs/adr/0014-routing-llm-tiebreaker.md),
+- [ADRs](docs/adr/) — 17 records, latest are
   [ADR-0015 (staff console HTMX + Jinja2)](docs/adr/0015-staff-console-htmx-jinja2.md),
-  and [ADR-0016 (recall via manualClose)](docs/adr/0016-recall-via-manual-close.md)
+  [ADR-0016 (compensate-ship via manualClose)](docs/adr/0016-compensate-ship-manualclose.md),
+  and [ADR-0017 (renew_request sandbox gap)](docs/adr/0017-renew-request-sandbox-gap.md)
 - [Bootstrap prompt](prompts/build-agora.md)
 
 ## License
