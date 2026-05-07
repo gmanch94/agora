@@ -419,3 +419,25 @@ def test_main_llm_no_tiebreaker_returns_2(tmp_path: Path) -> None:
     with patch("agora.agents.factories.get_llm_tiebreaker", return_value=None):
         rc = main(["--llm", "--scenarios", str(scenarios_path), "--no-write"])
     assert rc == 2
+
+
+def test_main_llm_with_tiebreaker_runs(tmp_path: Path) -> None:
+    """--llm with non-None tiebreaker constructs RoutingAgent with it (line 425)."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from agora.evals.routing import EvalReport
+
+    scenarios_path = _write_synthetic(tmp_path)
+    fake_report = EvalReport(total=2, top1_accuracy=1.0, mean_spearman=1.0, results=[])
+    with (
+        patch(
+            "agora.agents.factories.get_llm_tiebreaker",
+            return_value=MagicMock(),
+        ),
+        patch(
+            "agora.evals.routing.evaluate",
+            new=AsyncMock(return_value=fake_report),
+        ),
+    ):
+        rc = main(["--llm", "--scenarios", str(scenarios_path), "--no-write"])
+    assert rc == 0
