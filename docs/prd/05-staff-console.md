@@ -56,15 +56,30 @@ Filter by state, library, date. Read-only. Useful for demo + debug.
 
 ### Patron portal (PR #117)
 Read-only status surface for patrons. Patron enters their `patron_id`
-(matched against the value stored in `Saga.request_payload.patron`) and
-sees their list of requests + per-request detail (item, current state,
-due date computed from the most recent committed RENEW event with
-fallback to SHIP, renewal count, terminal flag, event timeline labelled
-in patron-friendly language via `_patron_event_label`). 404 is returned
-when the supplied `patron_id` does not match the saga's stored patron —
-this prevents saga-id enumeration leaking to unrelated patrons. **No
-write endpoints** — patrons cannot submit, cancel, renew, or override
-through the portal; staff still drive every state change.
+on `/portal` and sees their list of requests + per-request detail
+(item, current state, due date, renewal count, terminal flag, event
+timeline labelled in patron-friendly language via `_patron_event_label`).
+**No write endpoints** — patrons cannot submit, cancel, renew, or
+override through the portal; staff still drive every state change.
+
+**Privacy posture (prototype-grade).** The **saga UUID is the secret
+token** — anyone who knows the UUID can read the saga via
+`/portal/requests/{saga_id}?patron_id=<anything>`. The `patron_id`
+query parameter is a **UX label echoed into the page**, not an access
+gate. Earlier behaviour 404'd on patron-id mismatch but
+`/portal/requests?patron_id=...` accepts arbitrary IDs and returns
+that patron's saga IDs anyway, so a `patron_id` gate on the detail
+view was false reassurance. The honest posture for a no-auth prototype
+is to make this explicit and document it. Production needs real patron
+auth (SAML/Shibboleth, PIV/CAC — see ADR-0007); until then treat the
+saga UUID as the only access secret.
+
+**Due date semantics.** `_portal_due_date` walks committed events in
+`seq` order: `forward.ship.due_at` seeds the value, each
+`forward.renew` pushes its `new_due_at` onto a stack, each
+`compensator.renew` pops the most recent renewal. Without the pop, a
+cancelled renewal would leave the portal showing the rolled-back due
+date.
 
 ## Backend endpoints (FastAPI)
 
@@ -96,7 +111,7 @@ POST   /ui/sagas/{id}/renew            # form submit → renew; 303 redirect to 
 # Patron portal — read-only (server-rendered HTML, PR #117)
 GET    /portal                         # patron-id lookup form (landing)
 GET    /portal/requests                # ?patron_id=…  list this patron's sagas (most recent 200)
-GET    /portal/requests/{saga_id}      # ?patron_id=…  saga detail (404 on patron-id mismatch)
+GET    /portal/requests/{saga_id}      # ?patron_id=…  saga detail (404 only if saga unknown; patron_id is a label, not a gate)
 ```
 
 **Idempotency keys are minted server-side** — every saga event

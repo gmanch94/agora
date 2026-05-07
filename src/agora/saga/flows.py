@@ -501,7 +501,14 @@ def _wire(reg: StepRegistry, tx: TransactionAgent) -> None:
         reshare_id = ctx.extras.get("reshare_id")
         if not reshare_id:
             raise ValueError("ctx.extras['reshare_id'] is required for renew step")
-        extension_days = int(ctx.extras.get("extension_days") or DEFAULT_LOAN_PERIOD_DAYS)
+        # Single chokepoint for both JSON (RenewBody) and HTMX (Form) paths.
+        # `or DEFAULT` would silently rewrite 0 → 28 and let -5 through.
+        raw = ctx.extras.get("extension_days")
+        extension_days = DEFAULT_LOAN_PERIOD_DAYS if raw is None else int(raw)
+        if not 1 <= extension_days <= 180:
+            raise ValueError(
+                f"extension_days must be in [1, 180]; got {extension_days}"
+            )
         new_due_at = datetime.now(UTC) + timedelta(days=extension_days)
         return StepResult(
             state_after=LifecycleState.RECEIVED,

@@ -175,22 +175,32 @@ def _to_inbox_row(saga: Saga) -> dict[str, Any]:
 def _portal_due_date(events: list[SagaEvent]) -> str:
     """Return the effective loan due date from the event stream.
 
-    Reads the most recently committed SHIP forward ``due_at`` field.
-    When a RENEW forward is present (step value ``"renew"``), its
-    ``new_due_at`` overrides — enabling the portal to reflect renewals
-    without coupling to ``StepName.RENEW`` (which lives on a feature
-    branch until merged).
+    Walks committed events in ``seq`` order (guaranteed by
+    ``SagaLedger.events_for``):
+
+    - ``forward.ship.due_at`` seeds the base loan period.
+    - Each ``forward.renew`` pushes its ``new_due_at`` onto a stack and
+      becomes the current effective due date.
+    - Each committed ``compensator.renew`` pops the most recent renewal,
+      restoring the previous due date (the prior renewal's ``new_due_at``
+      or, when the stack is empty, the SHIP ``due_at``).
+
+    Without compensator handling a forward+compensator pair would leave
+    the portal showing the cancelled renewal's due date.
     """
-    due: str = ""
+    ship_due: str = ""
+    renew_stack: list[str] = []
     for ev in events:
-        if ev.outcome != StepOutcome.COMMITTED or ev.kind != EventKind.FORWARD:
+        if ev.outcome != StepOutcome.COMMITTED:
             continue
         payload = ev.payload or {}
-        if ev.step.value == "ship" and payload.get("due_at"):
-            due = str(payload["due_at"])[:10]
-        elif ev.step.value == "renew" and payload.get("new_due_at"):
-            due = str(payload["new_due_at"])[:10]
-    return due
+        if ev.kind == EventKind.FORWARD and ev.step.value == "ship" and payload.get("due_at"):
+            ship_due = str(payload["due_at"])[:10]
+        elif ev.kind == EventKind.FORWARD and ev.step.value == "renew" and payload.get("new_due_at"):
+            renew_stack.append(str(payload["new_due_at"])[:10])
+        elif ev.kind == EventKind.COMPENSATOR and ev.step.value == "renew" and renew_stack:
+            renew_stack.pop()
+    return renew_stack[-1] if renew_stack else ship_due
 
 
 _PATRON_EVENT_LABELS: dict[tuple[str, str], str] = {
@@ -1556,18 +1566,22 @@ def create_app() -> FastAPI:
     ) -> HTMLResponse:
         """Read-only patron view of a single saga.
 
-        Returns 404 if the saga does not exist OR the patron_id does not
-        match the saga's stored patron — avoids leaking saga IDs to
-        unrelated patrons.
+        Privacy posture for the prototype: the **saga UUID is the secret
+        token**. There is no patron auth, so any caller who knows the
+        saga-id may view it (typically reached via a private link). The
+        ``patron_id`` query param is a UX label echoed into the page —
+        not an access gate. Gating on patron-id while ``/portal/requests``
+        accepts arbitrary IDs would be false reassurance: an attacker who
+        can enumerate one can enumerate the other. See PRD-05 § Patron
+        portal for the full prototype-limits writeup.
+
+        Returns 404 only when the saga does not exist.
         """
         async with session.begin():
             saga = await session.get(Saga, saga_id)
             if saga is None:
                 raise HTTPException(status_code=404, detail="request not found")
             raw = saga.request_payload or {}
-            stored_patron_id = str((raw.get("patron") or {}).get("patron_id") or "")
-            if stored_patron_id != patron_id:
-                raise HTTPException(status_code=404, detail="request not found")
 
             ledger = SagaLedger(session)
             events = await ledger.events_for(saga_id)
