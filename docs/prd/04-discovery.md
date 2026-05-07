@@ -1,6 +1,6 @@
 # PRD 04 — Discovery
 
-> Last reviewed against code: 2026-05-04 (post CrossRef client PR-A
+> Last reviewed against code: 2026-05-06 (post CrossRef client PR-A
 > + DiscoveryAgent integration PR-B + factory wiring PR-C + endpoint
 > wiring #46/#53 — DOI input now triggers a CrossRef identity
 > confirmation that re-keys the SRU search; CrossRef errors and 404s

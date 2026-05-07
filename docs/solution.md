@@ -118,8 +118,9 @@ Replay-safety lives in two `UNIQUE` constraints:
 ### 3.1 API layer (`src/agora/api/`)
 
 `create_app()` in `app.py` builds the FastAPI app and registers a
-lifespan that spawns `OutboxWorker.run_forever` as an
-`asyncio.Task`. Endpoints:
+lifespan that spawns two `asyncio.Task`s: `OutboxWorker.run_forever`
+(outbound delivery) and `OverdueScanner.run_forever` (three-tier
+overdue/recall/receipt-unconfirmed scanner). Endpoints:
 
 | Endpoint                             | Notes                                                      |
 | ------------------------------------ | ---------------------------------------------------------- |
@@ -168,7 +169,7 @@ console commits the gate.
 | `RoutingAgent`         | implemented         | candidates + consortium policy    | ranked supplier list + chosen          |
 | `PolicyAgent`          | implemented         | request + patron + history        | hard/soft flags (CONTU, eligibility)   |
 | `TransactionAgent`     | implemented         | wraps `ReShareClient`             | `submit_to_supplier()` returns reshare_id |
-| `TrackingAgent` + `OverdueScanner` | implemented (no cron yet) | sagas in `shipped`     | overdue OBSERVATION events              |
+| `TrackingAgent` + `OverdueScanner` | implemented (asyncio task, 300 s interval) | sagas in `shipped` | overdue OBSERVATION events (3-tier: overdue / recall-proposed / receipt-unconfirmed) |
 | `ReconciliationAgent`  | implemented (thin)  | saga_id + step                    | thin wrapper around `Coordinator.run_compensator` |
 
 ### 3.4 Standards-edge clients (`src/agora/clients/`)

@@ -30,7 +30,7 @@ config:
   theme: neutral
 ---
 flowchart TB
-    subgraph UI["Staff console (FastAPI + future HTMX/React)"]
+    subgraph UI["Staff console (FastAPI + HTMX/Jinja2, ADR-0015)"]
         UI_REQ["POST /requests"]
         UI_SAGA["GET /sagas/:id"]
         UI_APPROVE["POST /sagas/:id/approve"]

@@ -18,8 +18,14 @@ Every pass must touch all of these, not just `docs/prd/`:
 | ------------------------------------------- | -------------------------------------------------------- |
 | `README.md`                                 | Status narrative, quick layout, getting-started commands |
 | `CLAUDE.md`                                 | Known-gaps list, install command, test counts            |
-| `docs/prd/00-overview.md` … `06-non-functional.md` | Lifecycle / agents / saga / NFR claims              |
-| `docs/adr/0001-…` … `0012-…`                | Mostly stable, but Status field can drift                |
+| `docs/prd/00-overview.md`            | Overall hypothesis, success criteria, test count         |
+| `docs/prd/01-lifecycle-and-states.md`| State enum, compensator table, ISO 18626 mapping         |
+| `docs/prd/02-agents.md`              | Agent inputs/outputs/tools/status                        |
+| `docs/prd/03-saga-and-idempotency.md`| SQL schema comments, outbox, replay rules                |
+| `docs/prd/04-discovery.md`           | DiscoveryAgent flow, client factories, env flags         |
+| `docs/prd/05-staff-console.md`       | Endpoint list, auth, HTMX/Jinja2 status, override        |
+| `docs/prd/06-non-functional.md`      | NFR claims (observability, reliability, FedRAMP)         |
+| `docs/adr/0001-…` … `0016-…`        | Mostly stable, but Status field can drift                |
 | `docs/architecture.md`                      | Mermaid diagrams (state machine, layer cake)             |
 | `docs/runbook.md`                           | Env-var table, schema columns, operational steps         |
 | `docs/solution.md`                          | "Open risks & gaps" table, ADR count, schema blocks      |

@@ -128,8 +128,9 @@ prints an error, do not serve the API.
 .venv/Scripts/python.exe -m uvicorn agora.api.app:app --reload
 ```
 
-`create_app()`'s lifespan spawns the outbox worker as an
-`asyncio.Task` and cancels it on shutdown. See § 3 below.
+`create_app()`'s lifespan spawns two `asyncio.Task`s — the outbox
+worker and the overdue scanner — and cancels both on shutdown. See
+§ 3 and § 4 below.
 
 ---
 
@@ -138,8 +139,12 @@ prints an error, do not serve the API.
 ### 2.1 States
 
 ```
-Submitted → Routed → Approved → Shipped → Received → Returned
+Submitted → Routed → Approving → Approved → Shipped → Received → Returned
 ```
+
+(`Approving` is the in-flight intermediate while the outbox worker delivers the
+`send_request` call and stamps `reshare_id`; staff cannot compensate during this
+window — see ADR-0012.)
 
 Compensator targets per step are tabled in PRD
 `docs/prd/01-lifecycle-and-states.md`. **Every forward step requires
