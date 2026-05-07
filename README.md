@@ -40,7 +40,7 @@ detect-secrets, pytest + ruff + mypy --strict, alembic+ORM parity
 against `postgres:15-alpine`, routing-eval rules-floor regression check.
 
 See `docs/prd/` for product requirements, `docs/adr/` for architecture
-decisions (16 ADRs through 0016), `docs/architecture.md` for the
+decisions (17 ADRs through 0017), `docs/architecture.md` for the
 hand-drawn diagrams, `docs/runbook.md` for operations, `docs/solution.md`
 for the solution doc, `docs/lessons.md` for accumulated gotchas, and
 `prompts/build-agora.md` to bootstrap a fresh dev session.

@@ -43,7 +43,7 @@ agora/
 ├── prompts/build-agora.md       # Bootstrap prompt for fresh sessions
 ├── docs/
 │   ├── prd/  (7 docs)           # Product requirements
-│   ├── adr/  (16 docs)          # Architecture decisions
+│   ├── adr/  (17 docs)          # Architecture decisions
 │   └── architecture.md          # Hand-drawn Mermaid diagram
 ├── alembic/versions/            # DB migrations
 ├── src/agora/
