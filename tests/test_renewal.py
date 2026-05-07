@@ -487,3 +487,82 @@ async def test_renew_forward_missing_reshare_id_raises(session: AsyncSession) ->
                 extras={},  # intentionally empty — no reshare_id
             )
             await coord.run_forward(ctx=ctx, step=StepName.RENEW)
+
+
+# ---------------------------- extension_days bounds (single chokepoint)
+# Validation lives in renew_forward itself so JSON (RenewBody) and HTMX
+# (Form) callers cannot diverge. Pre-fix behaviour: `int(x) or DEFAULT`
+# silently rewrote 0 → 28 and let -5 through.
+
+
+@pytest.mark.parametrize("bad_days", [0, -1, -5, 181, 1_000])
+@pytest.mark.asyncio
+async def test_renew_forward_rejects_out_of_range_extension_days(
+    session: AsyncSession, bad_days: int
+) -> None:
+    """renew_forward raises ValueError on extension_days outside [1, 180]."""
+    reshare = MockReShareClient()
+    registry = build_registry(TransactionAgent(reshare))
+    saga_id, request, reshare_id = await _saga_at_received(session, reshare)
+
+    async with session.begin():
+        coord = Coordinator(session=session, registry=registry)
+        await coord.open_gate(saga_id=saga_id, step=StepName.RENEW, actor="staff:test")
+        await coord.commit_gate(
+            saga_id=saga_id,
+            step=StepName.RENEW,
+            actor="staff:test",
+            rationale=f"test bad extension_days={bad_days}",
+        )
+
+    with pytest.raises(ValueError, match="extension_days"):
+        async with session.begin():
+            coord = Coordinator(session=session, registry=registry)
+            ctx = SagaContext(
+                saga_id=saga_id,
+                request=request,
+                current_state=LifecycleState.RECEIVED,
+                idempotency_key=new_idempotency_key(prefix="renew"),
+                actor="staff:test",
+                extras={"reshare_id": reshare_id, "extension_days": bad_days},
+            )
+            await coord.run_forward(ctx=ctx, step=StepName.RENEW)
+
+
+@pytest.mark.asyncio
+async def test_renew_forward_extension_days_none_uses_default(
+    session: AsyncSession,
+) -> None:
+    """Missing extension_days falls back to DEFAULT_LOAN_PERIOD_DAYS (28)."""
+    reshare = MockReShareClient()
+    registry = build_registry(TransactionAgent(reshare))
+    saga_id, request, reshare_id = await _saga_at_received(session, reshare)
+
+    ev = await _gate_and_run(
+        session, registry, saga_id, request, StepName.RENEW,
+        {"reshare_id": reshare_id},  # no extension_days
+        from_state=LifecycleState.RECEIVED,
+    )
+    assert ev.payload["extension_days"] == 28
+
+
+async def test_ui_renew_zero_days_returns_400(app: Any, client: AsyncClient) -> None:
+    """HTMX form path: extension_days=0 must reject — Form() has no Pydantic gate."""
+    saga_id = await _api_saga_at_received(app, client)
+    r = await client.post(
+        f"/ui/sagas/{saga_id}/renew",
+        data={"extension_days": "0", "rationale": "should be rejected"},
+    )
+    assert r.status_code == 400, r.text
+    assert "extension_days" in r.json()["detail"]
+
+
+async def test_ui_renew_negative_days_returns_400(app: Any, client: AsyncClient) -> None:
+    """HTMX form path: extension_days=-5 must reject — pre-fix would have produced a past due date."""
+    saga_id = await _api_saga_at_received(app, client)
+    r = await client.post(
+        f"/ui/sagas/{saga_id}/renew",
+        data={"extension_days": "-5", "rationale": "should be rejected"},
+    )
+    assert r.status_code == 400, r.text
+    assert "extension_days" in r.json()["detail"]
