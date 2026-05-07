@@ -1,6 +1,7 @@
 # PRD 06 — Non-Functional Requirements
 
-> Last reviewed against code: 2026-05-04 (post PRs #87–#90).
+> Last reviewed against code: 2026-05-07 (post PRs #100/#101/#116/#117 —
+> no NFR-level shifts; refresh confirms targets/budgets still apply).
 
 ## Performance (prototype targets)
 
