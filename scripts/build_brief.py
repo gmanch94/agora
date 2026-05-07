@@ -21,6 +21,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.platypus import (
     HRFlowable,
+    PageBreak,
     Paragraph,
     SimpleDocTemplate,
     Spacer,
@@ -334,6 +335,9 @@ def build() -> None:
     ))
 
     # ── Key Design Decisions ───────────────────────────────────────────────
+    # Force page 2: keeps the dense decision/build-status/gaps tables on
+    # their own page so page 1 is the "elevator pitch" surface.
+    story.append(PageBreak())
     story.extend(section("Key Design Decisions"))
     story.append(make_table(
         rows=[
