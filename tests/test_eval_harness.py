@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -31,6 +32,7 @@ from agora.evals.routing import (
     EvalReport,
     Scenario,
     ScenarioResult,
+    _check_floor,
     evaluate,
     load_scenarios,
     main,
@@ -285,3 +287,130 @@ def test_main_no_write_does_not_create_baseline(tmp_path: Path) -> None:
     )
     assert rc == 0
     assert not baseline_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# Scenario.validate() — empty candidates happy path (line 129)
+# ---------------------------------------------------------------------------
+
+
+def test_validate_empty_candidates_no_expected_passes() -> None:
+    """Empty candidates + None chosen + empty ranking is a valid no-holders
+    scenario.  validate() must return without raising (line 129 early return)."""
+    sc = Scenario(
+        id="empty-ok",
+        description="no holders found",
+        candidates=[],
+        expected_chosen=None,
+        expected_ranking=[],
+    )
+    sc.validate()  # must not raise
+
+
+def test_load_scenarios_empty_candidates_ok(tmp_path: Path) -> None:
+    """load_scenarios accepts a scenario with zero candidates."""
+    fixture: list[dict[str, object]] = [
+        {
+            "id": "empty-001",
+            "description": "no holders",
+            "candidates": [],
+            "expected_chosen": None,
+            "expected_ranking": [],
+        }
+    ]
+    p = tmp_path / "empty.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+    scenarios = load_scenarios(p)
+    assert len(scenarios) == 1
+    assert scenarios[0].candidates == []
+
+
+# ---------------------------------------------------------------------------
+# _check_floor() — all three exit-code branches (lines 315-344)
+# ---------------------------------------------------------------------------
+
+
+def _write_baseline(tmp_path: Path, top1: float, rho: float | None) -> Path:
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(
+        json.dumps({"top1_accuracy": top1, "mean_spearman": rho}),
+        encoding="utf-8",
+    )
+    return baseline
+
+
+def _make_report(top1: float = 1.0, rho: float | None = 1.0) -> EvalReport:
+    return EvalReport(total=1, top1_accuracy=top1, mean_spearman=rho, results=[])
+
+
+def test_check_floor_missing_baseline_returns_2(tmp_path: Path) -> None:
+    code = _check_floor(_make_report(), tmp_path / "missing.json")
+    assert code == 2
+
+
+def test_check_floor_top1_below_floor_returns_1(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    baseline = _write_baseline(tmp_path, top1=0.9, rho=0.8)
+    code = _check_floor(_make_report(top1=0.5, rho=0.9), baseline)
+    assert code == 1
+    assert "FLOOR CHECK FAILED" in capsys.readouterr().out
+
+
+def test_check_floor_spearman_below_floor_returns_1(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    baseline = _write_baseline(tmp_path, top1=0.5, rho=0.9)
+    code = _check_floor(_make_report(top1=1.0, rho=0.5), baseline)
+    assert code == 1
+
+
+def test_check_floor_above_floor_returns_0(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    baseline = _write_baseline(tmp_path, top1=0.5, rho=0.5)
+    code = _check_floor(_make_report(top1=1.0, rho=1.0), baseline)
+    assert code == 0
+    assert "FLOOR CHECK OK" in capsys.readouterr().out
+
+
+def test_check_floor_null_baseline_spearman_skips_rho(tmp_path: Path) -> None:
+    baseline = _write_baseline(tmp_path, top1=0.5, rho=None)
+    # rho in report is low but floor has no rho — should not fail
+    code = _check_floor(_make_report(top1=1.0, rho=0.0), baseline)
+    assert code == 0
+
+
+# ---------------------------------------------------------------------------
+# main() — --check-floor path (line 434)
+# ---------------------------------------------------------------------------
+
+
+def test_main_check_floor_pass(tmp_path: Path) -> None:
+    scenarios_path = _write_synthetic(tmp_path)
+    baseline_path = _write_baseline(tmp_path, top1=0.0, rho=0.0)
+    rc = main(
+        [
+            "--rules-only",
+            "--scenarios",
+            str(scenarios_path),
+            "--baseline",
+            str(baseline_path),
+            "--check-floor",
+        ]
+    )
+    assert rc == 0
+
+
+# ---------------------------------------------------------------------------
+# main() — --llm with get_llm_tiebreaker() returning None (lines 415-425)
+# ---------------------------------------------------------------------------
+
+
+def test_main_llm_no_tiebreaker_returns_2(tmp_path: Path) -> None:
+    """When AGORA_ROUTING_LLM_ENABLED is not set, get_llm_tiebreaker()
+    returns None; main() must surface this as exit code 2."""
+    scenarios_path = _write_synthetic(tmp_path)
+    with patch("agora.agents.factories.get_llm_tiebreaker", return_value=None):
+        rc = main(["--llm", "--scenarios", str(scenarios_path), "--no-write"])
+    assert rc == 2
