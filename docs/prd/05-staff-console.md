@@ -1,6 +1,6 @@
 # PRD 05 — Staff Console
 
-> Last reviewed against code: 2026-05-05 (post PRs #80/#82/#84/#90/#92/#93;
+> Last reviewed against code: 2026-05-06 (post PRs #80/#82/#84/#90/#92/#93;
 > UI shell shipped; override HTMX form (#92) + saga browser (#93) added).
 
 The staff console is the **only UI in the prototype**. It is the
@@ -89,8 +89,11 @@ be settled out-of-band by staff (see `saga/flows.py` § RECEIVE
 compensator for rationale). Broader override (arbitrary state
 forcing, PolicyAgent hard-fail integration) remains out of scope.
 
-**Auth:** none. ADR-0007 (FedRAMP deferred) — assumes a trusted
-network for the prototype.
+**Auth:** optional HTTP Basic on the HTML console routes via
+`AGORA_CONSOLE_USERNAME` / `AGORA_CONSOLE_PASSWORD`. Default is empty
+(no credentials required in local dev). JSON API routes are unaffected
+(trusted-network assumption, ADR-0007). Full FedRAMP-grade auth deferred
+(SAML/Shibboleth, PIV/CAC — see `docs/adr/0007-fedramp-deferred.md`).
 
 ## UX principles
 

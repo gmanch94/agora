@@ -21,7 +21,7 @@ CREATE TABLE saga_event (
     saga_id         UUID NOT NULL REFERENCES saga(id) ON DELETE CASCADE,
     seq             INT  NOT NULL,
     kind            VARCHAR(32) NOT NULL,          -- 'forward' | 'compensator' | 'gate' | 'observation'
-    step            VARCHAR(32) NOT NULL,          -- forwards: 'submit'|'route'|'approve'|'ship'|'receive'|'return'  // compensators / branches: 'cancel'|'reroute'|'revoke'|'recall'|'dispute'
+    step            VARCHAR(32) NOT NULL,          -- forwards: 'submit'|'route'|'approve'|'ship'|'receive'|'return'  // compensators / branches: 'cancel'|'reroute'|'revoke'|'recall'|'dispute'  // staff override observation: 'resolve'
     state_before    VARCHAR(32) NOT NULL,
     state_after     VARCHAR(32) NOT NULL,
     actor           VARCHAR(255) NOT NULL,
