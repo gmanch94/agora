@@ -68,7 +68,20 @@ def _set_cell_border(cell, top=None, bottom=None, left=None, right=None):
 
 
 def _cell_para(cell) -> object:
-    """Return the first paragraph in a cell (creates one if empty)."""
+    """Return the first paragraph in a cell (creates one if empty).
+
+    Also sets vertical alignment to centre so single-line cells line up
+    with multi-line cells in the same row instead of floating to the top.
+    """
+    # Vertical centre via direct OXML (python-docx exposes WD_ALIGN_VERTICAL
+    # but the import surface differs across versions; inline element is stable).
+    tcPr = cell._tc.get_or_add_tcPr()
+    for old in tcPr.findall(qn("w:vAlign")):
+        tcPr.remove(old)
+    valign = OxmlElement("w:vAlign")
+    valign.set(qn("w:val"), "center")
+    tcPr.append(valign)
+
     if cell.paragraphs:
         return cell.paragraphs[0]
     return cell.add_paragraph()
@@ -131,19 +144,19 @@ def _para_space(para, before=0, after=0):
 def add_section_title(doc: Document, text: str):
     """Navy bold heading with steel underline border effect."""
     p = doc.add_paragraph()
-    _para_space(p, before=14, after=2)
+    _para_space(p, before=18, after=6)
     run = p.add_run(text)
     run.bold = True
-    run.font.size = Pt(13)
+    run.font.size = Pt(14)
     run.font.color.rgb = _rgb(NAVY)
 
-    # Bottom border on the paragraph
+    # Bottom border on the paragraph (with breathing room above the line)
     pPr = p._p.get_or_add_pPr()
     pb = OxmlElement("w:pBdr")
     bot = OxmlElement("w:bottom")
     bot.set(qn("w:val"), "single")
     bot.set(qn("w:sz"), "6")
-    bot.set(qn("w:space"), "2")
+    bot.set(qn("w:space"), "6")
     bot.set(qn("w:color"), STEEL)
     pb.append(bot)
     pPr.append(pb)

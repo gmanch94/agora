@@ -137,10 +137,16 @@ def body(c: rl_canvas.Canvas, text: str, y: float, size: int = 11,
     return y
 
 
-def divider(c: rl_canvas.Canvas, y: float, color: tuple = LIGHTGRAY) -> float:
+def divider(
+    c: rl_canvas.Canvas,
+    y: float,
+    color: tuple = LIGHTGRAY,
+    width_frac: float = 1.0,
+) -> float:
     set_stroke(c, color)
     c.setLineWidth(0.5)
-    c.line(MARGIN_L, y, W - MARGIN_R, y)
+    end_x = MARGIN_L + width_frac * (W - MARGIN_L - MARGIN_R)
+    c.line(MARGIN_L, y, end_x, y)
     return y - 6
 
 
@@ -220,10 +226,18 @@ def table_row(
     return y - row_h
 
 
+def _draw_check(c: rl_canvas.Canvas, x: float, y: float, color: tuple, size: int = 11) -> None:
+    """Draw a tick mark using two line segments (no Unicode font dependency)."""
+    set_stroke(c, color)
+    c.setLineWidth(1.6)
+    s = size * 0.45
+    # short stroke (down-right) then long stroke (up-right) — classic check shape
+    c.line(x, y + s * 0.55, x + s * 0.55, y)
+    c.line(x + s * 0.55, y, x + s * 1.55, y + s * 1.4)
+
+
 def checkmark(c: rl_canvas.Canvas, text: str, y: float, size: int = 11) -> float:
-    c.setFont("Helvetica-Bold", size)
-    set_fill(c, TEAL)
-    c.drawString(MARGIN_L, y, "v")   # ASCII v for checkmark (no Unicode)
+    _draw_check(c, MARGIN_L, y + 1, TEAL, size=size)
     c.setFont("Helvetica", size)
     set_fill(c, DARKTEXT)
     c.drawString(MARGIN_L + 14, y, text)
@@ -282,8 +296,8 @@ def slide_problem(c: rl_canvas.Canvas, pn: int, total: int) -> None:
     # Left column (60%)
     col_w = 0.58 * (W - MARGIN_L - MARGIN_R)
 
-    section_label(c, "Baseline impact", y + 4)
-    y -= 2
+    section_label(c, "Baseline impact", y + 8)
+    y -= 8
 
     c.setFont("Helvetica-Bold", 13)
     set_fill(c, DARKTEXT)
@@ -311,10 +325,10 @@ def slide_problem(c: rl_canvas.Canvas, pn: int, total: int) -> None:
     c.setFont("Helvetica", 9)
     set_fill(c, MIDGRAY)
     c.drawString(MARGIN_L, y, "Source: NISO benchmarks")
-    y -= 22
+    y -= 30
 
-    section_label(c, "What humans still do manually", y + 4)
-    y -= 4
+    section_label(c, "What humans still do manually", y + 8)
+    y -= 8
     for item in [
         "Discovery & supplier ranking",
         "Copyright clearance (CONTU rule tracking)",
@@ -325,11 +339,14 @@ def slide_problem(c: rl_canvas.Canvas, pn: int, total: int) -> None:
         y = bullet(c, item, y, size=11)
 
     y -= 10
-    divider(c, y + 6)
-    c.setFont("Helvetica-BoldOblique", 11)
+    divider(c, y + 6, width_frac=0.58)
+    c.setFont("Helvetica-BoldOblique", 10)
     set_fill(c, NAVY)
+    # Wrap to two lines so it fits in the 58 % left column.
     c.drawString(MARGIN_L, y - 8,
-        "ILL spans heterogeneous systems, long timelines, real money, and legal compliance (CONTU).")
+        "ILL spans heterogeneous systems, long timelines, real money,")
+    c.drawString(MARGIN_L, y - 22,
+        "and legal compliance (CONTU).")
 
     # Right callout box
     rx = MARGIN_L + col_w + 20
@@ -396,10 +413,10 @@ def slide_hypothesis(c: rl_canvas.Canvas, pn: int, total: int) -> None:
 
     y -= 10
     divider(c, y)
-    y -= 16
+    y -= 22
 
-    section_label(c, "Scope", y + 4)
-    y -= 6
+    section_label(c, "Scope", y + 8)
+    y -= 8
 
     c.setFont("Helvetica-Bold", 11)
     set_fill(c, DARKTEXT)
@@ -518,13 +535,13 @@ def slide_lifecycle(c: rl_canvas.Canvas, pn: int, total: int) -> None:
     y_bottom -= 14
     principles = [
         ("Compensator paired to every forward step", BLUE),
-        ("Human commits every gate; agents only advise", TEAL),
-        ("Saga ledger is append-only, source of truth", NAVY),
+        ("Human commits every gate; agents advise", TEAL),
+        ("Append-only saga ledger is source of truth", NAVY),
     ]
     col_w = (W - MARGIN_L - MARGIN_R) / len(principles)
     for i, (text, col) in enumerate(principles):
         px = MARGIN_L + i * col_w
-        c.setFont("Helvetica-Bold", 10)
+        c.setFont("Helvetica-Bold", 9)
         set_fill(c, col)
         c.drawString(px, y_bottom, "  " + text)
 
@@ -554,12 +571,13 @@ def slide_agents(c: rl_canvas.Canvas, pn: int, total: int) -> None:
          "Thin wrapper over Coordinator.run_compensator. Routes to the right compensator given failure context.",
          (0.55, 0.18, 0.18)),
     ]
-    row_h = 56
+    row_h = 44
     for i, (name, desc, col) in enumerate(agents):
         ay = y - i * row_h
         if i % 2 == 1:
+            # Background rect hugs content (chip top → rationale baseline + 4 padding)
             set_fill(c, (0.975, 0.978, 0.984))
-            c.rect(MARGIN_L - 4, ay - row_h + 8, W - MARGIN_L - MARGIN_R + 8, row_h, fill=1, stroke=0)
+            c.rect(MARGIN_L - 4, ay - 22, W - MARGIN_L - MARGIN_R + 8, 38, fill=1, stroke=0)
 
         # Color chip
         set_fill(c, col)
@@ -607,13 +625,18 @@ def slide_architecture(c: rl_canvas.Canvas, pn: int, total: int) -> None:
     ]
 
     lh = 52
+    # Reserve right-side strip for the "Key invariants" callout (drawn below).
+    callout_w = 140
+    callout_gap = 18
+    callout_x = W - MARGIN_R - callout_w - 5  # 5pt right-edge gutter
+    cake_right = callout_x - callout_gap
     for i, (name, detail, col) in enumerate(layers):
         ly = y - i * lh
         # Gradient-style: lighten fill based on depth
         alpha = 1.0 - i * 0.06
         set_fill(c, tuple(v * alpha + (1 - alpha) for v in col))
         bar_x = MARGIN_L + i * 14
-        bar_w = W - MARGIN_L - MARGIN_R - i * 28
+        bar_w = cake_right - bar_x - i * 14
         c.roundRect(bar_x, ly - lh + 10, bar_w, lh - 4, 6, fill=1, stroke=0)
         # Label
         c.setFont("Helvetica-Bold", 12)
@@ -630,9 +653,8 @@ def slide_architecture(c: rl_canvas.Canvas, pn: int, total: int) -> None:
             c.setLineWidth(0.8)
             c.line(ax, ly - lh + 10, ax, ly - lh + 4)
 
-    # Right-side callout
-    callout_x = W - MARGIN_R - 145   # left edge of the 140-wide callout box
-    callout_w = 140
+    # Right-side callout (callout_x / callout_w defined above so the
+    # cake bars can stop short of it).
     ry_top = y - 2
     ry_bot = y - len(layers) * lh - 4
     rh = ry_top - ry_bot
@@ -672,9 +694,9 @@ def slide_standards(c: rl_canvas.Canvas, pn: int, total: int) -> None:
     y = CONTENT_Y_TOP - 4
 
     col1 = MARGIN_L
-    col2 = MARGIN_L + 130
-    col3 = MARGIN_L + 270
-    col4 = MARGIN_L + 420
+    col2 = MARGIN_L + 120
+    col3 = MARGIN_L + 250
+    col4 = MARGIN_L + 460
 
     y = table_header_row(c,
         [("Standard", col1), ("Role", col2), ("Implementation", col3), ("Status", col4)],
@@ -721,9 +743,9 @@ def slide_standards(c: rl_canvas.Canvas, pn: int, total: int) -> None:
 
     y -= 14
     divider(c, y)
-    y -= 16
-    section_label(c, "Consortium discovery gap", y + 4)
-    y -= 6
+    y -= 22
+    section_label(c, "Consortium discovery gap", y + 8)
+    y -= 8
     c.setFont("Helvetica", 10)
     set_fill(c, DARKTEXT)
     c.drawString(MARGIN_L, y,
@@ -742,8 +764,8 @@ def slide_shipped(c: rl_canvas.Canvas, pn: int, total: int) -> None:
     mid = W / 2 + 10
 
     # Left column — functional
-    section_label(c, "Functional", y + 4)
-    y -= 6
+    section_label(c, "Functional", y + 8)
+    y -= 8
     left_items = [
         "make demo — happy path through MockReShareClient",
         "Staff console: saga list, detail, browser, approve, reject, compensate",
@@ -763,8 +785,8 @@ def slide_shipped(c: rl_canvas.Canvas, pn: int, total: int) -> None:
     # Draw section label at right-column x (section_label always uses MARGIN_L)
     c.setFont("Helvetica-Bold", 7)
     set_fill(c, BLUE)
-    c.drawString(rx, y_right + 4, "ENGINEERING")
-    y_right -= 6
+    c.drawString(rx, y_right + 8, "ENGINEERING")
+    y_right -= 8
 
     right_items = [
         "401 tests: unit + property (Hypothesis) + e2e",
@@ -776,9 +798,7 @@ def slide_shipped(c: rl_canvas.Canvas, pn: int, total: int) -> None:
         "Idempotency: ULID keys, UNIQUE on ledger + outbox",
     ]
     for item in right_items:
-        c.setFont("Helvetica-Bold", 10)
-        set_fill(c, TEAL)
-        c.drawString(rx, y_right, "v")
+        _draw_check(c, rx, y_right + 1, TEAL, size=10)
         c.setFont("Helvetica", 10)
         set_fill(c, DARKTEXT)
         c.drawString(rx + 14, y_right, item)
@@ -830,12 +850,13 @@ def slide_decisions(c: rl_canvas.Canvas, pn: int, total: int) -> None:
          "Default-off seam; rules pick is the bulk decision; LLM fires only when score gap <= 0.03"),
     ]
 
-    row_h = 58
+    row_h = 44
     for i, (adr, headline, rationale) in enumerate(decisions):
         dy = y - i * row_h
         if i % 2 == 1:
+            # Background rect hugs content (chip top → rationale baseline + padding)
             set_fill(c, (0.975, 0.978, 0.984))
-            c.rect(MARGIN_L - 4, dy - row_h + 8, W - MARGIN_L - MARGIN_R + 8, row_h, fill=1, stroke=0)
+            c.rect(MARGIN_L - 4, dy - 22, W - MARGIN_L - MARGIN_R + 8, 38, fill=1, stroke=0)
         # ADR chip
         cw = c.stringWidth(adr, "Helvetica-Bold", 9) + 12
         set_fill(c, NAVY)
@@ -870,8 +891,8 @@ def slide_gaps(c: rl_canvas.Canvas, pn: int, total: int) -> None:
     mid = int(W * 0.52)
     rx = mid + 20
 
-    section_label(c, "Sandbox-blocked (external dependency needed)", y + 4)
-    y -= 6
+    section_label(c, "Sandbox-blocked (external dependency needed)", y + 8)
+    y -= 8
     sandbox = [
         ("NCIP live probe",
          "HttpNcipClient source-review-only; test harness ready (test_ncip_http_smoke.py).",
@@ -897,13 +918,13 @@ def slide_gaps(c: rl_canvas.Canvas, pn: int, total: int) -> None:
         c.drawString(MARGIN_L + 10, y, "Blocker: " + blocker)
         y -= 16
 
-    y -= 4
-    section_label(c, "Design decisions deferred", y + 4)
-    y -= 6
+    y -= 8
+    section_label(c, "Design decisions deferred", y + 8)
+    y -= 8
     deferred = [
-        "ReconciliationAgent: thin wrapper; no failure-classification policy",
-        "WorldCat: structural gap (no open holdings API); consortium fallback in place",
-        "No auth on staff console (FedRAMP alignment-noted only, ADR-0007)",
+        "ReconciliationAgent: thin wrapper; no failure policy",
+        "WorldCat: structural gap; consortium fallback in place",
+        "No auth on staff console (ADR-0007)",
         "No OpenTelemetry traces (structlog only)",
     ]
     for item in deferred:
