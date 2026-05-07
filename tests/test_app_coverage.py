@@ -461,6 +461,75 @@ def test_portal_due_date_renew_overrides_ship() -> None:
     assert _portal_due_date([ship, renew]) == "2026-07-01"
 
 
+def test_portal_due_date_compensator_pops_renewal() -> None:
+    """forward.renew + compensator.renew → portal shows the SHIP due date.
+
+    Regression for the bug surfaced by the post-#117 strict review: the
+    last-write-wins predecessor left the portal showing the cancelled
+    renewal's new_due_at after a RENEW compensator landed.
+    """
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from agora.api.app import _portal_due_date
+    from agora.models.events import SagaEvent
+    from agora.models.lifecycle import EventKind, LifecycleState, StepName, StepOutcome
+
+    saga_id = uuid4()
+    ship = SagaEvent(
+        id=1, saga_id=saga_id, seq=1, ts=datetime.now(UTC), actor="x",
+        idempotency_key="k1", iso_message_id=None, rationale=None,
+        outcome=StepOutcome.COMMITTED,
+        state_before=LifecycleState.APPROVED, state_after=LifecycleState.SHIPPED,
+        kind=EventKind.FORWARD, step=StepName.SHIP,
+        payload={"due_at": "2026-06-01T00:00:00Z"},
+    )
+    renew_fwd = SagaEvent(
+        id=2, saga_id=saga_id, seq=2, ts=datetime.now(UTC), actor="x",
+        idempotency_key="k2", iso_message_id=None, rationale=None,
+        outcome=StepOutcome.COMMITTED,
+        state_before=LifecycleState.RECEIVED, state_after=LifecycleState.RECEIVED,
+        kind=EventKind.FORWARD, step=StepName.RENEW,
+        payload={"new_due_at": "2026-07-01T00:00:00Z"},
+    )
+    renew_comp = SagaEvent(
+        id=3, saga_id=saga_id, seq=3, ts=datetime.now(UTC), actor="x",
+        idempotency_key="k3", iso_message_id=None, rationale=None,
+        outcome=StepOutcome.COMMITTED,
+        state_before=LifecycleState.RECEIVED, state_after=LifecycleState.RECEIVED,
+        kind=EventKind.COMPENSATOR, step=StepName.RENEW,
+        payload={"renewal_cancelled": True, "reverted_new_due_at": "2026-07-01T00:00:00Z"},
+    )
+    assert _portal_due_date([ship, renew_fwd, renew_comp]) == "2026-06-01"
+
+
+def test_portal_due_date_compensator_pops_only_most_recent() -> None:
+    """Two RENEW forwards + one compensator → portal shows the FIRST renewal's due date."""
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from agora.api.app import _portal_due_date
+    from agora.models.events import SagaEvent
+    from agora.models.lifecycle import EventKind, LifecycleState, StepName, StepOutcome
+
+    saga_id = uuid4()
+
+    def _ev(seq: int, kind: EventKind, step: StepName, payload: dict[str, Any]) -> SagaEvent:
+        return SagaEvent(
+            id=seq, saga_id=saga_id, seq=seq, ts=datetime.now(UTC), actor="x",
+            idempotency_key=f"k{seq}", iso_message_id=None, rationale=None,
+            outcome=StepOutcome.COMMITTED,
+            state_before=LifecycleState.RECEIVED, state_after=LifecycleState.RECEIVED,
+            kind=kind, step=step, payload=payload,
+        )
+
+    ship = _ev(1, EventKind.FORWARD, StepName.SHIP, {"due_at": "2026-06-01T00:00:00Z"})
+    r1 = _ev(2, EventKind.FORWARD, StepName.RENEW, {"new_due_at": "2026-07-01T00:00:00Z"})
+    r2 = _ev(3, EventKind.FORWARD, StepName.RENEW, {"new_due_at": "2026-08-01T00:00:00Z"})
+    comp = _ev(4, EventKind.COMPENSATOR, StepName.RENEW, {"renewal_cancelled": True})
+    assert _portal_due_date([ship, r1, r2, comp]) == "2026-07-01"
+
+
 # ---------------------------------------------------------------------------
 # _derive_extras APPROVE compensator branch (lines 274-275)
 # ---------------------------------------------------------------------------

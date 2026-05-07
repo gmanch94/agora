@@ -134,10 +134,19 @@ async def test_portal_detail_shows_event_history(client: AsyncClient) -> None:
     assert "Request submitted" in r.text
 
 
-async def test_portal_detail_wrong_patron_returns_404(client: AsyncClient) -> None:
+async def test_portal_detail_patron_id_is_label_not_gate(client: AsyncClient) -> None:
+    """patron_id is a UX label, not an access gate.
+
+    Privacy posture: saga UUID is the secret token; ``portal_requests``
+    accepts arbitrary patron_ids and would leak saga IDs anyway, so a
+    patron-id 404 here would be false reassurance. Regression for the
+    asymmetry surfaced by the post-#117 strict review.
+    """
     saga_id = (await client.post("/requests", json=_PAYLOAD_A)).json()["saga_id"]
     r = await client.get(f"/portal/requests/{saga_id}?patron_id=wrong-patron")
-    assert r.status_code == 404
+    assert r.status_code == 200
+    assert "Dune" in r.text
+    assert "wrong-patron" in r.text  # the supplied label is echoed back
 
 
 async def test_portal_detail_missing_patron_id_returns_422(client: AsyncClient) -> None:

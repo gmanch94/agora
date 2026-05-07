@@ -416,7 +416,7 @@ during the APPROVING window (supplier ack still pending) returns
 
 ### 7.5 Test strategy
 
-- 492 tests across unit, property (Hypothesis on compensator  symmetry), and end-to-end (FastAPI + ASGITransport + in-memory
+- 502 tests across unit, property (Hypothesis on compensator  symmetry), and end-to-end (FastAPI + ASGITransport + in-memory
   SQLite), plus 6 postgres-only tests gated behind
   `AGORA_TEST_DB_URL` / the `postgres-tests.yml` CI service container.
 - `pytest-asyncio` in `asyncio_mode = "auto"`.
