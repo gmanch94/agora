@@ -28,7 +28,7 @@ reimplement them.
 ## Status
 
 **Working prototype.** End-to-end demo runs via `make demo`
-(`agora.demos.happy_path`). **489 tests** green (+6 postgres-only in CI).Saga + outbox + APPROVING-via-outbox (ADR-0012), multi-worker outbox
+(`agora.demos.happy_path`). **492 tests** green (+6 postgres-only in CI).Saga + outbox + APPROVING-via-outbox (ADR-0012), multi-worker outbox
 safety (`SELECT … FOR UPDATE SKIP LOCKED`), TrackingAgent three-tier
 overdue scanner (overdue / recall-proposed / receipt-unconfirmed) wired
 into the FastAPI lifespan, NCIP fan-out on RECEIVE / RETURN forwards,
@@ -75,7 +75,7 @@ agora/
 │   ├── evals/           # Routing eval harness (run via make eval-routing)
 │   ├── models/          # pydantic schemas (ISO 18626 subset)
 │   ├── config.py / cli.py / logging.py / py.typed
-├── tests/               # 489 unit + property + e2e (+6 postgres-only)├── .github/workflows/   # audit.yml, postgres-tests.yml, triple-gate.yml,
+├── tests/               # 492 unit + property + e2e (+6 postgres-only)├── .github/workflows/   # audit.yml, postgres-tests.yml, triple-gate.yml,
 │                        #   routing-eval-floor.yml
 ├── docker-compose.yml   # Postgres-only sandbox today
 ├── Makefile
