@@ -139,6 +139,29 @@ async def test_routing_format_affinity_flips_article_to_digital() -> None:
 
 
 @pytest.mark.asyncio
+async def test_routing_uses_distance_km_for_proximity_score() -> None:
+    """Candidates with distance_km set exercise the proximity branch (line 265)."""
+    candidates = [
+        HolderCandidate(
+            symbol="NEAR",
+            is_consortium_member=True,
+            status="available",
+            distance_km=10.0,
+        ),
+        HolderCandidate(
+            symbol="FAR",
+            is_consortium_member=True,
+            status="available",
+            distance_km=5000.0,
+        ),
+    ]
+    rec = await RoutingAgent().run(candidates)
+    assert rec.chosen is not None
+    # Both are consortium/available; NEAR has higher proximity score.
+    assert rec.chosen.symbol == "NEAR"
+
+
+@pytest.mark.asyncio
 async def test_policy_blocks_contu_violation() -> None:
     issn = "12345678"
     ledger = [

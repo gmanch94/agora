@@ -454,3 +454,36 @@ async def test_api_renew_extension_days_validation(client: AsyncClient) -> None:
         json={"actor": "staff:test", "rationale": "test", "extension_days": 0},
     )
     assert r.status_code == 422
+
+
+# ------------------------------------------------------------------ flows guard
+
+@pytest.mark.asyncio
+async def test_renew_forward_missing_reshare_id_raises(session: AsyncSession) -> None:
+    """renew_forward raises ValueError when reshare_id is absent from extras (line 503)."""
+    reshare = MockReShareClient()
+    registry = build_registry(TransactionAgent(reshare))
+    saga_id, request, _reshare_id = await _saga_at_received(session, reshare)
+
+    async with session.begin():
+        coord = Coordinator(session=session, registry=registry)
+        await coord.open_gate(saga_id=saga_id, step=StepName.RENEW, actor="staff:test")
+        await coord.commit_gate(
+            saga_id=saga_id,
+            step=StepName.RENEW,
+            actor="staff:test",
+            rationale="test missing reshare_id",
+        )
+
+    with pytest.raises(ValueError, match="reshare_id"):
+        async with session.begin():
+            coord = Coordinator(session=session, registry=registry)
+            ctx = SagaContext(
+                saga_id=saga_id,
+                request=request,
+                current_state=LifecycleState.RECEIVED,
+                idempotency_key=new_idempotency_key(prefix="renew"),
+                actor="staff:test",
+                extras={},  # intentionally empty — no reshare_id
+            )
+            await coord.run_forward(ctx=ctx, step=StepName.RENEW)
