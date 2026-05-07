@@ -20,7 +20,7 @@ help:
 	@echo "  api         run FastAPI app locally"
 	@echo "  demo        run scripted happy-path demo"
 	@echo "  deck        generate leadership PDF deck → artifacts/agora_deck.pdf"
-	@echo "  brief       generate executive brief → artifacts/agora-executive-brief.docx"
+	@echo "  brief       generate executive brief PDF → artifacts/agora-executive-brief.pdf"
 	@echo "  eval-routing run RoutingAgent eval harness (rules-only); rewrite evals/routing/baseline-rules.json"
 	@echo "  eval-routing-llm  run LLM-augmented eval (--no-write); requires Vertex/ADC env (see CLAUDE.md)"
 	@echo "  sync-doc-counts  rewrite test count + ADR count in docs to match runtime truth"
@@ -102,7 +102,7 @@ deck:
 	python scripts/build_deck.py
 
 brief:
-	python scripts/gen_exec_brief.py
+	python scripts/build_brief.py
 
 # Score the rules-baseline RoutingAgent against the committed eval set
 # (evals/routing/scenarios.json) and rewrite evals/routing/baseline-rules.json

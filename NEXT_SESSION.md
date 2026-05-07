@@ -96,8 +96,10 @@ PR #111 fixed 10 drift candidates:
 - **WorldCat v1 EOL'd Dec 2024.** v2 API requires institutional OCLC subscription.
 - **No open SRU union holdings catalog returns MARC 852 data.** Routes via
   `AGORA_CONSORTIUM_MEMBERS` fallback (PR #100).
-- **`scripts/build_deck.py` uses ASCII "v" for checkmarks** — Helvetica built-in
-  fonts don't include Unicode glyphs. Intentional.
+- **`scripts/build_deck.py` checkmarks are line-drawn, not Unicode glyphs** —
+  closed in PR #113 via `_draw_check` helper. Helvetica built-in fonts still
+  lack Unicode `✓`; if you need any other glyph (e.g. arrows), draw it with
+  `c.line()` or register a TTF.
 - **Retry delays in HttpReShareClient tests** — 5xx/ConnectError paths trigger
   tenacity retry (3 × ~0.5s = ~1.5s per test). `test_reshare_http_client.py`
   runs ~9.5s total because of this. Acceptable.
