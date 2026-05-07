@@ -318,11 +318,11 @@ class HttpReShareClient:
         # confirmed in mod-rs Actions.groovy. This raises ClientError so
         # the outbox worker surfaces a dead-letter row for staff review —
         # the saga stays at RECEIVED and the forward event is already
-        # committed. Pending ADR-0017 for the wire-level resolution.
+        # committed. See ADR-0017 for the wire-level resolution path.
         raise ClientError(
             f"renew_request sandbox-blocked: no mod-rs renewal action verified "
             f"(reshare_id={reshare_id}, extension_days={extension_days}). "
-            "See CLAUDE.md known-gaps and ADR-0016 for precedent."
+            "See ADR-0017 for the resolution path."
         )
 
     async def recall_request(

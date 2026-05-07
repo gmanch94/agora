@@ -1,51 +1,41 @@
 # Next session resume note
 
-**Last updated:** 2026-05-07 (PRs #116–#121 open; master at 401 tests).
+**Last updated:** 2026-05-07 (PRs #116–#122 merged; master at 440 tests; PR #123 open for ADR-0017).
 
 ## Repo state
 
-- `master` clean at commit `1962788`, test count **401** (396 non-postgres + 5 skipped env-gated).
-- PR #116 open: `feat/renewal-flow` — 11 new tests. Merge to bring master to **412**.
-- PR #117 open: `feat/patron-portal` — 14 new tests (branched from master, not from #116). Merge to bring master to **415**.
-- PR #118 open: `chore/next-session-update-117` — NEXT_SESSION.md update only. Merge after #116/#117.
-- PR #119 open: `feat/eval-labeled-data-40` — routing eval scenarios 20→40, baseline updated.
-- PR #120 open: `feat/db-orm-coverage` — `saga/db.py` 85%→~100%, 9 new tests in `test_db_orm.py`.
-- PR #121 open: `feat/app-coverage` — `api/app.py` ~96%→~99%, 16 new tests in `test_app_coverage.py`.
-- ADR count: **16** (ADR-0017 stub needed for renew_request sandbox gap — see below).
-- Overall coverage: **~93%** (`pytest --cov=src/agora`); after all PRs merged: **~97%**.
+- `master` clean, test count **440** (429 pass + 11 skipped env-gated).
+- ADR count: **17** (ADR-0017 documents `renew_request` sandbox gap).
+- Overall coverage: **~97%** (`pytest --cov=src/agora`).
+- PR #123 open: `feat/adr-0017-renew-gap` — ADR-0017 + reshare.py comment fix.
 
 ## PRs this session (in order)
 
 | PR | Branch | Title | Status |
 |----|--------|-------|--------|
-| #112 | — | chore: refresh exec deck + brief stats — 401 tests, 16 ADRs, 76 source files | Merged |
+| #112 | — | chore: refresh exec deck + brief stats | Merged |
 | #113 | — | chore(scripts): fix exec deck formatting + migrate brief to PDF | Merged |
 | #114 | — | chore: add Apache 2.0 LICENSE + wire pyproject.toml | Merged |
 | #115 | — | chore: fix README license line + refresh .secrets.baseline | Merged |
-| #116 | `feat/renewal-flow` | feat(renewal): add RENEW saga step for loan extension | **Open** |
-| #117 | `feat/patron-portal` | feat(portal): add read-only patron portal for ILL request status | **Open** |
-| #118 | `chore/next-session-update-117` | chore: update NEXT_SESSION.md for PRs #116-#117 | **Open** |
-| #119 | `feat/eval-labeled-data-40` | feat(evals): expand routing eval set 20→40 labeled scenarios | **Open** |
-| #120 | `feat/db-orm-coverage` | test(db): cover saga/db.py ORM helper paths — 9 new tests | **Open** |
-| #121 | `feat/app-coverage` | test(api): cover 16 uncovered lines in api/app.py | **Open** |
+| #116 | `feat/renewal-flow` | feat(renewal): add RENEW saga step for loan extension | Merged |
+| #117 | `feat/patron-portal` | feat(portal): add read-only patron portal for ILL request status | Merged |
+| #118 | `chore/next-session-update-117` | chore: update NEXT_SESSION.md for PRs #116-#117 | Merged |
+| #119 | `feat/eval-labeled-data-40` | feat(evals): expand routing eval set 20→40 labeled scenarios | Merged |
+| #120 | `feat/db-orm-coverage` | test(db): cover saga/db.py ORM helper paths — 9 new tests | Merged |
+| #121 | `feat/app-coverage` | test(api): cover 16 uncovered lines in api/app.py | Merged |
+| #122 | `chore/sync-counts-post-merge` | chore: sync doc test counts to 440 (post PRs #116-#121) | Merged |
+| #123 | `feat/adr-0017-renew-gap` | docs(adr): ADR-0017 renew_request sandbox gap | **Open** |
 
 ## What to do at session start
 
 ```bash
-# Merge all open PRs (order matters: #116 and #117 first, then the rest independently)
-gh pr merge 116 --squash --delete-branch
-gh pr merge 117 --squash --delete-branch
-gh pr merge 118 --squash --delete-branch
-gh pr merge 119 --squash --delete-branch
-gh pr merge 120 --squash --delete-branch
-gh pr merge 121 --squash --delete-branch
+gh pr merge 123 --squash --delete-branch
 git checkout master && git pull
 
-# Verify (expect ~468 pass after all merged: 401+11+14+9+16+? from #119)
-.venv/Scripts/python.exe -m pytest tests/ -q
+# Verify
+.venv/Scripts/python.exe -m pytest tests/ -q  # expect 440 pass, 11 skip
 ruff check src tests      # clean
 mypy --strict             # clean
-.venv/Scripts/python.exe scripts/sync_doc_counts.py --fix  # update README/CLAUDE.md counts
 ```
 
 ## PR #116 — feat/renewal-flow
@@ -58,7 +48,7 @@ mypy --strict             # clean
 - "Renew Loan" section in `templates/detail.html` (visible when `current_state == RECEIVED`)
 - 11 tests in `tests/test_renewal.py`
 
-**Known gap:** `HttpReShareClient.renew_request` raises `ClientError` — no renewal action verified in mod-rs `Actions.groovy`. Sandbox-blocked pending ADR-0017 (same pattern as ADR-0016 / recall).
+**Known gap:** `HttpReShareClient.renew_request` raises `ClientError` — no renewal action verified in mod-rs `Actions.groovy`. Sandbox-blocked; see ADR-0017 for the resolution path.
 
 ## PR #117 — feat/patron-portal
 
@@ -79,24 +69,24 @@ mypy --strict             # clean
 
 ## Backlog (prioritised)
 
-### Needs ADR / design work
-- **ADR-0017: renew_request production path** — `HttpReShareClient.renew_request` is sandbox-blocked. Need to confirm mod-rs action vocabulary (ISO 18626 `Renew`? custom action?) against a live two-tenant sandbox.
+### Needs sandbox / design work
+- **ADR-0017 follow-up (renew_request)**: Confirm mod-rs action for borrower-initiated renewal against a live two-tenant sandbox. Update `HttpReShareClient.renew_request` and add wire-level test.
 - **ADR-0016 follow-up (production recall)**: ISO 18626 Cancel via `message` performAction. Needs two-tenant sandbox and wire-level testing.
 
-### Coverage improvements (master at ~93%; post-merge target ~97%)
+### Coverage improvements (master at ~97%)
 | Module | Coverage | Uncovered lines | Notes |
 |--------|----------|-----------------|-------|
-| `saga/db.py` | **~100%** | — | PR #120 covers all ORM helper paths |
-| `api/app.py` | **~99%** | — | PR #121 covers error/compensator branches |
+| `saga/db.py` | **~100%** | — | PR #120 done |
+| `api/app.py` | **~99%** | — | PR #121 done |
 | `evals/routing.py` | 80% | 129, 215, 315-344, 415-425, 434 | Eval harness — needs careful setup |
 | `agents/routing_llm_adk.py` | 72% | 157-180 | Requires real ADK/Vertex — skip |
 | `cli.py` | 0% | 7-36 | CLI module — low priority |
 | `demos/happy_path.py` | 0% | 11-237 | Demo script — low priority |
 
 **Best next PRs:**
-1. Write ADR-0017 for the renewal sandbox gap
-2. `evals/routing.py` coverage — harness paths 129, 215, 315-344, 415-425, 434
-3. Refresh `baseline.json` (LLM-augmented) over all 40 scenarios (needs GCP ADC)
+1. `evals/routing.py` coverage — harness paths 129, 215, 315-344, 415-425, 434
+2. Refresh `baseline.json` (LLM-augmented) over all 40 scenarios (needs GCP ADC)
+3. ADR-0017 / ADR-0016 follow-up (both need two-tenant mod-rs sandbox)
 
 ### Sandbox-blocked
 1. **NCIP live probe** — smoke test ready (`tests/test_ncip_http_smoke.py`).
