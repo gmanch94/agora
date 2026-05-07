@@ -1,0 +1,27 @@
+{% extends "portal_base.html" %}
+
+{% block title %}Patron Portal &middot; Agora{% endblock %}
+
+{% block content %}
+<h1 class="page__title">Your ILL Requests</h1>
+
+<section class="card-base">
+  <p style="margin-bottom:1rem;">
+    Enter your patron ID to view the status of your inter-library loan requests.
+  </p>
+  <form method="get" action="/portal/requests" class="action-form">
+    <label class="form-label">
+      Patron ID
+      <input
+        type="text"
+        name="patron_id"
+        class="form-input"
+        required
+        placeholder="e.g. p1"
+        autofocus
+      />
+    </label>
+    <button type="submit" class="button-primary">View my requests</button>
+  </form>
+</section>
+{% endblock %}

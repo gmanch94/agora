@@ -1,0 +1,50 @@
+{% extends "portal_base.html" %}
+
+{% block title %}Your Requests &middot; Agora{% endblock %}
+
+{% block content %}
+<nav class="breadcrumb">
+  <a href="/portal" class="breadcrumb__link">&larr; Back</a>
+</nav>
+
+<h1 class="page__title">Requests for <code>{{ patron_id }}</code></h1>
+
+{% if requests %}
+<section class="card-base">
+  <table class="inbox-table" aria-label="Your ILL requests">
+    <thead>
+      <tr>
+        <th scope="col">Title</th>
+        <th scope="col">Status</th>
+        <th scope="col">Library</th>
+        <th scope="col">Submitted</th>
+        <th scope="col"></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for req in requests %}
+      <tr>
+        <td>{{ req.title or "(untitled)" }}</td>
+        <td>
+          <span class="state{% if req.is_terminal %} state--terminal{% endif %}">
+            {{ req.current_state }}
+          </span>
+        </td>
+        <td>{{ req.requesting_library }}</td>
+        <td class="saga-id">{{ req.submitted_at }}</td>
+        <td>
+          <a href="/portal/requests/{{ req.saga_id }}?patron_id={{ patron_id }}" class="breadcrumb__link">
+            Details &rarr;
+          </a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% else %}
+<section class="card-base">
+  <p class="empty__title">No requests found for patron ID <code>{{ patron_id }}</code>.</p>
+</section>
+{% endif %}
+{% endblock %}

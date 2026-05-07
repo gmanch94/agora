@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% block title %}Agora Patron Portal{% endblock %}</title>
+  <link rel="stylesheet" href="/static/theme.css" />
+</head>
+<body>
+  <header class="header">
+    <span class="header__brand">Agora</span>
+    <span class="header__sub">Patron portal &mdash; ILL request status</span>
+  </header>
+
+  <main class="page">
+    {% block content %}{% endblock %}
+  </main>
+
+  <div class="sunset-stripe" aria-hidden="true"></div>
+  <footer class="footer">
+    Agora research prototype &middot; Read-only patron view
+    &middot; <em>Prototype: anyone with your patron ID can view your requests.</em>
+  </footer>
+</body>
+</html>
