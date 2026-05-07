@@ -1,7 +1,7 @@
 {
-  "total": 20,
-  "top1_accuracy": 0.85,
-  "mean_spearman": 0.6667,
+  "total": 40,
+  "top1_accuracy": 0.925,
+  "mean_spearman": 0.8378,
   "results": [
     {
       "scenario_id": "routing-001",
@@ -304,6 +304,352 @@
         "MEM-C",
         "MEM-A",
         "EXT-FAR"
+      ],
+      "spearman": 1.0
+    },
+    {
+      "scenario_id": "routing-021",
+      "chosen_match": true,
+      "actual_chosen": "EXT-ONLY",
+      "expected_chosen": "EXT-ONLY",
+      "actual_ranking": [
+        "EXT-ONLY"
+      ],
+      "expected_ranking": [
+        "EXT-ONLY"
+      ],
+      "spearman": null
+    },
+    {
+      "scenario_id": "routing-022",
+      "chosen_match": true,
+      "actual_chosen": "MEM-A",
+      "expected_chosen": "MEM-A",
+      "actual_ranking": [
+        "MEM-A",
+        "MEM-B",
+        "MEM-C",
+        "MEM-D",
+        "MEM-E"
+      ],
+      "expected_ranking": [
+        "MEM-A",
+        "MEM-B",
+        "MEM-C",
+        "MEM-D",
+        "MEM-E"
+      ],
+      "spearman": 1.0
+    },
+    {
+      "scenario_id": "routing-023",
+      "chosen_match": true,
+      "actual_chosen": "MEM-A",
+      "expected_chosen": "MEM-A",
+      "actual_ranking": [
+        "MEM-A",
+        "MEM-B",
+        "MEM-C",
+        "MEM-D",
+        "MEM-E"
+      ],
+      "expected_ranking": [
+        "MEM-A",
+        "MEM-B",
+        "MEM-C",
+        "MEM-D",
+        "MEM-E"
+      ],
+      "spearman": 1.0
+    },
+    {
+      "scenario_id": "routing-024",
+      "chosen_match": true,
+      "actual_chosen": "MEM-LOAN",
+      "expected_chosen": "MEM-LOAN",
+      "actual_ranking": [
+        "MEM-LOAN",
+        "EXT-AVAIL"
+      ],
+      "expected_ranking": [
+        "MEM-LOAN",
+        "EXT-AVAIL"
+      ],
+      "spearman": 1.0
+    },
+    {
+      "scenario_id": "routing-025",
+      "chosen_match": true,
+      "actual_chosen": "MEM-A",
+      "expected_chosen": "MEM-A",
+      "actual_ranking": [
+        "MEM-A",
+        "MEM-B",
+        "EXT-A",
+        "EXT-B"
+      ],
+      "expected_ranking": [
+        "MEM-A",
+        "MEM-B",
+        "EXT-A",
+        "EXT-B"
+      ],
+      "spearman": 1.0
+    },
+    {
+      "scenario_id": "routing-026",
+      "chosen_match": true,
+      "actual_chosen": "MEM-A",
+      "expected_chosen": "MEM-A",
+      "actual_ranking": [
+        "MEM-A",
+        "MEM-B",
+        "EXT-A"
+      ],
+      "expected_ranking": [
+        "MEM-A",
+        "MEM-B",
+        "EXT-A"
+      ],
+      "spearman": 1.0
+    },
+    {
+      "scenario_id": "routing-027",
+      "chosen_match": true,
+      "actual_chosen": "MEM-A",
+      "expected_chosen": "MEM-A",
+      "actual_ranking": [
+        "MEM-A",
+        "MEM-B"
+      ],
+      "expected_ranking": [
+        "MEM-A",
+        "MEM-B"
+      ],
+      "spearman": 1.0
+    },
+    {
+      "scenario_id": "routing-028",
+      "chosen_match": true,
+      "actual_chosen": "MEM-NEAR",
+      "expected_chosen": "MEM-NEAR",
+      "actual_ranking": [
+        "MEM-NEAR",
+        "MEM-FAR"
+      ],
+      "expected_ranking": [
+        "MEM-NEAR",
+        "MEM-FAR"
+      ],
+      "spearman": 1.0
+    },
+    {
+      "scenario_id": "routing-029",
+      "chosen_match": true,
+      "actual_chosen": "MEM-A",
+      "expected_chosen": "MEM-A",
+      "actual_ranking": [
+        "MEM-A",
+        "MEM-B"
+      ],
+      "expected_ranking": [
+        "MEM-A",
+        "MEM-B"
+      ],
+      "spearman": 1.0
+    },
+    {
+      "scenario_id": "routing-030",
+      "chosen_match": true,
+      "actual_chosen": "MEM-B",
+      "expected_chosen": "MEM-B",
+      "actual_ranking": [
+        "MEM-B",
+        "MEM-A"
+      ],
+      "expected_ranking": [
+        "MEM-B",
+        "MEM-A"
+      ],
+      "spearman": 1.0
+    },
+    {
+      "scenario_id": "routing-031",
+      "chosen_match": true,
+      "actual_chosen": "MEM-B",
+      "expected_chosen": "MEM-B",
+      "actual_ranking": [
+        "MEM-B",
+        "MEM-A"
+      ],
+      "expected_ranking": [
+        "MEM-B",
+        "MEM-A"
+      ],
+      "spearman": 1.0
+    },
+    {
+      "scenario_id": "routing-032",
+      "chosen_match": true,
+      "actual_chosen": "EXT-B",
+      "expected_chosen": "EXT-B",
+      "actual_ranking": [
+        "EXT-B",
+        "EXT-C",
+        "EXT-A"
+      ],
+      "expected_ranking": [
+        "EXT-B",
+        "EXT-C",
+        "EXT-A"
+      ],
+      "spearman": 1.0
+    },
+    {
+      "scenario_id": "routing-033",
+      "chosen_match": true,
+      "actual_chosen": "MEM-REF",
+      "expected_chosen": "MEM-REF",
+      "actual_ranking": [
+        "MEM-REF",
+        "EXT-UNK",
+        "EXT-LOAN"
+      ],
+      "expected_ranking": [
+        "MEM-REF",
+        "EXT-UNK",
+        "EXT-LOAN"
+      ],
+      "spearman": 1.0
+    },
+    {
+      "scenario_id": "routing-034",
+      "chosen_match": true,
+      "actual_chosen": "MEM-A",
+      "expected_chosen": "MEM-A",
+      "actual_ranking": [
+        "MEM-A",
+        "MEM-B"
+      ],
+      "expected_ranking": [
+        "MEM-A",
+        "MEM-B"
+      ],
+      "spearman": 1.0
+    },
+    {
+      "scenario_id": "routing-035",
+      "chosen_match": true,
+      "actual_chosen": "MEM-AVAIL",
+      "expected_chosen": "MEM-AVAIL",
+      "actual_ranking": [
+        "MEM-AVAIL",
+        "MEM-UNK",
+        "MEM-REF",
+        "MEM-LOAN",
+        "EXT-AVAIL",
+        "EXT-UNK"
+      ],
+      "expected_ranking": [
+        "MEM-AVAIL",
+        "MEM-UNK",
+        "MEM-REF",
+        "MEM-LOAN",
+        "EXT-AVAIL",
+        "EXT-UNK"
+      ],
+      "spearman": 1.0
+    },
+    {
+      "scenario_id": "routing-036",
+      "chosen_match": true,
+      "actual_chosen": "MEM-A",
+      "expected_chosen": "MEM-A",
+      "actual_ranking": [
+        "MEM-A",
+        "MEM-B",
+        "MEM-C"
+      ],
+      "expected_ranking": [
+        "MEM-A",
+        "MEM-B",
+        "MEM-C"
+      ],
+      "spearman": 1.0
+    },
+    {
+      "scenario_id": "routing-037",
+      "chosen_match": true,
+      "actual_chosen": "MEM-AVAIL-LOW",
+      "expected_chosen": "MEM-AVAIL-LOW",
+      "actual_ranking": [
+        "MEM-AVAIL-LOW",
+        "MEM-LOAN-HIGH",
+        "MEM-UNK-MID"
+      ],
+      "expected_ranking": [
+        "MEM-AVAIL-LOW",
+        "MEM-LOAN-HIGH",
+        "MEM-UNK-MID"
+      ],
+      "spearman": 1.0
+    },
+    {
+      "scenario_id": "routing-038",
+      "chosen_match": true,
+      "actual_chosen": "MEM-B",
+      "expected_chosen": "MEM-B",
+      "actual_ranking": [
+        "MEM-B",
+        "MEM-A",
+        "MEM-C",
+        "MEM-D",
+        "MEM-E",
+        "MEM-F",
+        "EXT-NEAR",
+        "EXT-FAR"
+      ],
+      "expected_ranking": [
+        "MEM-B",
+        "MEM-A",
+        "MEM-C",
+        "MEM-D",
+        "MEM-E",
+        "MEM-F",
+        "EXT-NEAR",
+        "EXT-FAR"
+      ],
+      "spearman": 1.0
+    },
+    {
+      "scenario_id": "routing-039",
+      "chosen_match": true,
+      "actual_chosen": "MEM-LOAN",
+      "expected_chosen": "MEM-LOAN",
+      "actual_ranking": [
+        "MEM-LOAN",
+        "EXT-NEAR"
+      ],
+      "expected_ranking": [
+        "MEM-LOAN",
+        "EXT-NEAR"
+      ],
+      "spearman": 1.0
+    },
+    {
+      "scenario_id": "routing-040",
+      "chosen_match": true,
+      "actual_chosen": "MEM-A",
+      "expected_chosen": "MEM-A",
+      "actual_ranking": [
+        "MEM-A",
+        "MEM-B",
+        "EXT"
+      ],
+      "expected_ranking": [
+        "MEM-A",
+        "MEM-B",
+        "EXT"
       ],
       "spearman": 1.0
     }
