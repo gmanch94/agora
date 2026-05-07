@@ -841,3 +841,288 @@ async def test_browser_future_date_from_returns_empty(client: AsyncClient) -> No
     r = await client.get("/browser?date_from=2099-01-01")
     assert r.status_code == 200
     assert "No sagas match" in r.text
+
+
+# ---------------------------------------------------------------------------
+# GET /sagas — JSON list (lines 1002-1005)
+# ---------------------------------------------------------------------------
+
+
+async def test_get_sagas_list_returns_empty_json(client: AsyncClient) -> None:
+    """GET /sagas returns an empty JSON array when no sagas exist (lines 1002-1005)."""
+    r = await client.get("/sagas")
+    assert r.status_code == 200
+    assert r.json() == []
+
+
+async def test_get_sagas_list_includes_submitted_saga(client: AsyncClient) -> None:
+    """GET /sagas lists newly submitted sagas."""
+    saga_id = (await client.post("/requests", json=_request_payload())).json()["saga_id"]
+    r = await client.get("/sagas")
+    assert r.status_code == 200
+    ids = [s["saga_id"] for s in r.json()]
+    assert saga_id in ids
+
+
+# ---------------------------------------------------------------------------
+# GET /sagas/{id} — not found (line 1015)
+# ---------------------------------------------------------------------------
+
+
+async def test_get_saga_unknown_id_returns_404(client: AsyncClient) -> None:
+    """GET /sagas/{id} returns 404 for an unknown saga (line 1015)."""
+    r = await client.get(f"/sagas/{uuid4()}")
+    assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# GET /browser — invalid date filters silently ignored (lines 554-567)
+# ---------------------------------------------------------------------------
+
+
+async def test_browser_invalid_date_from_silently_ignored(client: AsyncClient) -> None:
+    """Unparseable date_from is ignored; browser still responds 200 (lines 554-555)."""
+    await client.post("/requests", json=_request_payload())
+    r = await client.get("/browser?date_from=not-a-date")
+    assert r.status_code == 200
+
+
+async def test_browser_invalid_date_to_silently_ignored(client: AsyncClient) -> None:
+    """Unparseable date_to is ignored; browser still responds 200 (lines 558-567)."""
+    await client.post("/requests", json=_request_payload())
+    r = await client.get("/browser?date_to=not-a-date")
+    assert r.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# _require_console_auth — wrong credentials returns 401 (line 491)
+# ---------------------------------------------------------------------------
+
+
+async def test_ui_wrong_credentials_returns_401(
+    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """UI endpoint with wrong Basic auth credentials returns 401 (line 491)."""
+    from agora.config import get_settings
+
+    monkeypatch.setenv("AGORA_CONSOLE_PASSWORD", "secret")
+    get_settings.cache_clear()
+    try:
+        app_auth = create_app()
+        transport = ASGITransport(app=app_auth)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            r = await c.post(
+                f"/ui/sagas/{uuid4()}/reject",
+                data={"step": "route", "rationale": "x"},
+                auth=("staff", "wrong-password"),
+            )
+        assert r.status_code == 401
+    finally:
+        get_settings.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# POST /ui/sagas/{id}/approve — error paths (lines 710, 741-742)
+# ---------------------------------------------------------------------------
+
+
+async def test_ui_approve_non_approvable_step_returns_400(
+    client: AsyncClient,
+) -> None:
+    """UI approve with a non-approvable step returns 400 (line 710)."""
+    saga_id = (await client.post("/requests", json=_request_payload())).json()["saga_id"]
+    r = await client.post(
+        f"/ui/sagas/{saga_id}/approve",
+        data={"step": "submit", "rationale": "x"},
+    )
+    assert r.status_code == 400
+
+
+async def test_ui_approve_unknown_saga_returns_409(
+    client: AsyncClient,
+) -> None:
+    """UI approve on unknown saga → SagaNotFoundError → 409 (lines 741-742)."""
+    r = await client.post(
+        f"/ui/sagas/{uuid4()}/approve",
+        data={"step": "route", "rationale": "x"},
+    )
+    assert r.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# POST /ui/sagas/{id}/reject — SagaNotFoundError returns 404 (lines 851-852)
+# ---------------------------------------------------------------------------
+
+
+async def test_ui_reject_unknown_saga_returns_404(client: AsyncClient) -> None:
+    """UI reject on unknown saga returns 404 (lines 851-852)."""
+    r = await client.post(
+        f"/ui/sagas/{uuid4()}/reject",
+        data={"step": "route", "rationale": "x"},
+    )
+    assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# POST /ui/sagas/{id}/compensate — SagaNotFoundError returns 404 (lines 887-888)
+# ---------------------------------------------------------------------------
+
+
+async def test_ui_compensate_unknown_saga_returns_404(client: AsyncClient) -> None:
+    """UI compensate on unknown saga returns 404 (lines 887-888)."""
+    r = await client.post(
+        f"/ui/sagas/{uuid4()}/compensate",
+        data={"step": "route", "rationale": "x"},
+    )
+    assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# POST /ui/sagas/{id}/discover — terminal saga returns 409 (line 770)
+# ---------------------------------------------------------------------------
+
+
+async def test_ui_discover_terminal_saga_returns_409(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    """UI discover on a terminal saga returns 409 (line 770)."""
+    from agora.models.events import NewSagaEvent
+    from agora.models.lifecycle import (
+        EventKind,
+        LifecycleState,
+        StepName,
+        StepOutcome,
+    )
+    from agora.saga.db import get_sessionmaker
+    from agora.saga.idempotency import new_idempotency_key
+    from agora.saga.ledger import SagaLedger
+
+    saga_id = (await client.post("/requests", json=_request_payload())).json()["saga_id"]
+    sm = get_sessionmaker()
+    async with sm() as session, session.begin():
+        ledger = SagaLedger(session)
+        await ledger.append(
+            NewSagaEvent(
+                saga_id=UUID(saga_id),
+                kind=EventKind.FORWARD,
+                step=StepName.CANCEL,
+                state_before=LifecycleState.SUBMITTED,
+                state_after=LifecycleState.CANCELLED,
+                actor="staff:test",
+                idempotency_key=new_idempotency_key(prefix="cancel-ui-disc"),
+                payload={},
+                outcome=StepOutcome.COMMITTED,
+                rationale="test",
+            )
+        )
+    r = await client.post(f"/ui/sagas/{saga_id}/discover")
+    assert r.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# POST /ui/sagas/{id}/override — disallowed target + unknown saga (918, 930-931)
+# ---------------------------------------------------------------------------
+
+
+async def test_ui_override_disallowed_target_state_returns_400(
+    client: AsyncClient,
+) -> None:
+    """UI override with a valid enum value but disallowed target returns 400 (line 918)."""
+    saga_id = (await client.post("/requests", json=_request_payload())).json()["saga_id"]
+    r = await client.post(
+        f"/ui/sagas/{saga_id}/override",
+        data={"target_state": "submitted", "rationale": "x"},
+    )
+    assert r.status_code == 400
+
+
+async def test_ui_override_unknown_saga_returns_404(client: AsyncClient) -> None:
+    """UI override on unknown saga returns 404 (lines 930-931)."""
+    r = await client.post(
+        f"/ui/sagas/{uuid4()}/override",
+        data={"target_state": "cancelled", "rationale": "x"},
+    )
+    assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# POST /sagas/{id}/approve JSON — TerminalStateError returns 409 (line 1091)
+# ---------------------------------------------------------------------------
+
+
+async def test_json_approve_terminal_saga_returns_409(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    """JSON approve on a terminal saga → TerminalStateError → 409 (line 1091)."""
+    from agora.models.events import NewSagaEvent
+    from agora.models.lifecycle import (
+        EventKind,
+        LifecycleState,
+        StepName,
+        StepOutcome,
+    )
+    from agora.saga.db import get_sessionmaker
+    from agora.saga.idempotency import new_idempotency_key
+    from agora.saga.ledger import SagaLedger
+
+    saga_id = (await client.post("/requests", json=_request_payload())).json()["saga_id"]
+    sm = get_sessionmaker()
+    async with sm() as session, session.begin():
+        ledger = SagaLedger(session)
+        await ledger.append(
+            NewSagaEvent(
+                saga_id=UUID(saga_id),
+                kind=EventKind.FORWARD,
+                step=StepName.CANCEL,
+                state_before=LifecycleState.SUBMITTED,
+                state_after=LifecycleState.CANCELLED,
+                actor="staff:test",
+                idempotency_key=new_idempotency_key(prefix="cancel-json-app"),
+                payload={},
+                outcome=StepOutcome.COMMITTED,
+                rationale="test",
+            )
+        )
+    r = await client.post(
+        f"/sagas/{saga_id}/approve",
+        json={"step": "route", "actor": "staff:test", "rationale": "x",
+              "extras": {"chosen_supplier": "LIB-A"}},
+    )
+    assert r.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# POST /sagas/{id}/compensate JSON — SagaNotFoundError returns 404 (line 1238)
+# ---------------------------------------------------------------------------
+
+
+async def test_json_compensate_unknown_saga_returns_404(client: AsyncClient) -> None:
+    """JSON compensate on unknown saga returns 404 (line 1238)."""
+    r = await client.post(
+        f"/sagas/{uuid4()}/compensate",
+        json={"step": "route", "actor": "staff:test", "rationale": "x"},
+    )
+    assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Tracking scanner disabled via env var (lines 408-410)
+# ---------------------------------------------------------------------------
+
+
+async def test_tracking_scanner_disabled_via_settings(
+    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``AGORA_TRACKING_SCANNER_ENABLED=0`` skips spawning the scanner task
+    (lines 408-410)."""
+    from agora.config import get_settings
+
+    monkeypatch.setenv("AGORA_TRACKING_SCANNER_ENABLED", "0")
+    get_settings.cache_clear()
+    try:
+        app_noscan = create_app()
+        async with app_noscan.router.lifespan_context(app_noscan):
+            assert app_noscan.state.tracking_scanner is None
+            assert app_noscan.state.tracking_scanner_task is None
+    finally:
+        get_settings.cache_clear()
