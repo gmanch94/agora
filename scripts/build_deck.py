@@ -361,7 +361,12 @@ def slide_problem(c: rl_canvas.Canvas, pn: int, total: int) -> None:
     c.setFont("Helvetica-Bold", 11)
     set_fill(c, NAVY)
     c.drawCentredString(rx + rw / 2, ry - 18, "Complexity drivers")
-    divider(c, ry - 26, BLUE)
+    # Inline divider — must stay inside the callout box (the helper
+    # ``divider()`` always spans MARGIN_L..W-MARGIN_R, which would draw
+    # right across the slide).
+    set_stroke(c, BLUE)
+    c.setLineWidth(0.5)
+    c.line(rx + 8, ry - 26, rx + rw - 8, ry - 26)
     cy = ry - 44
     for item in [
         "Multi-party, multi-system",
@@ -630,13 +635,17 @@ def slide_architecture(c: rl_canvas.Canvas, pn: int, total: int) -> None:
     callout_gap = 18
     callout_x = W - MARGIN_R - callout_w - 5  # 5pt right-edge gutter
     cake_right = callout_x - callout_gap
+    # Indent step per layer — kept small (was 14) so the deepest bar
+    # still has room for "Postgres: saga | saga_event | outbox …" without
+    # the trailing "inbox" word overflowing.
+    indent_step = 8
     for i, (name, detail, col) in enumerate(layers):
         ly = y - i * lh
         # Gradient-style: lighten fill based on depth
         alpha = 1.0 - i * 0.06
         set_fill(c, tuple(v * alpha + (1 - alpha) for v in col))
-        bar_x = MARGIN_L + i * 14
-        bar_w = cake_right - bar_x - i * 14
+        bar_x = MARGIN_L + i * indent_step
+        bar_w = cake_right - bar_x - i * indent_step
         c.roundRect(bar_x, ly - lh + 10, bar_w, lh - 4, 6, fill=1, stroke=0)
         # Label
         c.setFont("Helvetica-Bold", 12)
@@ -1027,7 +1036,9 @@ SLIDES = [
 
 
 def build(output_path: str) -> None:
-    total = len(SLIDES)
+    # ``total`` excludes the title page from numbering — content slides
+    # show "1 / 10", "2 / 10", … "10 / 10" rather than mismatched totals.
+    total = len(SLIDES) - 1
     page_size = (W, H)
     c = rl_canvas.Canvas(output_path, pagesize=page_size)
     c.setTitle("Agora — Functional & Technical Overview")
@@ -1042,7 +1053,7 @@ def build(output_path: str) -> None:
         c.showPage()
 
     c.save()
-    print(f"Saved: {output_path}  ({total} slides)")
+    print(f"Saved: {output_path}  ({len(SLIDES)} slides)")
 
 
 if __name__ == "__main__":
