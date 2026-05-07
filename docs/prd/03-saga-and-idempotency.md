@@ -1,7 +1,7 @@
 # PRD 03 — Saga & Idempotency
 
-> Last reviewed against code: 2026-05-04 (post PRs #89/#90 — NCIP item-barcode
-> + override endpoint + StepName.RESOLVE).
+> Last reviewed against code: 2026-05-07 (post PR #116 — RENEW saga step;
+> includes earlier PR #98/#99 `HttpNcipClient`).
 
 ## Saga model
 
@@ -21,7 +21,7 @@ CREATE TABLE saga_event (
     saga_id         UUID NOT NULL REFERENCES saga(id) ON DELETE CASCADE,
     seq             INT  NOT NULL,
     kind            VARCHAR(32) NOT NULL,          -- 'forward' | 'compensator' | 'gate' | 'observation'
-    step            VARCHAR(32) NOT NULL,          -- forwards: 'submit'|'route'|'approve'|'ship'|'receive'|'return'  // compensators / branches: 'cancel'|'reroute'|'revoke'|'recall'|'dispute'  // staff override observation: 'resolve'
+    step            VARCHAR(32) NOT NULL,          -- forwards: 'submit'|'route'|'approve'|'ship'|'receive'|'return'|'renew'  // compensators / branches: 'cancel'|'reroute'|'revoke'|'recall'|'dispute'  // staff override observation: 'resolve'
     state_before    VARCHAR(32) NOT NULL,
     state_after     VARCHAR(32) NOT NULL,
     actor           VARCHAR(255) NOT NULL,
@@ -220,6 +220,35 @@ HTTP/SOAP client ships as `HttpNcipClient` (PR #98, wired PR #99;
 source-review-only against mod-ncip master; live mod-ncip probe
 still pending — see NEXT_SESSION.md § Backlog). `MockNcipClient`
 remains the default for prototype / tests.
+
+### RENEW step (PR #116)
+
+Patron-initiated loan extension. The forward stays at
+`LifecycleState.RECEIVED` — no physical state change — and emits a
+**single** `target='reshare'` outbox intent (`renew_request`) carrying
+`reshare_id` + `extension_days`. The forward event payload records the
+new `new_due_at`; the patron portal (`/portal/requests/{saga_id}`) and
+the staff console both read **the most recent committed RENEW event**
+to surface the effective due date, falling back to the SHIP forward
+when no renewal has been committed. Multiple renewals compose
+naturally — each click writes a new RENEW event with a fresh
+idempotency key (`StepName.RENEW`).
+
+The compensator is **ledger-only**: it writes a COMPENSATOR event with
+`renewal_cancelled=True` and `reverted_new_due_at` echoed back from the
+forward payload, leaving the saga at `RECEIVED`. **No outbox intent is
+emitted** — no confirmed mod-rs un-renew action exists. Staff must
+notify the patron of the reverted due date out-of-band.
+
+**Sandbox-blocked on `HttpReShareClient`.** mod-rs has no first-class
+patron-renewal action verified against a live tenant; `renew_request`
+raises `ClientError`, the outbox row hits
+`OUTBOX_RETRY_MAX_ATTEMPTS`, and the row flips to `dead_letter` for
+staff triage. The saga itself stays at `RECEIVED` and is unaffected
+by the wire failure. `MockReShareClient` succeeds, so demo and tests
+remain green. ADR-0017 will resolve the wire-format choice once
+patron-renewal semantics are pinned (cancel-and-reborrow vs. extend
+in place); see CLAUDE.md known-gaps.
 
 ### SHIP compensator (post-RECEIVE re-anchor)
 

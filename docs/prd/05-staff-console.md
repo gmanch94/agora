@@ -1,10 +1,15 @@
 # PRD 05 — Staff Console
 
-> Last reviewed against code: 2026-05-06 (post PRs #80/#82/#84/#90/#92/#93;
-> UI shell shipped; override HTMX form (#92) + saga browser (#93) added).
+> Last reviewed against code: 2026-05-07 (post PRs #116/#117 — RENEW saga
+> step + UI form (#116); read-only patron portal under `/portal/*` (#117).
+> Earlier baseline: PRs #80/#82/#84/#90/#92/#93 — UI shell, override HTMX
+> form, saga browser).
 
-The staff console is the **only UI in the prototype**. It is the
-human-in-the-loop surface for every state transition.
+The staff console is the **primary UI in the prototype**. It is the
+human-in-the-loop surface for every state transition. A separate
+**read-only patron portal** (PR #117) lives under `/portal/*` —
+patrons cannot mutate state through it (no write endpoints; no patron
+self-serve renewal).
 
 **UI shell status:** *shipped (slices 1–3)*. HTMX + Jinja2 server-rendered
 console (ADR-0015). Inbox (`GET /`), detail view (`GET /sagas/{id}/view`),
@@ -41,10 +46,25 @@ Single saga, full reasoning trace.
   - Inputs (collapsible: full request, candidate list, policy flags)
   - Idempotency key (debug aid)
 - Action buttons: Approve, Reject (with reason), Compensate, Override (DISPUTED only —
-  `POST /sagas/{id}/override` JSON API + `/ui/sagas/{id}/override` HTMX form both implemented)
+  `POST /sagas/{id}/override` JSON API + `/ui/sagas/{id}/override` HTMX form both implemented),
+  Renew (RECEIVED only — `POST /sagas/{id}/renew` JSON API +
+  `/ui/sagas/{id}/renew` HTMX form, PR #116; the detail view sets
+  `can_renew = (state == RECEIVED)` to gate the button)
 
 ### Saga browser
 Filter by state, library, date. Read-only. Useful for demo + debug.
+
+### Patron portal (PR #117)
+Read-only status surface for patrons. Patron enters their `patron_id`
+(matched against the value stored in `Saga.request_payload.patron`) and
+sees their list of requests + per-request detail (item, current state,
+due date computed from the most recent committed RENEW event with
+fallback to SHIP, renewal count, terminal flag, event timeline labelled
+in patron-friendly language via `_patron_event_label`). 404 is returned
+when the supplied `patron_id` does not match the saga's stored patron —
+this prevents saga-id enumeration leaking to unrelated patrons. **No
+write endpoints** — patrons cannot submit, cancel, renew, or override
+through the portal; staff still drive every state change.
 
 ## Backend endpoints (FastAPI)
 
@@ -60,6 +80,7 @@ POST   /sagas/{id}/reject              # mark pending gate failed
 POST   /sagas/{id}/compensate          # run compensator for committed forward
 POST   /sagas/{id}/discover            # run DiscoveryAgent; ROUTE-anchored OBSERVATION (#53)
 POST   /sagas/{id}/override            # resolve DISPUTED saga → CANCELLED or UNFILLED
+POST   /sagas/{id}/renew               # commit RENEW gate + run forward (RECEIVED → RECEIVED, PR #116)
 
 # Staff console UI (server-rendered HTML, ADR-0015)
 GET    /                               # inbox — all active sagas
@@ -70,6 +91,12 @@ POST   /ui/sagas/{id}/reject           # form submit → reject;  303 redirect t
 POST   /ui/sagas/{id}/compensate       # form submit → compensate; 303 redirect to detail
 POST   /ui/sagas/{id}/discover         # HTMX partial → _discover_panel.html fragment
 POST   /ui/sagas/{id}/override         # form submit → resolve DISPUTED; 303 redirect to detail (PR #92)
+POST   /ui/sagas/{id}/renew            # form submit → renew; 303 redirect to detail (PR #116)
+
+# Patron portal — read-only (server-rendered HTML, PR #117)
+GET    /portal                         # patron-id lookup form (landing)
+GET    /portal/requests                # ?patron_id=…  list this patron's sagas (most recent 200)
+GET    /portal/requests/{saga_id}      # ?patron_id=…  saga detail (404 on patron-id mismatch)
 ```
 
 **Idempotency keys are minted server-side** — every saga event

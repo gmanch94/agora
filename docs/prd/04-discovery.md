@@ -1,14 +1,14 @@
 # PRD 04 — Discovery
 
-> Last reviewed against code: 2026-05-06 (post CrossRef client PR-A
-> + DiscoveryAgent integration PR-B + factory wiring PR-C + endpoint
-> wiring #46/#53 — DOI input now triggers a CrossRef identity
-> confirmation that re-keys the SRU search; CrossRef errors and 404s
-> downgrade to diagnostics so SRU still runs; both clients now expose
-> ``get_*_client()`` factories selecting mock vs HTTP via
-> ``AGORA_CROSSREF_ENABLED`` / ``AGORA_SRU_ENABLED``;
-> `POST /sagas/{id}/discover` runs DiscoveryAgent against a saga's
-> stored request and writes a ROUTE-anchored OBSERVATION).
+> Last reviewed against code: 2026-05-07 (post PR #100 — consortium-member
+> fallback when SRU yields no MARC 852 holdings, synthesising
+> `HolderCandidate(status="unverified_holdings")` per
+> `AGORA_CONSORTIUM_MEMBERS` roster entry; PR #102 stale-check pass
+> (WorldCat reclassified from "future" to structural gap). Earlier
+> baseline: CrossRef client PR-A + DiscoveryAgent integration PR-B +
+> factory wiring PR-C + endpoint wiring #46/#53 — DOI input triggers a
+> CrossRef identity confirmation that re-keys the SRU search;
+> `POST /sagas/{id}/discover` writes a ROUTE-anchored OBSERVATION).
 
 ## Inputs
 

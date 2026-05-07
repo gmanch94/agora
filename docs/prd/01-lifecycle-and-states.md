@@ -1,6 +1,6 @@
 # PRD 01 — Lifecycle & State Machine
 
-> Last reviewed against code: 2026-05-05 (post PRs #89–#93 — NCIP item-barcode + override endpoint + override HTMX form + saga browser).
+> Last reviewed against code: 2026-05-07 (post PR #116 — RENEW saga step added; saga stays at RECEIVED).
 
 ## Lifecycle
 
@@ -40,6 +40,7 @@ calls the supplier and the projection callback advances the saga to
 | Ship | Supplier marks `Loaned` | `SupplyingAgencyMessage Loaned` received | Lender confirm in their ILS | TransactionAgent |
 | Receive | Borrower confirms physical receipt | `RequestingAgencyMessage` "ItemReceived" note (supplier stays `Loaned`) | **Borrower confirm** | n/a (advisory; staff-driven) |
 | Return | Borrower returns item | `RequestingAgencyMessage Returned`, then supplier `LoanCompleted` | Borrower-side check-in | TransactionAgent |
+| Renew  | Patron requests loan extension while saga is at `RECEIVED` (PR #116) | `renew_request` outbox intent → mod-rs renewal action; **sandbox-blocked** on `HttpReShareClient` (no verified mod-rs renewal action; raises `ClientError`, surfaces as `dead_letter` row for staff). `MockReShareClient` succeeds so demo + tests stay green. Saga stays at `RECEIVED`; the new due date lands in the RENEW forward event payload. | **Staff approve renewal** (no patron self-serve) | n/a (advisory; staff-driven) |
 
 ## Compensators (per step)
 
@@ -51,6 +52,7 @@ calls the supplier and the projection callback advances the saga to
 | Ship    | `Disputed`              | Enqueue a single `recall_request` outbox intent. Both branches (saga at `SHIPPED` or post-`RECEIVED`) emit only the recall — the NCIP `check_out` re-anchor moved ILS-loan opening to RECEIVE forward, so at `SHIPPED` no loan exists to clear and at `RECEIVED` the patron physically holds the book (loan correctly reflects custody; the eventual return flow owns `check_in`). The `current_state` branch survives only as state-aware rationale text. NB: `HttpReShareClient.recall_request` raises today (mod-rs has no first-class recall); surfaces as a `dead_letter` row for staff. |
 | Receive | `Disputed`              | Receipt is physical — un-undoable. Records the contradiction and routes to staff reconciliation (ledger-only). |
 | Return  | `Disputed`              | Open manual reconciliation case (ledger-only). |
+| Renew   | `Received`              | Ledger-only revert: writes a COMPENSATOR event with `renewal_cancelled=True` and the original `new_due_at` echoed back as `reverted_new_due_at`. **No outbox intent** — no confirmed mod-rs un-renew action exists. Staff must notify the patron of the reverted due date. Saga stays at `RECEIVED`. |
 
 **Compensators are not symmetric inverses.** They model real-world
 recovery, not DB rollback. The saga ledger tracks both forward outcome

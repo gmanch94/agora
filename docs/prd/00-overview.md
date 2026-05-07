@@ -1,6 +1,6 @@
 # PRD 00 — Agora Overview
 
-> Last reviewed against code: 2026-05-05 (post PRs #87–#93 — NCIP item-barcode + override endpoint + override HTMX form + saga browser).
+> Last reviewed against code: 2026-05-07 (post PRs #100/#101/#102/#116/#117 — consortium-fallback discovery, NCIP HTTP smoke test, RENEW saga step, read-only patron portal).
 
 ## Problem
 
@@ -35,7 +35,7 @@ compliance burden.
 |---|---|---|
 | ILL Borrowing Staff | Approves outbound requests at consortium | Quickly review agent recommendations, click approve/reject, see reasoning |
 | ILL Lending Staff | Fulfills inbound from peers | See queued requests, confirm shipment, manage returns |
-| Patron | Library user wanting an item | Submit request via OpenURL or manual form (out of scope for prototype UI) |
+| Patron | Library user wanting an item | Submit request via OpenURL or manual form; check status + due date + renewal count via read-only patron portal (`/portal`, PR #117) |
 | Consortium Admin | Sets routing policy across member libraries | Configure SLA tiers, copyright thresholds |
 
 ## Goals
@@ -51,7 +51,8 @@ compliance burden.
 - Production deployment
 - FedRAMP authorization
 - Real money / billing
-- Patron-facing UI
+- Patron-facing **write** UI (a read-only status portal shipped in
+  PR #117; patrons still cannot submit or modify requests through it)
 - Multi-region / HA topology
 
 ## Success criteria (prototype demo)
@@ -62,7 +63,8 @@ compliance burden.
   (`src/agora/demos/happy_path.py`).
 - `pytest` passes with property-based saga + idempotency tests
   (`tests/test_property_saga.py`, Hypothesis). **Implemented** —
-  492 tests green at time of review (+6 postgres-only).- Architecture & decisions documented under `docs/` — PRDs, ADRs
+  492 tests green at time of review (+6 postgres-only).
+- Architecture & decisions documented under `docs/` — PRDs, ADRs
   (17), runbook, and SDD. **Implemented**.
 - ~~Chaos test (`make chaos`)~~: **dropped** — never wired and the
   property tests in `tests/test_property_saga.py` cover compensator
