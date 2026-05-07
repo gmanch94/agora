@@ -61,6 +61,23 @@
 </section>
 {% endif %}
 
+{% if can_renew %}
+<section class="card-base action-section">
+  <h2 class="action-section__title">Renew Loan</h2>
+  <form method="post" action="/ui/sagas/{{ saga.saga_id }}/renew" class="action-form">
+    <label class="form-label">
+      Extension (days)
+      <input type="number" name="extension_days" class="form-input" value="28" min="1" max="180" />
+    </label>
+    <label class="form-label">
+      Rationale
+      <input type="text" name="rationale" class="form-input" value="Staff approved renewal." />
+    </label>
+    <button type="submit" class="button-primary">Renew loan</button>
+  </form>
+</section>
+{% endif %}
+
 {% if show_override %}
 <section class="card-base action-section">
   <h2 class="action-section__title">Resolve Dispute</h2>
@@ -82,7 +99,7 @@
 </section>
 {% endif %}
 
-{% if not approve_step and not compensate_step and not show_override %}
+{% if not approve_step and not compensate_step and not can_renew and not show_override %}
 <section class="card-base action-section">
   <p class="empty__title">
     {% if saga.is_terminal %}Saga is in a terminal state — no further actions.

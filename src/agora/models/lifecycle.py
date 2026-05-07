@@ -69,6 +69,7 @@ class StepName(str, Enum):
     SHIP = "ship"
     RECEIVE = "receive"
     RETURN_ITEM = "return"
+    RENEW = "renew"
     # Compensators / branches:
     CANCEL = "cancel"
     REROUTE = "reroute"

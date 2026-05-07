@@ -127,6 +127,10 @@ class ReShareClient(Protocol):
         self, *, idempotency_key: str, reshare_id: str, reason: str
     ) -> ReShareSendResult: ...
 
+    async def renew_request(
+        self, *, idempotency_key: str, reshare_id: str, extension_days: int
+    ) -> ReShareSendResult: ...
+
     async def health(self) -> bool: ...
 
     async def aclose(self) -> None:
@@ -307,6 +311,20 @@ class HttpReShareClient:
         )
         return _parse(data)
 
+    async def renew_request(
+        self, *, idempotency_key: str, reshare_id: str, extension_days: int
+    ) -> ReShareSendResult:
+        # Sandbox-blocked: no borrower-initiated renewal action has been
+        # confirmed in mod-rs Actions.groovy. This raises ClientError so
+        # the outbox worker surfaces a dead-letter row for staff review —
+        # the saga stays at RECEIVED and the forward event is already
+        # committed. Pending ADR-0017 for the wire-level resolution.
+        raise ClientError(
+            f"renew_request sandbox-blocked: no mod-rs renewal action verified "
+            f"(reshare_id={reshare_id}, extension_days={extension_days}). "
+            "See CLAUDE.md known-gaps and ADR-0016 for precedent."
+        )
+
     async def recall_request(
         self, *, idempotency_key: str, reshare_id: str, reason: str
     ) -> ReShareSendResult:
@@ -468,6 +486,16 @@ class MockReShareClient:
             reshare_id=reshare_id,
             new_state="Recalled",
             event={"event": "recall", "reason": reason},
+        )
+
+    async def renew_request(
+        self, *, idempotency_key: str, reshare_id: str, extension_days: int
+    ) -> ReShareSendResult:
+        return await self._transition(
+            idempotency_key=idempotency_key,
+            reshare_id=reshare_id,
+            new_state="Loaned",
+            event={"event": "renew", "extension_days": extension_days},
         )
 
     async def _transition(

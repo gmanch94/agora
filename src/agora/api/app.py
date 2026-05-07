@@ -45,6 +45,7 @@ from agora.api.schemas import (
     HealthResponse,
     OverrideBody,
     RejectionBody,
+    RenewBody,
     SagaDetail,
     SagaEventOut,
     SagaSummary,
@@ -678,6 +679,7 @@ def create_app() -> FastAPI:
                 break
 
         can_route = state == LifecycleState.SUBMITTED.value
+        can_renew = state == LifecycleState.RECEIVED.value
         show_override = state == LifecycleState.DISPUTED.value
         return templates.TemplateResponse(
             request,
@@ -689,6 +691,7 @@ def create_app() -> FastAPI:
                 "compensate_step": compensate_step,
                 "cached_discovery": cached_discovery,
                 "can_route": can_route,
+                "can_renew": can_renew,
                 "show_override": show_override,
                 "saga_id": str(saga_id),
             },
@@ -957,6 +960,56 @@ def create_app() -> FastAPI:
 
         return RedirectResponse(url=f"/sagas/{saga_id}/view", status_code=303)
 
+    @app.post("/ui/sagas/{saga_id}/renew", include_in_schema=False)
+    async def ui_saga_renew(
+        saga_id: UUID,
+        session: AsyncSession = Depends(_get_session),
+        registry: StepRegistry = Depends(_get_registry),
+        _auth: None = Depends(_require_console_auth),
+        extension_days: int = Form(28),
+        rationale: str = Form("Staff approved renewal."),
+    ) -> RedirectResponse:
+        """HTML form endpoint: commit RENEW gate + run forward, redirect to detail."""
+        try:
+            async with session.begin():
+                coord = Coordinator(session=session, registry=registry)
+                ledger = SagaLedger(session)
+                saga = await ledger.get_saga(saga_id)
+                current = LifecycleState(saga.current_state)
+                if current != LifecycleState.RECEIVED:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"renew requires 'received' state; got {current.value!r}",
+                    )
+                await coord.commit_gate(
+                    saga_id=saga_id,
+                    step=StepName.RENEW,
+                    actor="staff",
+                    rationale=rationale,
+                )
+                events = await ledger.events_for(saga_id)
+                extras = _derive_extras(events, {"extension_days": extension_days})
+                ill_request = IllRequest.model_validate(saga.request_payload)
+                await coord.run_forward(
+                    ctx=_make_context(
+                        saga_id=saga_id,
+                        request=ill_request,
+                        current_state=current,
+                        actor="staff",
+                        step=StepName.RENEW,
+                        extras=extras,
+                    ),
+                    step=StepName.RENEW,
+                )
+        except SagaNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (GateRequiredError, TerminalStateError, CoordinatorError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        return RedirectResponse(url=f"/sagas/{saga_id}/view", status_code=303)
+
     @app.get("/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
         return HealthResponse(status="ok", env=settings.env, version=__version__)
@@ -1091,6 +1144,76 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
             # Most common: forward step missing a required ``extras`` key.
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except CoordinatorError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.post(
+        "/sagas/{saga_id}/renew",
+        response_model=StepRunResponse,
+        status_code=status.HTTP_200_OK,
+    )
+    async def renew(
+        saga_id: UUID,
+        body: RenewBody,
+        session: AsyncSession = Depends(_get_session),
+        registry: StepRegistry = Depends(_get_registry),
+    ) -> StepRunResponse:
+        """Commit a RENEW gate and run the forward step.
+
+        Saga must be at RECEIVED. The loan extension is recorded on the
+        ledger event; state stays RECEIVED. A ReShare renewal intent is
+        enqueued via the outbox (sandbox-blocked on the HTTP client —
+        surfaces as a dead-letter row; mock client succeeds in tests).
+        """
+        try:
+            async with session.begin():
+                coord = Coordinator(session=session, registry=registry)
+                ledger = SagaLedger(session)
+
+                saga = await ledger.get_saga(saga_id)
+                current = LifecycleState(saga.current_state)
+                if current != LifecycleState.RECEIVED:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"renew requires saga in 'received' state; "
+                            f"current state is {current.value!r}"
+                        ),
+                    )
+
+                await coord.commit_gate(
+                    saga_id=saga_id,
+                    step=StepName.RENEW,
+                    actor=body.actor,
+                    rationale=body.rationale,
+                )
+
+                events = await ledger.events_for(saga_id)
+                extras = _derive_extras(
+                    events,
+                    {"extension_days": body.extension_days},
+                )
+                request = IllRequest.model_validate(saga.request_payload)
+                ev = await coord.run_forward(
+                    ctx=_make_context(
+                        saga_id=saga_id,
+                        request=request,
+                        current_state=current,
+                        actor=body.actor,
+                        step=StepName.RENEW,
+                        extras=extras,
+                    ),
+                    step=StepName.RENEW,
+                )
+            return StepRunResponse.model_validate(ev.model_dump())
+        except SagaNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except GateRequiredError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except TerminalStateError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except CoordinatorError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
