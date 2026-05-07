@@ -1,0 +1,63 @@
+{% extends "portal_base.html" %}
+
+{% block title %}{{ item.title or "Request" }} &middot; Agora{% endblock %}
+
+{% block content %}
+<nav class="breadcrumb">
+  <a href="/portal/requests?patron_id={{ patron_id }}" class="breadcrumb__link">&larr; Your requests</a>
+</nav>
+
+<h1 class="page__title">{{ item.title or "ILL Request" }}</h1>
+{% if item.author %}<p style="color:var(--text-muted);margin-top:-.5rem;margin-bottom:1rem;">{{ item.author }}</p>{% endif %}
+
+<section class="card-base">
+  <dl class="saga-header" style="display:grid;grid-template-columns:max-content 1fr;gap:.25rem 1.5rem;">
+    <dt>Status</dt>
+    <dd>
+      <span class="state{% if is_terminal %} state--terminal{% endif %}">{{ current_state }}</span>
+    </dd>
+    <dt>ISBN</dt>
+    <dd>{{ item.isbn or "&mdash;" }}</dd>
+    <dt>Requesting library</dt>
+    <dd>{{ requesting_library }}</dd>
+    <dt>Submitted</dt>
+    <dd>{{ submitted_at }}</dd>
+    {% if due_date %}
+    <dt>Due date</dt>
+    <dd>{{ due_date }}</dd>
+    {% endif %}
+    {% if renewals %}
+    <dt>Renewals</dt>
+    <dd>{{ renewals }}</dd>
+    {% endif %}
+  </dl>
+</section>
+
+<section class="card-base">
+  <h2 class="action-section__title">Request history</h2>
+  {% if events %}
+  <table class="inbox-table" aria-label="Request history">
+    <thead>
+      <tr>
+        <th scope="col">Event</th>
+        <th scope="col">Status</th>
+        <th scope="col">Time (UTC)</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for ev in events %}
+      <tr>
+        <td>{{ ev.label }}</td>
+        <td>
+          <span class="outcome outcome--{{ ev.outcome }}">{{ ev.outcome }}</span>
+        </td>
+        <td class="saga-id">{{ ev.ts }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty__title">No history yet.</p>
+  {% endif %}
+</section>
+{% endblock %}

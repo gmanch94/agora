@@ -172,6 +172,49 @@ def _to_inbox_row(saga: Saga) -> dict[str, Any]:
     }
 
 
+def _portal_due_date(events: list[SagaEvent]) -> str:
+    """Return the effective loan due date from the event stream.
+
+    Reads the most recently committed SHIP forward ``due_at`` field.
+    When a RENEW forward is present (step value ``"renew"``), its
+    ``new_due_at`` overrides — enabling the portal to reflect renewals
+    without coupling to ``StepName.RENEW`` (which lives on a feature
+    branch until merged).
+    """
+    due: str = ""
+    for ev in events:
+        if ev.outcome != StepOutcome.COMMITTED or ev.kind != EventKind.FORWARD:
+            continue
+        payload = ev.payload or {}
+        if ev.step.value == "ship" and payload.get("due_at"):
+            due = str(payload["due_at"])[:10]
+        elif ev.step.value == "renew" and payload.get("new_due_at"):
+            due = str(payload["new_due_at"])[:10]
+    return due
+
+
+_PATRON_EVENT_LABELS: dict[tuple[str, str], str] = {
+    ("forward", "submit"): "Request submitted",
+    ("forward", "route"): "Supplier identified",
+    ("observation", "approve"): "Request confirmed by supplier",
+    ("forward", "ship"): "Item shipped",
+    ("forward", "receive"): "Item received — loan started",
+    ("forward", "return"): "Item returned",
+    ("forward", "renew"): "Loan renewed",
+    ("compensator", "ship"): "Item recalled",
+    ("compensator", "receive"): "Receipt under review",
+    ("compensator", "return"): "Return under review",
+    ("compensator", "renew"): "Renewal cancelled",
+    ("compensator", "approve"): "Request cancelled",
+    ("compensator", "submit"): "Request cancelled",
+}
+
+
+def _patron_event_label(ev: SagaEvent) -> str | None:
+    """Return a patron-facing label for ``ev``, or None to skip it."""
+    return _PATRON_EVENT_LABELS.get((ev.kind.value, ev.step.value))
+
+
 def _parse_step(name: str) -> StepName:
     try:
         return StepName(name)
@@ -1444,6 +1487,139 @@ def create_app() -> FastAPI:
                 )
             )
         return StepRunResponse.model_validate(ev.model_dump())
+
+    # ----------------------------------------------------------------- patron portal
+    # Read-only patron-facing views. No staff auth guard — patron_id is the
+    # only credential (prototype limitation per ADR-0007). Wrong patron_id on
+    # the detail view returns 404 rather than 403 to avoid leaking saga IDs.
+
+    @app.get("/portal", response_class=HTMLResponse, include_in_schema=False)
+    async def portal_home(request: Request) -> HTMLResponse:
+        """Patron portal landing page — patron ID lookup form."""
+        return templates.TemplateResponse(request, "portal_home.html", {})
+
+    @app.get("/portal/requests", response_class=HTMLResponse, include_in_schema=False)
+    async def portal_requests(
+        request: Request,
+        patron_id: str = Query(..., min_length=1),
+        session: AsyncSession = Depends(_get_session),
+    ) -> HTMLResponse:
+        """List all sagas belonging to this patron ID.
+
+        Loads the most recent 200 sagas and filters in Python — sufficient
+        for the prototype; a production build would add a DB index on the
+        JSON patron_id field or a denormalised column.
+        """
+        async with session.begin():
+            stmt = select(Saga).order_by(Saga.updated_at.desc()).limit(200)
+            rows = (await session.execute(stmt)).scalars().all()
+
+        patron_rows = []
+        for saga in rows:
+            raw = saga.request_payload or {}
+            if str((raw.get("patron") or {}).get("patron_id") or "") != patron_id:
+                continue
+            item = raw.get("item") or {}
+            requesting = raw.get("requesting_library") or {}
+            state = saga.current_state
+            try:
+                is_terminal = LifecycleState(state) in TERMINAL_STATES
+            except ValueError:
+                is_terminal = False
+            patron_rows.append(
+                {
+                    "saga_id": str(saga.id),
+                    "title": str(item.get("title") or ""),
+                    "current_state": state,
+                    "is_terminal": is_terminal,
+                    "requesting_library": str(requesting.get("symbol") or ""),
+                    "submitted_at": saga.created_at.strftime("%Y-%m-%d") if saga.created_at else "",
+                }
+            )
+
+        return templates.TemplateResponse(
+            request,
+            "portal_requests.html",
+            {"patron_id": patron_id, "requests": patron_rows},
+        )
+
+    @app.get(
+        "/portal/requests/{saga_id}",
+        response_class=HTMLResponse,
+        include_in_schema=False,
+    )
+    async def portal_saga_detail(
+        saga_id: UUID,
+        request: Request,
+        patron_id: str = Query(..., min_length=1),
+        session: AsyncSession = Depends(_get_session),
+    ) -> HTMLResponse:
+        """Read-only patron view of a single saga.
+
+        Returns 404 if the saga does not exist OR the patron_id does not
+        match the saga's stored patron — avoids leaking saga IDs to
+        unrelated patrons.
+        """
+        async with session.begin():
+            saga = await session.get(Saga, saga_id)
+            if saga is None:
+                raise HTTPException(status_code=404, detail="request not found")
+            raw = saga.request_payload or {}
+            stored_patron_id = str((raw.get("patron") or {}).get("patron_id") or "")
+            if stored_patron_id != patron_id:
+                raise HTTPException(status_code=404, detail="request not found")
+
+            ledger = SagaLedger(session)
+            events = await ledger.events_for(saga_id)
+
+        item_raw = raw.get("item") or {}
+        requesting = raw.get("requesting_library") or {}
+        state = saga.current_state
+        try:
+            is_terminal = LifecycleState(state) in TERMINAL_STATES
+        except ValueError:
+            is_terminal = False
+
+        due_date = _portal_due_date(events)
+        renewals = sum(
+            1 for ev in events
+            if ev.kind == EventKind.FORWARD
+            and ev.step.value == "renew"
+            and ev.outcome == StepOutcome.COMMITTED
+        )
+
+        event_rows = []
+        for ev in events:
+            label = _patron_event_label(ev)
+            if label is None:
+                continue
+            event_rows.append(
+                {
+                    "label": label,
+                    "outcome": ev.outcome.value,
+                    "ts": ev.ts.strftime("%Y-%m-%d %H:%M UTC") if ev.ts else "",
+                }
+            )
+
+        return templates.TemplateResponse(
+            request,
+            "portal_detail.html",
+            {
+                "patron_id": patron_id,
+                "item": {
+                    "title": str(item_raw.get("title") or ""),
+                    "author": str(item_raw.get("author") or ""),
+                    "isbn": str(item_raw.get("isbn") or ""),
+                },
+                "current_state": state,
+                "is_terminal": is_terminal,
+                "requesting_library": str(requesting.get("symbol") or ""),
+                "submitted_at": saga.created_at.strftime("%Y-%m-%d") if saga.created_at else "",
+                "due_date": due_date,
+                "renewals": renewals or "",
+                "events": event_rows,
+            },
+        )
 
     return app
 
