@@ -1,26 +1,22 @@
 # Next session resume note
 
-**Last updated:** 2026-05-07 (PRs #123–#127 merged; master at 458 tests, 95% coverage).
+**Last updated:** 2026-05-07 (PRs #128–#131 merged; master at 480 tests, 99% coverage).
 
 ## Repo state
 
-- `master` clean, test count **458** (447 pass + 11 skipped env-gated).
+- `master` clean, test count **480** (469 pass + 11 skipped env-gated).
 - ADR count: **17** (ADR-0017 documents `renew_request` sandbox gap).
-- Overall coverage: **~95%** (`pytest --cov=src/agora`).
+- Overall coverage: **99%** (`pytest --cov=src/agora`).
+- LLM routing baseline: **top-1 1.0000 / mean Spearman 1.0000** (40 scenarios, gemini-2.5-flash).
 
 ## PRs this session (in order)
 
 | PR | Branch | Title | Status |
 |----|--------|-------|--------|
-| #112–#115 | — | chore: exec deck, LICENSE, README, secrets baseline | Merged |
-| #116 | `feat/renewal-flow` | feat(renewal): add RENEW saga step for loan extension | Merged |
-| #117 | `feat/patron-portal` | feat(portal): add read-only patron portal for ILL request status | Merged |
-| #118–#122 | — | chore: NEXT_SESSION, eval set 20→40, db/app coverage, doc sync | Merged |
-| #123 | `feat/adr-0017-renew-gap` | docs(adr): ADR-0017 renew_request sandbox gap | Merged |
-| #124 | `feat/eval-coverage` | test(evals): cover routing harness lines 129, 215, 315-344, 415-425, 434 | Merged |
-| #125 | `feat/cli-coverage` | test(cli): cover cli.py entry point 0% → 100% | Merged |
-| #126 | `feat/misc-coverage` | test(coverage): plug single-line gaps — cli, openurl, evals, reshare, flows, routing | Merged |
-| #127 | `feat/discovery-coverage` | test(discovery): cover empty-symbol skip and duplicate-symbol dedup | Merged |
+| #128 | `chore/next-session-post-127` | chore: update NEXT_SESSION.md after PRs #123-#127 | Merged |
+| #129 | `feat/app-eval-coverage` | test(coverage): app.py 94%→100%, evals/routing.py 99%→100% + LLM baseline refresh | Merged |
+| #130 | `feat/demos-coverage` | test(demos): cover happy_path.py 0% → 100% via smoke test + pragma demo guards | Merged |
+| #131 | `feat/adk-coverage` | test(adk): cover routing_llm_adk._invoke_model body 72% → 100% | Merged |
 
 ## What to do at session start
 
@@ -28,7 +24,7 @@
 git checkout master && git pull
 
 # Verify
-.venv/Scripts/python.exe -m pytest tests/ -q  # expect 458 pass, 11 skip
+.venv/Scripts/python.exe -m pytest tests/ -q  # expect 480 pass, 11 skip
 .venv/Scripts/python.exe -m ruff check src tests      # clean
 .venv/Scripts/python.exe -m mypy --strict             # clean
 ```
@@ -39,21 +35,17 @@ git checkout master && git pull
 - **ADR-0017 follow-up (renew_request)**: Confirm mod-rs action for borrower-initiated renewal against a live two-tenant sandbox. Update `HttpReShareClient.renew_request` and add wire-level test.
 - **ADR-0016 follow-up (production recall)**: ISO 18626 Cancel via `message` performAction. Needs two-tenant sandbox and wire-level testing.
 
-### Coverage improvements (master at ~95%)
+### Coverage state — at the summit
 
-| Module | Coverage | Uncovered lines | Notes |
-|--------|----------|-----------------|-------|
-| `api/app.py` | ~94% | 187, 190, 192, 274-275, 605, 1016-1054, 1256, 1258, 1260, 1262, 1527-1528, 1580-1581, 1595 | Complex lifespan/startup paths |
-| `agents/routing_llm_adk.py` | 72% | 157-180 | Requires real ADK/Vertex — skip |
-| `evals/routing.py` | 99% | 425 | `--llm` success path; needs mock tiebreaker + mock evaluate |
-| `saga/idempotency.py` | 99% | 169 | Postgres-only `with_for_update(skip_locked=True)` — only in Postgres tests |
-| `demos/happy_path.py` | 0% | 11-237 | Demo script — low priority |
+| Module | Coverage | Notes |
+|--------|----------|-------|
+| All src/agora/* modules | **100%** locally | except idempotency.py:169 |
+| `saga/idempotency.py:169` | 99% | Postgres-only `with_for_update(skip_locked=True)` — covered by CI's `postgres-tests.yml` (gated on `AGORA_TEST_DB_URL`). Don't add `# pragma: no cover` — CI honestly covers it. |
 
-**Best next PRs:**
-1. `api/app.py` remaining 35 uncovered lines — lifespan startup/shutdown and portal edge paths
-2. `evals/routing.py:425` — mock `get_llm_tiebreaker` returning a non-None stub + mock `evaluate`
-3. Refresh `baseline.json` (LLM-augmented) over all 40 scenarios (needs GCP ADC)
-4. ADR-0017 / ADR-0016 follow-up (both need two-tenant mod-rs sandbox)
+**No coverage backlog remains for code changes alone.** Future PRs that add code should land with their own tests; the green-field is fully tested.
+
+### LLM baseline state
+`evals/routing/baseline.json` is **fresh** (refreshed in PR #129). 40/40 top-1, Spearman 1.0. Don't refresh again unless rules engine or prompt template changes.
 
 ### Sandbox-blocked
 1. **NCIP live probe** — smoke test ready (`tests/test_ncip_http_smoke.py`).
@@ -71,12 +63,14 @@ git checkout master && git pull
 - **HttpNcipClient source-review-only** — unverified against live mod-ncip.
 - **WorldCat v1 EOL'd Dec 2024.** v2 API requires institutional OCLC subscription.
 - **No open SRU union holdings catalog returns MARC 852 data.** Routes via `AGORA_CONSORTIUM_MEMBERS` fallback (PR #100).
-- **Retry delays in HttpReShareClient tests** — 5xx/ConnectError paths trigger tenacity retry (~1.5s per test). `test_reshare_http_client.py` runs ~9.5s total. Acceptable.
-- **`OnSuccess` and `Handler` types are positional `Callable`s** — keyword argument calls fail mypy strict. Always call positionally.
+- **Retry delays in HttpReShareClient tests** — 5xx/ConnectError paths trigger tenacity retry (~1.5s per test). Acceptable.
+- **`OnSuccess` and `Handler` types are positional `Callable`s** — keyword argument calls fail mypy strict.
 - **ApprovalBody / CompensateBody require `actor` + `rationale`** — JSON approve/compensate tests omitting these get 422.
-- **RENEW uses `state_after = RECEIVED`** (same as current state). The coordinator has no forward-progress guard — this is intentional for renewal.
-- **Portal uses `ev.step.value` string comparison** (not `StepName.RENEW`) in `_portal_due_date` — avoids import issues when portal and renewal are on separate branches.
-- **Do NOT commit directly to master.** Always branch + PR. The `feat/misc-coverage` batch accidentally committed to master mid-session (recovered via branch + reset).
+- **RENEW uses `state_after = RECEIVED`** (same as current state). The coordinator has no forward-progress guard — intentional for renewal.
+- **Portal uses `ev.step.value` string comparison** in `_portal_due_date` — avoids import issues across feature branches.
+- **`SagaEvent` requires `id: int` and `iso_message_id: str | None`** when constructed directly in unit tests (PR #129).
+- **Always branch + PR, never commit directly to master.**
+- **GCP ADC for LLM eval refresh:** needs all of `GOOGLE_GENAI_USE_VERTEXAI=true` + `GOOGLE_CLOUD_PROJECT` + `GOOGLE_CLOUD_LOCATION=us-central1` + `AGORA_ROUTING_LLM_ENABLED=1` + `AGORA_ROUTING_LLM_MODEL=gemini-2.5-flash` + `AGORA_ROUTING_LLM_TIMEOUT_SECS=30`. Without `GOOGLE_GENAI_USE_VERTEXAI=true` SDK silently falls back to API-key auth and 401s every call.
 
 ## Resume protocol
 
