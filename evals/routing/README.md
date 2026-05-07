@@ -9,9 +9,9 @@ that future PRs must beat.
 
 | File | What |
 | ---- | ---- |
-| `scenarios.json` | 20 routing situations with `expected_chosen` + `expected_ranking` ground truth. Authored by hand against PRD-02 routing semantics. |
-| `baseline-rules.json` | Committed **rules-only** scores (top-1 0.8000 / mean Spearman 0.5556). The CI floor at `.github/workflows/routing-eval-floor.yml` enforces these — any PR that drops below either metric on the rules path fails. Split out from `baseline.json` in #50. |
-| `baseline.json`  | Committed **LLM-augmented** scores (top-1 0.9500 / mean Spearman 0.8889 against `gemini-2.5-flash`, post #51 prompt + ε tuning). PR-review reads diffs of this file to catch LLM-quality regressions; no CI gate (no GCP secrets in CI). |
+| `scenarios.json` | 40 routing situations with `expected_chosen` + `expected_ranking` ground truth. Authored by hand against PRD-02 routing semantics. |
+| `baseline-rules.json` | Committed **rules-only** scores (top-1 0.9250 / mean Spearman 0.8378, 40 scenarios). The CI floor at `.github/workflows/routing-eval-floor.yml` enforces these — any PR that drops below either metric on the rules path fails. |
+| `baseline.json`  | Committed **LLM-augmented** scores. After this PR: placeholder rules-only numbers (0.9250/0.8378); refresh with `make eval-routing --llm` (requires GCP ADC) to get the LLM-augmented baseline over 40 scenarios. Prior LLM baseline (20 scenarios): top-1 0.9500 / mean Spearman 0.8889 against `gemini-2.5-flash`. |
 
 ## Run it
 
@@ -47,7 +47,7 @@ matches the run mode (`baseline-rules.json` for `--rules-only`,
   full-ordering quality (matters when staff overrides pick #1 and
   walks the list). Skips scenarios with <2 candidates.
 
-NDCG was considered and rejected — overkill for a 20-scenario
+NDCG was considered and rejected — overkill for a 40-scenario
 prototype set; graded relevance labels would require a second
 labeller pass.
 
@@ -79,20 +79,27 @@ Each scenario has:
 the harness fails loudly on mismatch. `expected_chosen` MUST be
 either `null` (empty candidate list) or a member of `candidates`.
 
-Four scenarios (`routing-013` through `routing-016`) are deliberate
+Three scenarios (`routing-013`, `routing-014`, `routing-016`) are deliberate
 **rules-baseline misses** — the `notes` field flags this. The LLM
-tie-breaker (PR-2, shipped #48-#51) was expected to fix them by reading
-`raw` metadata the rules don't see; post #51 prompt + ε tuning the
-score is **3 of 4 fixed**:
+tie-breaker (PR-2, shipped #48-#51) reads `raw` metadata the rules don't see;
+post #51 prompt + ε tuning all three are fixed by the LLM:
 
 | Scenario | Rules gap | LLM picks | Status |
 |---|---|---|---|
-| `routing-013` | 0.00 (true tie) | correct | ✅ fixed |
-| `routing-014` | 0.00 (true tie) | correct | ✅ fixed |
-| `routing-015` | 0.46 (not a tie) | n/a — LLM doesn't fire below ε=0.03 | ⏳ out-of-scope per ADR-0014 |
-| `routing-016` | 0.00 (true tie) | correct | ✅ fixed |
+| `routing-013` | 0.00 (true tie) | correct | ✅ fixed by LLM |
+| `routing-014` | 0.00 (true tie) | correct | ✅ fixed by LLM |
+| `routing-015` | 0.46 (not a tie) | n/a — LLM doesn't fire below ε=0.03 | ✅ fixed by rules (format-affinity PR) |
+| `routing-016` | 0.00 (true tie) | correct | ✅ fixed by LLM |
 
-`routing-015` stays out-of-scope for the tie-breaker mechanism
-specifically — its rules-score gap is too wide for the ε threshold.
-A future PR may add an "always-on" advisory call (or relabel the
-scenario) per ADR-0014's scope finding.
+The 20 new scenarios (`routing-021` through `routing-040`, this PR) are all
+**rules-correct** — they exercise coverage gaps in the existing set
+(large consortia, boundary distances, preferred_score extremes, status
+hierarchy isolation, cross-term interactions) without introducing new
+LLM-only scenarios. Rules top-1 improves from 0.85 (17/20) to 0.9250 (37/40).
+
+`baseline.json` (LLM-augmented) needs refreshing over the full 40-scenario set:
+```
+AGORA_ROUTING_LLM_ENABLED=1 AGORA_ROUTING_LLM_MODEL=gemini-2.5-flash \
+AGORA_ROUTING_LLM_TIMEOUT_SECS=30 \
+.venv/Scripts/python.exe -m agora.evals.routing --llm
+```

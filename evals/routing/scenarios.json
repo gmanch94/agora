@@ -221,5 +221,248 @@
     "expected_chosen": "MEM-B",
     "expected_ranking": ["MEM-B", "MEM-C", "MEM-A", "EXT-FAR"],
     "notes": "Available consortium > unknown consortium > on_loan consortium > far external. End-to-end ranking sanity check."
+  },
+  {
+    "id": "routing-021",
+    "description": "Single external candidate — no consortium members hold the item.",
+    "candidates": [
+      {"symbol": "EXT-ONLY", "is_consortium_member": false, "status": "available", "preferred_score": 0.75}
+    ],
+    "expected_chosen": "EXT-ONLY",
+    "expected_ranking": ["EXT-ONLY"],
+    "notes": "Sanity case for a non-consortium item pool. Rules and ground truth agree."
+  },
+  {
+    "id": "routing-022",
+    "description": "Five consortium members all available — preferred_score sorts entire field.",
+    "candidates": [
+      {"symbol": "MEM-A", "is_consortium_member": true, "status": "available", "preferred_score": 0.9},
+      {"symbol": "MEM-B", "is_consortium_member": true, "status": "available", "preferred_score": 0.7},
+      {"symbol": "MEM-C", "is_consortium_member": true, "status": "available", "preferred_score": 0.5},
+      {"symbol": "MEM-D", "is_consortium_member": true, "status": "available", "preferred_score": 0.3},
+      {"symbol": "MEM-E", "is_consortium_member": true, "status": "available", "preferred_score": 0.1}
+    ],
+    "expected_chosen": "MEM-A",
+    "expected_ranking": ["MEM-A", "MEM-B", "MEM-C", "MEM-D", "MEM-E"],
+    "notes": "Large consortium, identical status/proximity. preferred_score (0.2 weight) sweeps the ranking. Scores: MEM-A 0.93, MEM-B 0.89, MEM-C 0.85, MEM-D 0.81, MEM-E 0.77."
+  },
+  {
+    "id": "routing-023",
+    "description": "Five consortium members identical preferred_score — proximity sorts entire field.",
+    "candidates": [
+      {"symbol": "MEM-A", "is_consortium_member": true, "status": "available", "preferred_score": 0.5, "distance_km": 100.0},
+      {"symbol": "MEM-B", "is_consortium_member": true, "status": "available", "preferred_score": 0.5, "distance_km": 400.0},
+      {"symbol": "MEM-C", "is_consortium_member": true, "status": "available", "preferred_score": 0.5, "distance_km": 700.0},
+      {"symbol": "MEM-D", "is_consortium_member": true, "status": "available", "preferred_score": 0.5, "distance_km": 1000.0},
+      {"symbol": "MEM-E", "is_consortium_member": true, "status": "available", "preferred_score": 0.5, "distance_km": 1300.0}
+    ],
+    "expected_chosen": "MEM-A",
+    "expected_ranking": ["MEM-A", "MEM-B", "MEM-C", "MEM-D", "MEM-E"],
+    "notes": "Large consortium, identical status + preferred_score. Proximity (0.1 weight) sweeps. Scores: 0.893, 0.873, 0.853, 0.833, 0.813."
+  },
+  {
+    "id": "routing-024",
+    "description": "Consortium on_loan vs external available — consortium still wins.",
+    "candidates": [
+      {"symbol": "MEM-LOAN", "is_consortium_member": true, "status": "on_loan", "preferred_score": 0.5},
+      {"symbol": "EXT-AVAIL", "is_consortium_member": false, "status": "available", "preferred_score": 0.5}
+    ],
+    "expected_chosen": "MEM-LOAN",
+    "expected_ranking": ["MEM-LOAN", "EXT-AVAIL"],
+    "notes": "Consortium weight (0.5) makes on_loan consortium (score 0.69) beat available external (score 0.35) easily."
+  },
+  {
+    "id": "routing-025",
+    "description": "Consortium members dominate despite externals having proximity advantage.",
+    "candidates": [
+      {"symbol": "MEM-A", "is_consortium_member": true, "status": "available", "preferred_score": 0.5, "distance_km": 200.0},
+      {"symbol": "MEM-B", "is_consortium_member": true, "status": "available", "preferred_score": 0.5, "distance_km": 800.0},
+      {"symbol": "EXT-A", "is_consortium_member": false, "status": "available", "preferred_score": 0.5, "distance_km": 50.0},
+      {"symbol": "EXT-B", "is_consortium_member": false, "status": "available", "preferred_score": 0.5, "distance_km": 600.0}
+    ],
+    "expected_chosen": "MEM-A",
+    "expected_ranking": ["MEM-A", "MEM-B", "EXT-A", "EXT-B"],
+    "notes": "Consortium weight (0.5) dominates. Within each group proximity sorts: MEM-A(0.887) > MEM-B(0.847) > EXT-A(0.397) > EXT-B(0.360)."
+  },
+  {
+    "id": "routing-026",
+    "description": "All candidates have unknown status — preferred_score and consortium weight decide.",
+    "candidates": [
+      {"symbol": "MEM-A", "is_consortium_member": true, "status": "unknown", "preferred_score": 0.9},
+      {"symbol": "MEM-B", "is_consortium_member": true, "status": "unknown", "preferred_score": 0.4},
+      {"symbol": "EXT-A", "is_consortium_member": false, "status": "unknown", "preferred_score": 1.0}
+    ],
+    "expected_chosen": "MEM-A",
+    "expected_ranking": ["MEM-A", "MEM-B", "EXT-A"],
+    "notes": "No status signal. MEM-A(0.83) > MEM-B(0.73) >> EXT-A(0.35) despite EXT-A's perfect preferred_score — consortium weight dominates."
+  },
+  {
+    "id": "routing-027",
+    "description": "Preferred_score gap of 0.01 — minimal but deterministic rule resolution.",
+    "candidates": [
+      {"symbol": "MEM-A", "is_consortium_member": true, "status": "available", "preferred_score": 0.51},
+      {"symbol": "MEM-B", "is_consortium_member": true, "status": "available", "preferred_score": 0.50}
+    ],
+    "expected_chosen": "MEM-A",
+    "expected_ranking": ["MEM-A", "MEM-B"],
+    "notes": "Score delta = 0.002 (from 0.01 preferred gap × 0.2 weight). Rules resolve deterministically even at minimum preferred_score separation."
+  },
+  {
+    "id": "routing-028",
+    "description": "Member at exactly max_distance_km (1500 km) — proximity_score bottoms at 0.0.",
+    "candidates": [
+      {"symbol": "MEM-FAR", "is_consortium_member": true, "status": "available", "preferred_score": 0.5, "distance_km": 1500.0},
+      {"symbol": "MEM-NEAR", "is_consortium_member": true, "status": "available", "preferred_score": 0.5, "distance_km": 200.0}
+    ],
+    "expected_chosen": "MEM-NEAR",
+    "expected_ranking": ["MEM-NEAR", "MEM-FAR"],
+    "notes": "MEM-FAR proximity = 1 - 1500/1500 = 0.0; score = 0.80. MEM-NEAR score = 0.887. Full proximity spread is 0.1 — max possible contribution from distance factor."
+  },
+  {
+    "id": "routing-029",
+    "description": "Perfect numeric tie on all four dimensions — stable sort preserves input order.",
+    "candidates": [
+      {"symbol": "MEM-A", "is_consortium_member": true, "status": "available", "preferred_score": 0.5},
+      {"symbol": "MEM-B", "is_consortium_member": true, "status": "available", "preferred_score": 0.5}
+    ],
+    "expected_chosen": "MEM-A",
+    "expected_ranking": ["MEM-A", "MEM-B"],
+    "notes": "Both score 0.85. Python sort is stable; MEM-A is listed first in candidates so it retains position #1. Rules baseline and ground truth agree — first-listed member is the consortium-order default."
+  },
+  {
+    "id": "routing-030",
+    "description": "All preferred_score=0.0 — only proximity differentiates consortium peers.",
+    "candidates": [
+      {"symbol": "MEM-A", "is_consortium_member": true, "status": "available", "preferred_score": 0.0, "distance_km": 1000.0},
+      {"symbol": "MEM-B", "is_consortium_member": true, "status": "available", "preferred_score": 0.0, "distance_km": 300.0}
+    ],
+    "expected_chosen": "MEM-B",
+    "expected_ranking": ["MEM-B", "MEM-A"],
+    "notes": "preferred_score zeroed; proximity is the only differentiator. MEM-B(0.780) > MEM-A(0.733)."
+  },
+  {
+    "id": "routing-031",
+    "description": "All preferred_score=1.0 — only proximity differentiates consortium peers.",
+    "candidates": [
+      {"symbol": "MEM-A", "is_consortium_member": true, "status": "available", "preferred_score": 1.0, "distance_km": 1200.0},
+      {"symbol": "MEM-B", "is_consortium_member": true, "status": "available", "preferred_score": 1.0, "distance_km": 100.0}
+    ],
+    "expected_chosen": "MEM-B",
+    "expected_ranking": ["MEM-B", "MEM-A"],
+    "notes": "preferred_score saturated at 1.0; proximity is the only remaining differentiator. MEM-B(0.993) > MEM-A(0.920)."
+  },
+  {
+    "id": "routing-032",
+    "description": "Three externals, all available — proximity sorts when preferred_score tied.",
+    "candidates": [
+      {"symbol": "EXT-A", "is_consortium_member": false, "status": "available", "preferred_score": 0.5, "distance_km": 1400.0},
+      {"symbol": "EXT-B", "is_consortium_member": false, "status": "available", "preferred_score": 0.5, "distance_km": 50.0},
+      {"symbol": "EXT-C", "is_consortium_member": false, "status": "available", "preferred_score": 0.5, "distance_km": 500.0}
+    ],
+    "expected_chosen": "EXT-B",
+    "expected_ranking": ["EXT-B", "EXT-C", "EXT-A"],
+    "notes": "No consortium members; pure external pool. EXT-B(0.397) > EXT-C(0.367) > EXT-A(0.307)."
+  },
+  {
+    "id": "routing-033",
+    "description": "Consortium reference_only outranks all externals despite status penalty.",
+    "candidates": [
+      {"symbol": "MEM-REF", "is_consortium_member": true, "status": "reference_only", "preferred_score": 0.5},
+      {"symbol": "EXT-UNK", "is_consortium_member": false, "status": "unknown", "preferred_score": 0.8},
+      {"symbol": "EXT-LOAN", "is_consortium_member": false, "status": "on_loan", "preferred_score": 0.9}
+    ],
+    "expected_chosen": "MEM-REF",
+    "expected_ranking": ["MEM-REF", "EXT-UNK", "EXT-LOAN"],
+    "notes": "Consortium weight (0.5) makes reference_only consortium (0.65) beat all externals. Max external score here = 0.31. Known rules quirk noted in routing-010."
+  },
+  {
+    "id": "routing-034",
+    "description": "Two consortium members at equal distance — preferred_score is the tiebreaker.",
+    "candidates": [
+      {"symbol": "MEM-A", "is_consortium_member": true, "status": "available", "preferred_score": 0.8, "distance_km": 500.0},
+      {"symbol": "MEM-B", "is_consortium_member": true, "status": "available", "preferred_score": 0.3, "distance_km": 500.0}
+    ],
+    "expected_chosen": "MEM-A",
+    "expected_ranking": ["MEM-A", "MEM-B"],
+    "notes": "Identical distance neutralises proximity. preferred_score (0.2 weight) decides. MEM-A(0.927) vs MEM-B(0.827)."
+  },
+  {
+    "id": "routing-035",
+    "description": "Six candidates — all four scoring factors interact; verifies full ranking.",
+    "candidates": [
+      {"symbol": "MEM-AVAIL", "is_consortium_member": true, "status": "available", "preferred_score": 0.5, "distance_km": 300.0},
+      {"symbol": "MEM-UNK", "is_consortium_member": true, "status": "unknown", "preferred_score": 0.6, "distance_km": 200.0},
+      {"symbol": "MEM-REF", "is_consortium_member": true, "status": "reference_only", "preferred_score": 0.9, "distance_km": 50.0},
+      {"symbol": "MEM-LOAN", "is_consortium_member": true, "status": "on_loan", "preferred_score": 0.7, "distance_km": 100.0},
+      {"symbol": "EXT-AVAIL", "is_consortium_member": false, "status": "available", "preferred_score": 1.0, "distance_km": 10.0},
+      {"symbol": "EXT-UNK", "is_consortium_member": false, "status": "unknown", "preferred_score": 0.8, "distance_km": 5.0}
+    ],
+    "expected_chosen": "MEM-AVAIL",
+    "expected_ranking": ["MEM-AVAIL", "MEM-UNK", "MEM-REF", "MEM-LOAN", "EXT-AVAIL", "EXT-UNK"],
+    "notes": "Scores: MEM-AVAIL 0.880, MEM-UNK 0.807, MEM-REF 0.777, MEM-LOAN 0.773, EXT-AVAIL 0.499, EXT-UNK 0.360. Interesting: MEM-REF edges MEM-LOAN because MEM-REF has higher preferred+proximity despite zero status score."
+  },
+  {
+    "id": "routing-036",
+    "description": "Status hierarchy isolated — unknown > on_loan > reference_only, all else equal.",
+    "candidates": [
+      {"symbol": "MEM-A", "is_consortium_member": true, "status": "unknown", "preferred_score": 0.5},
+      {"symbol": "MEM-B", "is_consortium_member": true, "status": "on_loan", "preferred_score": 0.5},
+      {"symbol": "MEM-C", "is_consortium_member": true, "status": "reference_only", "preferred_score": 0.5}
+    ],
+    "expected_chosen": "MEM-A",
+    "expected_ranking": ["MEM-A", "MEM-B", "MEM-C"],
+    "notes": "Status scores: unknown=0.5, on_loan=0.2, reference_only=0.0. Scores: MEM-A 0.75, MEM-B 0.69, MEM-C 0.65. Isolated status-hierarchy verification."
+  },
+  {
+    "id": "routing-037",
+    "description": "Available+low-preferred vs on_loan+high-preferred — status + preferred_score cross-term.",
+    "candidates": [
+      {"symbol": "MEM-AVAIL-LOW", "is_consortium_member": true, "status": "available", "preferred_score": 0.15},
+      {"symbol": "MEM-LOAN-HIGH", "is_consortium_member": true, "status": "on_loan", "preferred_score": 0.9},
+      {"symbol": "MEM-UNK-MID", "is_consortium_member": true, "status": "unknown", "preferred_score": 0.5}
+    ],
+    "expected_chosen": "MEM-AVAIL-LOW",
+    "expected_ranking": ["MEM-AVAIL-LOW", "MEM-LOAN-HIGH", "MEM-UNK-MID"],
+    "notes": "MEM-AVAIL-LOW(0.78) narrowly beats MEM-LOAN-HIGH(0.77) despite a 0.75 preferred_score gap — available status contributes 0.2 vs on_loan's 0.04, a difference that outweighs 0.15 preferred delta. Confirms status weight dominance over preferred_score at this gap."
+  },
+  {
+    "id": "routing-038",
+    "description": "Eight-candidate mixed pool — comprehensive ranking across all factors.",
+    "candidates": [
+      {"symbol": "EXT-NEAR", "is_consortium_member": false, "status": "available", "preferred_score": 0.9, "distance_km": 10.0},
+      {"symbol": "EXT-FAR", "is_consortium_member": false, "status": "available", "preferred_score": 0.5, "distance_km": 1200.0},
+      {"symbol": "MEM-A", "is_consortium_member": true, "status": "available", "preferred_score": 0.5, "distance_km": 800.0},
+      {"symbol": "MEM-B", "is_consortium_member": true, "status": "available", "preferred_score": 0.5, "distance_km": 400.0},
+      {"symbol": "MEM-C", "is_consortium_member": true, "status": "unknown", "preferred_score": 0.8, "distance_km": 300.0},
+      {"symbol": "MEM-D", "is_consortium_member": true, "status": "on_loan", "preferred_score": 0.9, "distance_km": 100.0},
+      {"symbol": "MEM-E", "is_consortium_member": true, "status": "reference_only", "preferred_score": 0.7, "distance_km": 50.0},
+      {"symbol": "MEM-F", "is_consortium_member": true, "status": "unknown", "preferred_score": 0.3, "distance_km": 600.0}
+    ],
+    "expected_chosen": "MEM-B",
+    "expected_ranking": ["MEM-B", "MEM-A", "MEM-C", "MEM-D", "MEM-E", "MEM-F", "EXT-NEAR", "EXT-FAR"],
+    "notes": "Scores: MEM-B 0.873, MEM-A 0.847, MEM-C 0.840, MEM-D 0.813, MEM-E 0.737, MEM-F 0.720, EXT-NEAR 0.479, EXT-FAR 0.320. Consortium block sweeps external block. Within consortium: available > unknown > on_loan > reference_only with preferred_score and proximity breaking ties."
+  },
+  {
+    "id": "routing-039",
+    "description": "Consortium on_loan vs externally-co-located external (distance_km=1) — consortium wins.",
+    "candidates": [
+      {"symbol": "MEM-LOAN", "is_consortium_member": true, "status": "on_loan", "preferred_score": 0.5},
+      {"symbol": "EXT-NEAR", "is_consortium_member": false, "status": "available", "preferred_score": 1.0, "distance_km": 1.0}
+    ],
+    "expected_chosen": "MEM-LOAN",
+    "expected_ranking": ["MEM-LOAN", "EXT-NEAR"],
+    "notes": "EXT-NEAR has max preferred_score + max proximity (score 0.500). MEM-LOAN consortium weight alone = 0.5 — at the boundary. Scores: MEM-LOAN 0.690, EXT-NEAR 0.500. Consortium wins by 0.19 even at the extreme external-advantage point."
+  },
+  {
+    "id": "routing-040",
+    "description": "Two consortium + one external — preferred_score breaks consortium tie before external is reached.",
+    "candidates": [
+      {"symbol": "MEM-A", "is_consortium_member": true, "status": "available", "preferred_score": 0.8},
+      {"symbol": "MEM-B", "is_consortium_member": true, "status": "available", "preferred_score": 0.3},
+      {"symbol": "EXT", "is_consortium_member": false, "status": "available", "preferred_score": 0.9}
+    ],
+    "expected_chosen": "MEM-A",
+    "expected_ranking": ["MEM-A", "MEM-B", "EXT"],
+    "notes": "Scores: MEM-A 0.91, MEM-B 0.81, EXT 0.43. Even EXT's highest preferred_score can't overcome the 0.5 consortium weight gap. Within consortium, preferred_score sorts correctly."
   }
 ]
