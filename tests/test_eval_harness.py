@@ -116,6 +116,11 @@ def test_spearman_mismatched_sets_returns_none() -> None:
     assert spearman(["a", "b"], ["a", "c"]) is None
 
 
+def test_spearman_length_mismatch_returns_none() -> None:
+    """Different list lengths → None (line 215 early return)."""
+    assert spearman(["A"], ["A", "B"]) is None
+
+
 def test_spearman_partial_inversion() -> None:
     """One swap in a 4-element list. d² = 1+1+0+0 = 2 →
     rho = 1 - 6*2 / (4 * 15) = 1 - 12/60 = 0.8."""

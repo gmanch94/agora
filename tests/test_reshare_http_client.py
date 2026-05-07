@@ -329,3 +329,23 @@ async def test_get_client_returns_http_client_when_configured() -> None:
         client = get_client()
     assert isinstance(client, HttpReShareClient)
     await client.aclose()
+
+
+# ---------------------------------------------------------------------------
+# HttpReShareClient.renew_request — sandbox-blocked ClientError (line 322)
+# ---------------------------------------------------------------------------
+
+
+async def test_http_reshare_renew_request_raises_client_error() -> None:
+    """renew_request is sandbox-blocked; HttpReShareClient raises ClientError
+    immediately so the outbox worker surfaces a dead-letter row (ADR-0017)."""
+    client = _client()
+    try:
+        with pytest.raises(ClientError, match="sandbox-blocked"):
+            await client.renew_request(
+                idempotency_key="idem-renew",
+                reshare_id="some-reshare-id",
+                extension_days=14,
+            )
+    finally:
+        await client.aclose()

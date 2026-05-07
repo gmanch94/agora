@@ -92,5 +92,5 @@ def _safe_int(value: str | None) -> int | None:
         return None
     try:
         return int(digits)
-    except ValueError:
+    except ValueError:  # pragma: no cover — digits is all-isdigit, int() never raises
         return None
