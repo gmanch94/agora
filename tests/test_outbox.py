@@ -830,3 +830,75 @@ async def test_ncip_handler_rejects_malformed_payload(sm: async_sessionmaker[Asy
     row_b = await _row(sm, row_id_b)
     assert "missing 'action'" in (row_a.last_error or "")
     assert "must be dict" in (row_b.last_error or "")
+
+
+async def test_projection_failure_at_max_attempts_marks_dead_letter(
+    sm: async_sessionmaker[AsyncSession],
+) -> None:
+    """Projection (on_success) that always raises becomes dead_letter after
+    max_attempts exhausted — covers lines 306-307 in outbox.py."""
+
+    async def ok_handler(payload: dict[str, Any], idem: str) -> str:
+        return "handler-ok"
+
+    async def boom_projection(
+        session: AsyncSession,
+        row_id: int,
+        saga_id: Any,
+        payload: dict[str, Any],
+        idem_key: str,
+        result: Any,
+    ) -> None:
+        raise RuntimeError("projection always fails")
+
+    row_id = await _enqueue(sm, target="t1", payload={})
+    worker = OutboxWorker(
+        sm,
+        {"t1": ok_handler},
+        on_success={"t1": boom_projection},
+        max_attempts=1,
+        base_backoff_secs=0,
+    )
+    stats = await worker.drain_once()
+
+    assert stats.dead_letter == 1
+    assert stats.delivered == 0
+    row = await _row(sm, row_id)
+    assert row.status == "dead_letter"
+
+
+async def test_run_forever_logs_unexpected_error_and_continues(
+    sm: async_sessionmaker[AsyncSession],
+) -> None:
+    """An unexpected exception from drain_once is logged and the loop
+    continues rather than crashing — covers lines 371-372 in outbox.py."""
+    import asyncio
+
+    call_count: list[int] = [0]
+
+    async def boom_handler(payload: dict[str, Any], idem: str) -> None:
+        raise RuntimeError("unexpected worker error")
+
+    await _enqueue(sm, target="t1", payload={})
+    worker = OutboxWorker(sm, {"t1": boom_handler}, base_backoff_secs=0)
+
+    # Monkeypatch drain_once to raise once, then behave normally.
+    original_drain = worker.drain_once
+
+    async def patched_drain(**kwargs: Any) -> DrainStats:
+        call_count[0] += 1
+        if call_count[0] == 1:
+            raise RuntimeError("simulated unexpected worker error")
+        return await original_drain(**kwargs)
+
+    worker.drain_once = patched_drain  # type: ignore[method-assign]
+
+    task = asyncio.create_task(worker.run_forever(poll_interval=0.01))
+    # Let the loop tick a couple of times (error + normal drain).
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # drain_once was called more than once — loop survived the exception.
+    assert call_count[0] >= 2
