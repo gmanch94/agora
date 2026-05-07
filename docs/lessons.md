@@ -13,6 +13,27 @@ an ADR.
 
 ## Saga / ledger
 
+### 2026-05-07 — Last-write-wins event projections rot when compensators arrive
+`_portal_due_date` walked committed events last-write-wins, seeded by
+`forward.ship.due_at` and overridden by `forward.renew.new_due_at`. The
+RENEW compensator's payload carries `reverted_new_due_at` — a *different*
+key — so the function never read it and a committed forward+compensator
+pair left the portal showing the cancelled renewal's due date. The
+RENEW compensator was correct (it doesn't have anything to enqueue —
+no mod-rs un-renew action), but the read-side projection assumed the
+events were independent samples on a timeline rather than a stack of
+forward/compensator pairs. Fix is a stack-aware walk: `forward.renew`
+pushes `new_due_at`, `compensator.renew` pops, return is
+`stack[-1] if stack else ship_due`. Generalises: any event-replay
+projection that supports compensators must compose forward + compensator
+pairs explicitly. Last-write-wins is fine when only forwards exist; the
+moment you add a compensator that *cancels* (rather than overwrites) a
+prior payload, the projection needs structure.
+*(Refs — PR #134; see
+`src/agora/api/app.py::_portal_due_date`,
+`tests/test_app_coverage.py::test_portal_due_date_compensator_pops_renewal`,
+`tests/test_app_coverage.py::test_portal_due_date_compensator_pops_only_most_recent`.)*
+
 ### 2026-05-04 — Resolving a terminal saga requires OBSERVATION kind, not a normal forward
 `DISPUTED` is in `TERMINAL_STATES`. `SagaLedger.append` refuses
 non-OBSERVATION events on terminal sagas (ledger.py guard). The
@@ -310,6 +331,49 @@ merges can't repeat the trick.
 ---
 
 ## Workflow / process
+
+### 2026-05-07 — `x or DEFAULT` is unsafe with bounded ints; validate at the chokepoint
+Two coupled bugs in one bullet because they share a single fix.
+
+`renew_forward` did `int(extras.get("extension_days") or DEFAULT)`. The
+`or` clause silently rewrote `0 → 28` (zero is falsy) and let `-5`
+through (negatives are truthy → past due date). The Pydantic-side
+`RenewBody.extension_days = ge=1, le=180` masked the bug for the JSON
+caller; the HTMX `Form(28)` path had no Pydantic gate at all, so the
+falsy-default served the wrong default *and* the no-bounds path served
+wrong values. Two paths, two doors, drift inevitable. The fix is the
+conjunction: replace `or DEFAULT` with explicit
+`raw is None`-fallback, *and* add an explicit
+`if not 1 <= extension_days <= 180: raise ValueError(...)`, *and*
+move both into `renew_forward` itself — the single chokepoint where
+both call paths converge. Pydantic at the API boundary is fine as a
+first line of defence, but as soon as a second untyped boundary
+exists (Form, query string, internal caller, replay), validation must
+either repeat there or move down into the function that runs after
+the paths converge. "It's already validated upstream" stops being true
+the moment a second upstream gets added.
+*(Refs — PR #134; see
+`src/agora/saga/flows.py::renew_forward`,
+`src/agora/api/schemas.py::RenewBody`,
+`src/agora/api/app.py::ui_saga_renew`,
+`tests/test_renewal.py::test_renew_forward_rejects_out_of_range_extension_days`,
+`tests/test_renewal.py::test_ui_renew_zero_days_returns_400`.)*
+
+### 2026-05-07 — Strict-grade advisor pass *after* merge re-grades the surface
+PR #117 (patron portal) merged with three real bugs that the merge
+process didn't catch — one in #117 itself, two in the older RENEW
+slice (#116) that #117 newly exposed. The catch happened in a
+separate session days later: a PRD-refresh task (#133) re-loaded the
+RENEW + portal Python surface into the advisor's transcript, and a
+strict-grade pass against four pre-listed concerns surfaced a fourth
+bug the advisor itself spotted (compensator due-date drift). Lesson:
+advisor pre-merge catches *design* mistakes; advisor post-merge
+catches *bugs that survived design review*, especially right after
+multi-PR feature work lands. Surface the concerns you half-spotted
+in the strict-grade prompt — open-ended "review this" produces
+generic passes; pre-listed concerns produce discriminating grades.
+*(Refs — PR #134 fixes for bugs in PRs #116/#117; advisor concerns
+listed in PR #134 description.)*
 
 ### 2026-05-04 — README drifts harder than any other doc
 The README is the first-impression doc but sits outside every
@@ -1053,6 +1117,36 @@ test-leaky** — `lru_cache`, `functools.cache`, module-level
 ---
 
 ## Staff console / UI
+
+### 2026-05-07 — Asymmetric privacy gates leak the same data they pretend to protect
+The patron portal's `portal_saga_detail` 404'd on `patron_id`
+mismatch — implicitly treating the saga UUID as a semi-secret. But
+the sibling `portal_requests?patron_id=X` happily returned 200 and
+listed the saga UUIDs for any patron-id supplied — implicitly
+treating patron-id as enumerable. An attacker enumerating one
+endpoint produces the inputs needed to defeat the other (you get
+`(patron_id, saga_id)` pairs from `/portal/requests`, then walk them
+through `/portal/requests/{saga_id}?patron_id=...`). The 404 only
+ever caught typos. Worst-of-both-worlds: false reassurance to
+reviewers + still leaky.
+
+The fix isn't tightening one endpoint to match the other (you can't
+tighten `portal_requests` without auth — there's no way to tell a
+typo from a non-existent patron). Pick the honest posture for the
+prototype, document it, code matches: *saga UUID is the only access
+secret; `patron_id` is a UX label*. PRD-05 § Patron portal records
+this as a known prototype limitation; production needs real auth
+(SAML/Shibboleth, ADR-0007).
+
+Generalises: when two endpoints in the same surface gate access
+differently, ask whether either gate is real or whether the looser
+one disarms the stricter. If the stricter gate's inputs are
+discoverable through the looser one, drop it and document the actual
+posture.
+*(Refs — PR #134; see
+`src/agora/api/app.py::portal_saga_detail`,
+`docs/prd/05-staff-console.md` § Patron portal,
+`tests/test_portal.py::test_portal_detail_patron_id_is_label_not_gate`.)*
 
 ### 2026-05-04 — Jinja2 `{% include %}` inherits full parent template context
 When a partial is included via `{% include '_discover_panel.html' %}`,
