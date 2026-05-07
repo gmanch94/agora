@@ -1,10 +1,11 @@
 # Next session resume note
 
-**Last updated:** 2026-05-07 (PRs #128–#131 merged; master at 480 tests, 99% coverage).
+**Last updated:** 2026-05-07 (PR #133 merged, PR #134 open; master post-#133 at 480 tests / 99% coverage).
 
 ## Repo state
 
-- `master` clean, test count **480** (469 pass + 11 skipped env-gated).
+- `master` clean at `de593f6` (PR #133 — PRDs refresh post-#100/#101/#102/#116/#117).
+- Test count **480** on master (469 pass + 11 skipped env-gated). PR #134 will ratchet to **491** once merged (10 new RENEW/portal regression tests).
 - ADR count: **17** (ADR-0017 documents `renew_request` sandbox gap).
 - Overall coverage: **99%** (`pytest --cov=src/agora`).
 - LLM routing baseline: **top-1 1.0000 / mean Spearman 1.0000** (40 scenarios, gemini-2.5-flash).
@@ -13,10 +14,16 @@
 
 | PR | Branch | Title | Status |
 |----|--------|-------|--------|
-| #128 | `chore/next-session-post-127` | chore: update NEXT_SESSION.md after PRs #123-#127 | Merged |
-| #129 | `feat/app-eval-coverage` | test(coverage): app.py 94%→100%, evals/routing.py 99%→100% + LLM baseline refresh | Merged |
-| #130 | `feat/demos-coverage` | test(demos): cover happy_path.py 0% → 100% via smoke test + pragma demo guards | Merged |
-| #131 | `feat/adk-coverage` | test(adk): cover routing_llm_adk._invoke_model body 72% → 100% | Merged |
+| #133 | `docs/prd-refresh-2026-05-07` | docs(prd): refresh all 7 PRDs against code (post #100/#101/#102/#116/#117) | Merged |
+| #134 | `fix/renew-portal-blockers` | fix(renew,portal): close three ship-blockers from post-#117 strict review | Open |
+
+### PR #134 substance (review checklist)
+
+Three real bugs caught by an advisor strict-grade pass over the RENEW + portal slice:
+
+1. **`extension_days` validation moved into `renew_forward`** — single chokepoint serving JSON (`RenewBody`) + HTMX (`Form`). Previously `int(...) or DEFAULT` rewrote `0 → 28` silently and let `-5` through truthy (past due date). Now explicit None-fallback + `1 <= extension_days <= 180` raises ValueError.
+2. **`_portal_due_date` made compensator-aware** — walks events in `seq` order maintaining a `renew_stack`; `forward.renew` pushes, `compensator.renew` pops. Previously a cancelled renewal left the portal showing the rolled-back due date.
+3. **`portal_saga_detail` patron-id 404 dropped** — saga UUID is now explicitly the privacy boundary; `patron_id` is a UX label. The 404 was false reassurance because `portal_requests` accepts arbitrary patron-ids and lists their saga UUIDs anyway. PRD-05 § Patron portal documents the prototype-grade posture.
 
 ## What to do at session start
 
@@ -53,6 +60,9 @@ git checkout master && git pull
    `pytest tests/test_ncip_http_smoke.py -v`
 2. **WorldCat holdings lookup** — no freely accessible union holdings catalog. Revisit when institutional OCLC access materialises.
 
+### Code-only backlog (advisor leftovers from #134 review)
+- **`portal_requests` 200-row Python-side filter** — patron with sagas outside the table-wide most-recent-200 sees an empty list (false negative). Fix: denormalised `patron_id` column + index, or paginate. Self-contained PR. Not urgent — prototype scale.
+
 ### Revisit later
 - FOLIO community sandbox: folio-snapshot.dev.folio.org
 - Index Data / OLE: info@indexdata.com, FOLIO Slack #reshare
@@ -68,6 +78,8 @@ git checkout master && git pull
 - **ApprovalBody / CompensateBody require `actor` + `rationale`** — JSON approve/compensate tests omitting these get 422.
 - **RENEW uses `state_after = RECEIVED`** (same as current state). The coordinator has no forward-progress guard — intentional for renewal.
 - **Portal uses `ev.step.value` string comparison** in `_portal_due_date` — avoids import issues across feature branches.
+- **`_portal_due_date` is compensator-aware (post-#134)** — walks events maintaining a `renew_stack` so `forward.renew` push + `compensator.renew` pop restore the prior due date. Don't refactor back to last-write-wins.
+- **Portal privacy posture (post-#134): saga UUID is the secret token.** `patron_id` query param is a UX label, not an access gate. Don't add patron-id 404s without also gating `/portal/requests` (which can't be gated without auth).
 - **`SagaEvent` requires `id: int` and `iso_message_id: str | None`** when constructed directly in unit tests (PR #129).
 - **Always branch + PR, never commit directly to master.**
 - **GCP ADC for LLM eval refresh:** needs all of `GOOGLE_GENAI_USE_VERTEXAI=true` + `GOOGLE_CLOUD_PROJECT` + `GOOGLE_CLOUD_LOCATION=us-central1` + `AGORA_ROUTING_LLM_ENABLED=1` + `AGORA_ROUTING_LLM_MODEL=gemini-2.5-flash` + `AGORA_ROUTING_LLM_TIMEOUT_SECS=30`. Without `GOOGLE_GENAI_USE_VERTEXAI=true` SDK silently falls back to API-key auth and 401s every call.
