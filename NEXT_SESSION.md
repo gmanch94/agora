@@ -1,11 +1,11 @@
 # Next session resume note
 
-**Last updated:** 2026-05-07 (PR #133 merged, PR #134 open; master post-#133 at 480 tests / 99% coverage).
+**Last updated:** 2026-05-07 (PRs #133 + #134 merged; master at 491 tests / 99% coverage).
 
 ## Repo state
 
-- `master` clean at `de593f6` (PR #133 — PRDs refresh post-#100/#101/#102/#116/#117).
-- Test count **480** on master (469 pass + 11 skipped env-gated). PR #134 will ratchet to **491** once merged (10 new RENEW/portal regression tests).
+- `master` clean at `9bc6a32` (PR #134 — RENEW/portal blocker fixes).
+- Test count **491** on master (480 pass + 11 skipped env-gated). 10 new RENEW/portal regression tests landed in #134.
 - ADR count: **17** (ADR-0017 documents `renew_request` sandbox gap).
 - Overall coverage: **99%** (`pytest --cov=src/agora`).
 - LLM routing baseline: **top-1 1.0000 / mean Spearman 1.0000** (40 scenarios, gemini-2.5-flash).
@@ -15,9 +15,9 @@
 | PR | Branch | Title | Status |
 |----|--------|-------|--------|
 | #133 | `docs/prd-refresh-2026-05-07` | docs(prd): refresh all 7 PRDs against code (post #100/#101/#102/#116/#117) | Merged |
-| #134 | `fix/renew-portal-blockers` | fix(renew,portal): close three ship-blockers from post-#117 strict review | Open |
+| #134 | `fix/renew-portal-blockers` | fix(renew,portal): close three ship-blockers from post-#117 strict review | Merged |
 
-### PR #134 substance (review checklist)
+### PR #134 substance (now landed on master)
 
 Three real bugs caught by an advisor strict-grade pass over the RENEW + portal slice:
 
@@ -31,7 +31,7 @@ Three real bugs caught by an advisor strict-grade pass over the RENEW + portal s
 git checkout master && git pull
 
 # Verify
-.venv/Scripts/python.exe -m pytest tests/ -q  # expect 480 pass, 11 skip
+.venv/Scripts/python.exe -m pytest tests/ -q  # expect 491 pass, 11 skip
 .venv/Scripts/python.exe -m ruff check src tests      # clean
 .venv/Scripts/python.exe -m mypy --strict             # clean
 ```
