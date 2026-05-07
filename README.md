@@ -33,7 +33,7 @@ reimplement them.
 ## Status
 
 **Working prototype.** End-to-end demo runs via `make demo`
-(`agora.demos.happy_path`). **502 tests** green (+6 postgres-only in CI).
+(`agora.demos.happy_path`). **503 tests** green (+6 postgres-only in CI).
 Saga + outbox + APPROVING-via-outbox (ADR-0012), multi-worker outbox
 (`agora.demos.happy_path`). **503 tests** green (+6 postgres-only in CI).Saga + outbox + APPROVING-via-outbox (ADR-0012), multi-worker outbox
 safety (`SELECT … FOR UPDATE SKIP LOCKED`), TrackingAgent three-tier
