@@ -441,7 +441,7 @@ def slide_hypothesis(c: rl_canvas.Canvas, pn: int, total: int) -> None:
     c.drawString(MARGIN_L, y, "Explicitly out of scope:")
     y -= 16
     for item in [
-        "Production deployment, FedRAMP authorization, real billing, patron-facing UI",
+        "Production deployment, FedRAMP authorization (ADR-0007), real billing, patron submission UI",
     ]:
         y = bullet(c, item, y, size=11, dot_color=MIDGRAY, dot="-")
 
@@ -561,7 +561,7 @@ def slide_agents(c: rl_canvas.Canvas, pn: int, total: int) -> None:
          "DOI -> CrossRef (bib identity) -> SRU (holdings). Consortium fallback when SRU has no 852 holdings.",
          BLUE),
         ("RoutingAgent",
-         "Ranks suppliers: rules-based weighted sum + optional LLM tie-breaker (Gemini Flash; 19/20 top-1 on eval).",
+         "Ranks suppliers: rules-based weighted sum + optional LLM tie-breaker (Gemini Flash; 40/40 top-1 on 40-scenario eval, rules-only 37/40).",
          NAVY),
         ("PolicyAgent",
          "CONTU copyright check, patron eligibility, hard/soft flag matrix.",
@@ -777,10 +777,12 @@ def slide_shipped(c: rl_canvas.Canvas, pn: int, total: int) -> None:
     y -= 8
     left_items = [
         "make demo — happy path through MockReShareClient",
-        "Staff console: saga list, detail, browser, approve, reject, compensate",
+        "Staff console: list / detail / approve / reject / compensate / override / renew",
         "DiscoveryAgent wired: POST /sagas/{id}/discover",
         "Override endpoint: DISPUTED -> CANCELLED / UNFILLED",
-        "RoutingAgent LLM tie-breaker: 19/20 top-1 (20-scenario eval)",
+        "RENEW step: extends due_at on RECEIVED (PR #116)",
+        "Read-only patron portal at /portal/* (PR #117)",
+        "RoutingAgent LLM tie-breaker: 40/40 top-1 (40-scenario eval)",
         "3-tier overdue scanner from FastAPI lifespan",
         "NCIP fan-out on RECEIVE and RETURN (fire-and-forget)",
     ]
@@ -798,13 +800,14 @@ def slide_shipped(c: rl_canvas.Canvas, pn: int, total: int) -> None:
     y_right -= 8
 
     right_items = [
-        "401 tests: unit + property (Hypothesis) + e2e",
-        "+6 postgres-only in CI (Alembic + ORM parity)",
+        "503 tests: 492 pass + 11 skip (env-gated); 99% coverage",
+        "Postgres CI: Alembic round-trip + ORM parity",
         "Multi-worker outbox: SKIP LOCKED + claim lease",
         "CI: audit / triple-gate / postgres / routing-eval floor",
-        "16 ADRs, 7 PRDs, runbook, architecture diagrams",
-        "mypy --strict: src/ AND tests/ (76 source files)",
+        "17 ADRs, 7 PRDs, runbook, productionization, architecture",
+        "mypy --strict: src/ AND tests/",
         "Idempotency: ULID keys, UNIQUE on ledger + outbox",
+        "Security audit: bandit 0 / pip-audit 0 / detect-secrets 0",
     ]
     for item in right_items:
         _draw_check(c, rx, y_right + 1, TEAL, size=10)
@@ -819,11 +822,11 @@ def slide_shipped(c: rl_canvas.Canvas, pn: int, total: int) -> None:
 
     # Stat badges at bottom
     stats = [
-        ("401", "Tests collected"),
-        ("390", "Passing locally"),
-        ("16",  "ADRs"),
+        ("503", "Tests collected"),
+        ("492", "Passing"),
+        ("17",  "ADRs"),
         ("7",   "PRDs"),
-        ("4",   "CI workflows"),
+        ("99%", "Coverage"),
     ]
     bx = MARGIN_L
     for val, label in stats:
@@ -888,7 +891,7 @@ def slide_decisions(c: rl_canvas.Canvas, pn: int, total: int) -> None:
     c.setFont("Helvetica", 10)
     set_fill(c, MIDGRAY)
     c.drawString(MARGIN_L, y_bottom,
-        "Full ADR record: docs/adr/0001-0016. Each covers Status / Context / Decision / Consequences.")
+        "Full ADR record: docs/adr/0001-0017. Each covers Status / Context / Decision / Consequences.")
 
 
 def slide_gaps(c: rl_canvas.Canvas, pn: int, total: int) -> None:
@@ -904,14 +907,17 @@ def slide_gaps(c: rl_canvas.Canvas, pn: int, total: int) -> None:
     y -= 8
     sandbox = [
         ("NCIP live probe",
-         "HttpNcipClient source-review-only; test harness ready (test_ncip_http_smoke.py).",
+         "HttpNcipClient source-reviewed; smoke harness ready (test_ncip_http_smoke.py).",
          "Need real FOLIO tenant with mod-ncip"),
-        ("Recall compensator",
-         "No requester-initiated recall action in mod-rs Actions.groovy.",
-         "ADR needed: ISO 18626 Cancel via 'message' vs manualClose"),
-        ("ReShare borrower-tenant",
+        ("Recall compensator (manualClose)",
+         "ADR-0016 elects manualClose for SHIP compensator; live two-tenant test pending.",
+         "Need both Requester + Supplier tenants in same sandbox"),
+        ("ReShare borrower-tenant flow",
          "Requester-side REQ_* state flow unconfirmed on real borrower tenant.",
-         "Probe confirmed Responder side only"),
+         "2026-05-06 probe verified Responder side only"),
+        ("Renew wire path",
+         "ADR-0017: mod-rs action for borrower-initiated renewal not confirmed.",
+         "Mock succeeds; HTTP client raises pending sandbox verification"),
     ]
     for title, detail, blocker in sandbox:
         c.setFont("Helvetica-Bold", 10)
@@ -954,11 +960,11 @@ def slide_gaps(c: rl_canvas.Canvas, pn: int, total: int) -> None:
     cy -= 20
     for item in [
         "Production deployment",
-        "FedRAMP authorization",
+        "FedRAMP authorization (ADR-0007)",
         "Real money / billing",
-        "Patron-facing UI",
+        "Patron submission UI (portal is read-only)",
         "Multi-region / HA topology",
-        "Z39.50 binary protocol",
+        "Z39.50 binary protocol (ADR-0006)",
     ]:
         c.setFont("Helvetica", 10)
         set_fill(c, DARKTEXT)
@@ -982,7 +988,7 @@ def slide_summary(c: rl_canvas.Canvas, pn: int, total: int) -> None:
         "Idempotency: replay any message N times, observable effect once (ULID UNIQUE on ledger + outbox)",
         "Agent reasoning traces in the staff console drive transparent approvals",
         "Multi-worker outbox safety on Postgres (SKIP LOCKED + orphan lease recovery)",
-        "LLM tie-breaker improves routing accuracy: 19/20 top-1 vs rules-only 16/20",
+        "LLM tie-breaker improves routing accuracy: 40/40 top-1 vs rules-only 37/40 (92.5%)",
     ]
     for item in proven:
         y = checkmark(c, item, y, size=11)
