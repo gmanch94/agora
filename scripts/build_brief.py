@@ -358,8 +358,8 @@ def build() -> None:
              "it over REST. No XSD reimplementation."),
             ("LLM tie-breaking (optional)",
              "RoutingAgent uses deterministic rules by default. Opt-in Gemini "
-             "Flash adapter resolves near-ties. 95% top-1 accuracy on 20 "
-             "labeled scenarios."),
+             "Flash adapter resolves near-ties. 100% top-1 accuracy on 40 "
+             "labeled scenarios (rules-only baseline: 92.5%)."),
         ],
         col_widths_in=[2.35, 4.25],
     ))
@@ -386,9 +386,13 @@ def build() -> None:
             ("LLM routing tie-breaker (Gemini 2.5 Flash via Vertex AI)",
              "Implemented"),
             ("Alembic migrations on real Postgres + CI gate", "Implemented"),
-            ("401 automated tests (unit + property-based + end-to-end)",
-             "Green"),
-            ("16 Architecture Decision Records", "Written"),
+            ("Read-only patron portal (/portal/*) &mdash; saga browse + "
+             "status by patron_id", "Implemented"),
+            ("RENEW saga step (extends due_at on RECEIVED) + JSON / HTMX "
+             "endpoints", "Implemented"),
+            ("503 automated tests (unit + property-based + end-to-end; 492 "
+             "pass + 11 skipped env-gated)", "Green"),
+            ("17 Architecture Decision Records", "Written"),
         ],
         col_widths_in=[4.85, 1.75],
         status_col=1,
@@ -399,15 +403,19 @@ def build() -> None:
     story.append(make_table(
         rows=[
             ("Item", "Blocker"),
-            ("Real ReShare wire (live mod-rs tenant)",
-             "Sandbox credentials needed"),
-            ("Real NCIP HTTP/SOAP client", "Same blocker"),
-            ("WorldCat holdings lookup", "OCLC sandbox key needed"),
+            ("ReShare two-tenant probe (Requester-side + recall path)",
+             "Responder side verified 2026-05-06; Requester + ADR-0016 "
+             "manualClose still pending"),
+            ("Live NCIP probe against real ILS",
+             "HttpNcipClient shipped (source-reviewed); needs FOLIO mod-ncip "
+             "tenant"),
+            ("WorldCat holdings lookup", "OCLC v2 paid subscription required"),
             ("FedRAMP authorization",
-             "Explicitly deferred &mdash; research prototype scope"),
-            ("Patron-facing UI", "Out of scope for prototype"),
+             "Explicitly deferred &mdash; research prototype scope (ADR-0007)"),
+            ("Patron submission UI",
+             "Read-only portal shipped (#117); submission form deferred"),
         ],
-        col_widths_in=[3.35, 3.25],
+        col_widths_in=[3.05, 3.55],
         status_col=1,
     ))
 
@@ -426,8 +434,9 @@ def build() -> None:
     ))
     story.append(labeled_bullet(
         "Routing eval harness:",
-        "95% top-1 accuracy, 0.89 mean Spearman rank correlation against 20 "
-        "hand-labeled ILL scenarios using Gemini 2.5 Flash.",
+        "100% top-1 accuracy, 1.00 mean Spearman against 40 hand-labeled "
+        "scenarios (Gemini 2.5 Flash); rules-only baseline 92.5% top-1, "
+        "0.84 Spearman.",
     ))
     story.append(labeled_bullet(
         "Postgres CI:",
@@ -463,20 +472,21 @@ def build() -> None:
     # ── Next Steps ─────────────────────────────────────────────────────────
     story.extend(section("Next Steps to Production Path"))
     next_steps = [
-        ("Secure a ReShare sandbox tenant",
-         "Unblocks the three remaining wired integrations: ReShare wire, "
-         "NCIP client, WorldCat."),
+        ("Close ReShare two-tenant verification",
+         "Probe Requester-side flow + ADR-0016 manualClose recall path "
+         "against a live two-tenant ReShare deployment."),
         ("Pilot with one consortium member",
          "Validate routing quality against a real supplier population; "
          "collect approval latency data."),
-        ("Auth layer",
-         "HTTP Basic is in place; swap for institution SSO per ADR-0007 "
-         "path."),
-        ("FedRAMP readiness review",
-         "Architecture is alignment-noted; controls not yet implemented."),
-        ("Patron-facing UI",
-         "Staff console is complete; patron submission form is out of scope "
-         "for prototype but well-defined in PRD-05."),
+        ("Auth + RBAC",
+         "HTTP Basic is in place; swap for institution SSO + role separation "
+         "(viewer / approver / admin) before pilot."),
+        ("Patron PII retention policy",
+         "ALA / state-statute compliance: documented retention window + "
+         "scrub job + DSAR flow before patron data goes live."),
+        ("Patron submission form",
+         "Read-only portal shipped (#117); add submission flow per PRD-05 "
+         "to close the patron-facing surface."),
     ]
     for i, (label, text) in enumerate(next_steps, 1):
         story.append(labeled_bullet(f"{i}.  {label}:", text))
@@ -485,9 +495,9 @@ def build() -> None:
     story.append(HRFlowable(width="100%", thickness=0.5, color=MUTED,
                              spaceBefore=14, spaceAfter=4))
     story.append(Paragraph(
-        "Full technical documentation: docs/ &mdash; PRDs (7), ADRs (16), "
-        "architecture diagrams, runbook, solution design. "
-        "Source code: src/agora/. 401 automated tests. "
+        "Full technical documentation: docs/ &mdash; PRDs (7), ADRs (17), "
+        "architecture diagrams, runbook, solution design, productionization. "
+        "Source code: src/agora/. 503 automated tests. "
         "Repository: github.com/gmanch94/agora.",
         FOOTER_STYLE,
     ))
