@@ -16,6 +16,56 @@ from pydantic import BaseModel, Field
 from agora.models.candidate import HolderCandidate
 from agora.models.request import IllRequest
 
+# Audit 2026-05-09 #15: ``extras`` was previously ``dict[str, Any]``
+# which let attacker-controlled content land in saga step inputs —
+# template-fragment ``chosen_supplier`` strings into Jinja, surprise
+# ``loan_period_days`` integers into timedelta math, etc. Tight pydantic
+# typing here is the load-bearing primary defense; the typed model also
+# documents which extras the API actually consumes (the unconstrained
+# dict was a forever-grow surface).
+
+
+class StepExtras(BaseModel):
+    """Strict shape for ApprovalBody / CompensateBody ``extras``.
+
+    Every saga step that takes input from the request body's ``extras``
+    is enumerated here. Unknown keys are rejected by ``extra="forbid"``
+    so a future addition gets a typed field rather than slipping in via
+    ``dict[str, Any]``. All values are validated for shape AND length —
+    string fields use a tight regex to refuse control characters /
+    template fragments / path-traversal segments at the API boundary.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    chosen_supplier: str | None = Field(
+        default=None,
+        max_length=64,
+        # ISIL-symbol-friendly: alphanumerics + dash + dot + slash
+        # (some symbols use "US-CST/Y" style). Refuses HTML / quotes /
+        # template syntax / path separators.
+        pattern=r"^[A-Za-z0-9.\-/]{1,64}$",
+        description="ISIL agency symbol picked by ROUTE forward.",
+    )
+    reshare_id: str | None = Field(
+        default=None,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9_-]{1,128}$",
+        description="Supplier-assigned patron-request id from ReShare.",
+    )
+    loan_period_days: int | None = Field(
+        default=None,
+        ge=1,
+        le=365,
+        description="Loan window for SHIP forward; bounded to a year.",
+    )
+    extension_days: int | None = Field(
+        default=None,
+        ge=1,
+        le=180,
+        description="Renewal extension; matches RenewBody.extension_days.",
+    )
+
 
 class HealthResponse(BaseModel):
     status: str
@@ -68,10 +118,12 @@ class ApprovalBody(BaseModel):
     when they cannot be derived from prior committed forward events.
     """
 
-    step: str = Field(description="Saga step the approval applies to")
-    actor: str = Field(description="Staff identifier (e.g. 'staff:alice@org')")
-    rationale: str
-    extras: dict[str, Any] | None = Field(
+    step: str = Field(max_length=32, description="Saga step the approval applies to")
+    actor: str = Field(
+        max_length=64, description="Staff identifier (e.g. 'staff:alice@org')"
+    )
+    rationale: str = Field(max_length=1024)
+    extras: StepExtras | None = Field(
         default=None,
         description=(
             "Step-specific inputs. Merged on top of values derived from prior "
@@ -82,18 +134,18 @@ class ApprovalBody(BaseModel):
 
 
 class RejectionBody(BaseModel):
-    step: str
-    actor: str
-    rationale: str
+    step: str = Field(max_length=32)
+    actor: str = Field(max_length=64)
+    rationale: str = Field(max_length=1024)
 
 
 class CompensateBody(BaseModel):
     """Staff-initiated compensator invocation."""
 
-    step: str
-    actor: str
-    rationale: str
-    extras: dict[str, Any] | None = Field(
+    step: str = Field(max_length=32)
+    actor: str = Field(max_length=64)
+    rationale: str = Field(max_length=1024)
+    extras: StepExtras | None = Field(
         default=None,
         description="Optional override for derived extras (rare).",
     )
@@ -117,10 +169,14 @@ class OverrideBody(BaseModel):
     """
 
     target_state: str = Field(
-        description="Terminal state to force the saga into ('cancelled' or 'unfilled')."
+        max_length=32,
+        description="Terminal state to force the saga into ('cancelled' or 'unfilled').",
     )
-    actor: str = Field(description="Staff identifier (e.g. 'staff:alice@org')")
-    rationale: str = Field(description="Mandatory reason recorded on the ledger event.")
+    actor: str = Field(max_length=64, description="Staff identifier (e.g. 'staff:alice@org')")
+    rationale: str = Field(
+        max_length=1024,
+        description="Mandatory reason recorded on the ledger event.",
+    )
 
 
 class RenewBody(BaseModel):
@@ -131,8 +187,8 @@ class RenewBody(BaseModel):
     at RECEIVED; the new due date lands on the ledger event payload.
     """
 
-    actor: str = Field(description="Staff or patron identifier")
-    rationale: str
+    actor: str = Field(max_length=64, description="Staff or patron identifier")
+    rationale: str = Field(max_length=1024)
     extension_days: int = Field(
         default=28,
         ge=1,
@@ -150,6 +206,7 @@ class DiscoverBody(BaseModel):
 
     actor: str = Field(
         default="agent:discovery",
+        max_length=64,
         description="Actor recorded on the OBSERVATION event.",
     )
 

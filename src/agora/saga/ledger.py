@@ -40,6 +40,21 @@ class TerminalStateError(SagaLedgerError):
     """Raised when attempting to append to a terminal saga."""
 
 
+class IdempotencyConflictError(SagaLedgerError):
+    """Raised when an idempotency-key collision points at a different event.
+
+    Two distinct intents must never share an idempotency key. The
+    UNIQUE constraint on ``saga_event.idempotency_key`` enforces that
+    physically; this error catches the soft-replay path (``append``
+    looks up the existing row on IntegrityError) and verifies the
+    existing row's identity (saga_id, step, kind) matches what the
+    caller was trying to write. A mismatch is a contract violation —
+    either a bug in idempotency-key generation or an attempt to slip
+    a different event past the UNIQUE constraint via key reuse.
+    Audit 2026-05-09 #22.
+    """
+
+
 class SagaLedger:
     """Thin façade over saga + saga_event tables.
 
@@ -134,10 +149,28 @@ class SagaLedger:
         except IntegrityError:
             # Either idempotency_key collision (benign replay) or
             # (saga_id, seq) collision (concurrent writer). Look up by
-            # idempotency key — if found, treat as replay and return
-            # the existing row. Otherwise re-raise.
+            # idempotency key — if found, validate the existing row
+            # describes the SAME event we tried to write. Audit
+            # 2026-05-09 #22: silently returning a different event
+            # (different saga_id / step / kind) on key reuse would lie
+            # to the caller about what's been committed. The legitimate
+            # replay shape — same key, same intent — passes the check;
+            # an engineering bug or attacker-induced reuse raises hard.
             existing = await self._find_by_idempotency(event.idempotency_key)
             if existing is not None:
+                if (
+                    existing.saga_id != event.saga_id
+                    or existing.step != event.step
+                    or existing.kind != event.kind
+                ):
+                    raise IdempotencyConflictError(
+                        f"idempotency key {event.idempotency_key!r} reused for "
+                        f"different event: existing "
+                        f"(saga={existing.saga_id}, step={existing.step.value}, "
+                        f"kind={existing.kind.value}) vs new "
+                        f"(saga={event.saga_id}, step={event.step.value}, "
+                        f"kind={event.kind.value})"
+                    ) from None
                 return existing
             raise
 

@@ -22,6 +22,16 @@ class RequestType(str, Enum):
     COPY = "copy"
 
 
+# Audit 2026-05-09 #14: every patron-controllable string field must be
+# bounded at the model layer so a malicious 10MB payload does not land
+# in saga.request_payload (JSONB / JSON column with no DB-level CHECK
+# constraint). Caps reflect realistic library-data shapes — long titles
+# and DOIs still fit; pathological inputs do not. The DB-level CHECK on
+# ``pg_column_size(request_payload) < 64*1024`` is a defense-in-depth
+# follow-up for Postgres deployments; the field-level caps below are
+# the load-bearing primary defense at the API boundary.
+
+
 class PatronRef(BaseModel):
     """Pseudonymous reference to a patron; resolves elsewhere.
 
@@ -32,8 +42,8 @@ class PatronRef(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    library_symbol: str
-    patron_id: str
+    library_symbol: str = Field(max_length=32)
+    patron_id: str = Field(max_length=64)
 
 
 class LibraryRef(BaseModel):
@@ -41,27 +51,32 @@ class LibraryRef(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    symbol: str
-    name: str | None = None
+    symbol: str = Field(max_length=32)
+    name: str | None = Field(default=None, max_length=256)
 
 
 class ItemMetadata(BaseModel):
     """Bibliographic identity of the requested item."""
 
-    title: str
-    author: str | None = None
-    isbn: str | None = None
-    issn: str | None = None
-    doi: str | None = None
-    oclc_number: str | None = None
-    year: int | None = None
-    edition: str | None = None
-    publisher: str | None = None
-    article_title: str | None = None
-    pages: str | None = None
-    item_kind: str = Field(default="book", description="book|article|chapter|other")
+    title: str = Field(max_length=1024)
+    author: str | None = Field(default=None, max_length=256)
+    isbn: str | None = Field(default=None, max_length=32)
+    issn: str | None = Field(default=None, max_length=32)
+    doi: str | None = Field(default=None, max_length=256)
+    oclc_number: str | None = Field(default=None, max_length=32)
+    year: int | None = Field(default=None, ge=0, le=9999)
+    edition: str | None = Field(default=None, max_length=128)
+    publisher: str | None = Field(default=None, max_length=256)
+    article_title: str | None = Field(default=None, max_length=1024)
+    pages: str | None = Field(default=None, max_length=64)
+    item_kind: str = Field(
+        default="book",
+        max_length=32,
+        description="book|article|chapter|other",
+    )
     item_barcode: str | None = Field(
         default=None,
+        max_length=64,
         description=(
             "Physical item barcode from the supplying library's ILS. "
             "When present, used as item_id in NCIP check_out/check_in calls "
@@ -73,8 +88,8 @@ class ItemMetadata(BaseModel):
 class Citation(BaseModel):
     """Original citation context preserved for replay/audit."""
 
-    raw: str
-    parsed_from: str = Field(description="openurl|freetext|identifier")
+    raw: str = Field(max_length=4096)
+    parsed_from: str = Field(max_length=32, description="openurl|freetext|identifier")
     parsed_at: datetime
 
 
@@ -90,5 +105,5 @@ class IllRequest(BaseModel):
     item: ItemMetadata
     citation: Citation | None = None
     needed_by: datetime | None = None
-    notes: str | None = None
+    notes: str | None = Field(default=None, max_length=4096)
     created_at: datetime = Field(default_factory=lambda: datetime.now().astimezone())

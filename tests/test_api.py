@@ -357,6 +357,189 @@ async def test_compensate_without_committed_forward_returns_409(
     assert "no committed forward" in r.json()["detail"]
 
 
+# ---------------------------------------------------------------------
+# Audit 2026-05-09 batch 2 — input validation hardening
+# ---------------------------------------------------------------------
+
+
+async def test_submit_request_ignores_caller_supplied_request_id(
+    client: AsyncClient,
+) -> None:
+    """Audit #20: caller cannot pin saga URLs by pre-seeding request_id.
+
+    Two requests with the same request_id from the wire must produce
+    two distinct sagas with two distinct request_ids — the server
+    silently overwrites whatever the client sent.
+    """
+    pinned = "00000000-0000-0000-0000-000000000001"
+    payload = _request_payload()
+    payload["request_id"] = pinned
+
+    r1 = await client.post("/requests", json=payload)
+    r2 = await client.post("/requests", json=payload)
+    assert r1.status_code == 201, r1.text
+    assert r2.status_code == 201, r2.text
+
+    body1 = r1.json()
+    body2 = r2.json()
+    # Both succeed because the server stamped fresh ids.
+    assert body1["saga_id"] != body2["saga_id"]
+    assert body1["request"]["request_id"] != pinned
+    assert body2["request"]["request_id"] != pinned
+    assert body1["request"]["request_id"] != body2["request"]["request_id"]
+
+
+async def test_approve_extras_rejects_unknown_keys(client: AsyncClient) -> None:
+    """Audit #15: unknown keys in ``extras`` are rejected at the API boundary.
+
+    StepExtras has ``extra='forbid'`` so a typo or attacker-injected
+    key returns a 422 instead of being silently merged into the saga
+    step input dict.
+    """
+    saga_id = (await client.post("/requests", json=_request_payload())).json()[
+        "saga_id"
+    ]
+    r = await client.post(
+        f"/sagas/{saga_id}/approve",
+        json={
+            "step": "route",
+            "actor": "staff:test",
+            "rationale": "ok",
+            "extras": {"chosen_supplier": "MEMBER1", "rogue_field": "evil"},
+        },
+    )
+    assert r.status_code == 422, r.text
+
+
+async def test_approve_extras_rejects_html_in_supplier(client: AsyncClient) -> None:
+    """Audit #15: chosen_supplier rejects characters that could XSS templates.
+
+    Pre-fix a payload like ``</script><script>alert(1)</script>`` would
+    flow into ``payload['supplier_symbol']`` and into staff-console
+    rationale strings. The regex anchors prevent angle brackets and
+    quotes from making it past the API boundary.
+    """
+    saga_id = (await client.post("/requests", json=_request_payload())).json()[
+        "saga_id"
+    ]
+    r = await client.post(
+        f"/sagas/{saga_id}/approve",
+        json={
+            "step": "route",
+            "actor": "staff:test",
+            "rationale": "ok",
+            "extras": {
+                "chosen_supplier": "</script><script>alert(1)</script>",
+            },
+        },
+    )
+    assert r.status_code == 422, r.text
+
+
+async def test_approve_extras_rejects_huge_loan_period(client: AsyncClient) -> None:
+    """Audit #15: loan_period_days bounded at 365 to refuse millennium-loans."""
+    saga_id = (await client.post("/requests", json=_request_payload())).json()[
+        "saga_id"
+    ]
+    r = await client.post(
+        f"/sagas/{saga_id}/approve",
+        json={
+            "step": "route",
+            "actor": "staff:test",
+            "rationale": "ok",
+            "extras": {
+                "chosen_supplier": "MEMBER1",
+                "loan_period_days": 999_999_999,
+            },
+        },
+    )
+    assert r.status_code == 422, r.text
+
+
+async def test_reject_terminal_saga_returns_409(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    """Audit #30: rejecting a terminal saga is meaningless and returns 409.
+
+    Drive the saga: ROUTE forward → APPROVE forward (lands in APPROVING)
+    → drain outbox to advance to APPROVED → compensate APPROVE (lands
+    in CANCELLED, terminal). Then attempt to reject SHIP — refused.
+    """
+    saga_id = (await client.post("/requests", json=_request_payload())).json()[
+        "saga_id"
+    ]
+
+    r = await client.post(
+        f"/sagas/{saga_id}/approve",
+        json={
+            "step": "route",
+            "actor": "staff:test",
+            "rationale": "ok",
+            "extras": {"chosen_supplier": "MEMBER1"},
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    r = await client.post(
+        f"/sagas/{saga_id}/approve",
+        json={"step": "approve", "actor": "staff:test", "rationale": "ok"},
+    )
+    assert r.status_code == 200, r.text
+    await _drive_outbox_worker(app)
+
+    r = await client.post(
+        f"/sagas/{saga_id}/compensate",
+        json={"step": "approve", "actor": "staff:test", "rationale": "patron withdrew"},
+    )
+    assert r.status_code == 200, r.text
+    detail = (await client.get(f"/sagas/{saga_id}")).json()
+    assert detail["saga"]["current_state"] == "cancelled"
+
+    r = await client.post(
+        f"/sagas/{saga_id}/reject",
+        json={"step": "ship", "actor": "staff:test", "rationale": "n/a"},
+    )
+    assert r.status_code == 409
+    assert "terminal" in r.json()["detail"]
+
+
+async def test_reject_after_committed_forward_returns_409(
+    client: AsyncClient,
+) -> None:
+    """Audit #30: rejecting a step that already committed forward is refused."""
+    saga_id = (await client.post("/requests", json=_request_payload())).json()[
+        "saga_id"
+    ]
+    r = await client.post(
+        f"/sagas/{saga_id}/approve",
+        json={
+            "step": "route",
+            "actor": "staff:test",
+            "rationale": "ok",
+            "extras": {"chosen_supplier": "MEMBER1"},
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    # ROUTE has committed; rejecting it now is incoherent.
+    r = await client.post(
+        f"/sagas/{saga_id}/reject",
+        json={"step": "route", "actor": "staff:test", "rationale": "changed mind"},
+    )
+    assert r.status_code == 409
+    assert "already committed" in r.json()["detail"]
+
+
+async def test_portal_requests_rejects_malformed_patron_id(
+    client: AsyncClient,
+) -> None:
+    """Audit #17: patron_id with HTML / control chars returns a 422."""
+    r = await client.get("/portal/requests", params={"patron_id": "<script>x"})
+    assert r.status_code == 422
+    r = await client.get("/portal/requests", params={"patron_id": "..\x00"})
+    assert r.status_code == 422
+
+
 async def test_compensate_idempotent_on_repeat_call(
     app: FastAPI, client: AsyncClient
 ) -> None:

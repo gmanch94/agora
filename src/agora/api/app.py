@@ -49,6 +49,7 @@ from agora.api.schemas import (
     SagaDetail,
     SagaEventOut,
     SagaSummary,
+    StepExtras,
     StepRunResponse,
     SubmitRequestResponse,
 )
@@ -225,6 +226,14 @@ def _patron_event_label(ev: SagaEvent) -> str | None:
     return _PATRON_EVENT_LABELS.get((ev.kind.value, ev.step.value))
 
 
+# Audit 2026-05-09 #19: ceilings for the number of candidates /
+# diagnostics persisted from a single ``/sagas/{id}/discover`` run.
+# SRU responses can exceed 20 records and CrossRef is configurable;
+# the ceilings here are the load-bearing defense at the saga ledger.
+_DISCOVER_MAX_CANDIDATES = 50
+_DISCOVER_MAX_DIAGNOSTICS = 50
+
+
 def _parse_step(name: str) -> StepName:
     try:
         return StepName(name)
@@ -234,7 +243,7 @@ def _parse_step(name: str) -> StepName:
 
 def _derive_extras(
     events: list[SagaEvent],
-    override: dict[str, Any] | None,
+    override: StepExtras | dict[str, Any] | None,
 ) -> dict[str, Any]:
     """Reconstruct step-input extras from prior committed events.
 
@@ -284,11 +293,41 @@ def _derive_extras(
             elif ev.step == StepName.APPROVE:
                 extras.pop("reshare_id", None)
 
-    if override:
-        for k, v in override.items():
+    if override is not None:
+        # Accept either the typed StepExtras (preferred — API path) or
+        # a plain dict (used by HTML form endpoints that build the
+        # override map ad-hoc). Audit 2026-05-09 #15: typed StepExtras
+        # rejects unknown keys + invalid shapes at the boundary.
+        if isinstance(override, StepExtras):
+            override_dict = override.model_dump(exclude_none=True)
+        else:
+            override_dict = override
+        for k, v in override_dict.items():
             if v is not None:
                 extras[k] = v
     return extras
+
+
+async def _step_already_committed_forward(
+    ledger: SagaLedger, saga_id: UUID, step: StepName
+) -> bool:
+    """Return True iff ``step`` already has a committed FORWARD event.
+
+    Used by ``/reject`` to refuse rejections of steps the saga has
+    already passed (audit 2026-05-09 #30). Rejecting SUBMIT on a saga
+    that's already SHIPPED was previously accepted — it just polluted
+    the audit log with a FAILED gate that no future code path could
+    coherently act on. Hard-rejecting at the API instead of silently
+    appending makes the staff-console error state meaningful.
+
+    The shape is "you can't reject something that already happened."
+    Steps with no committed forward yet — including freshly-submitted
+    sagas where ROUTE hasn't run — are still rejectable, preserving
+    the prototype's "advisory rejection" use case where staff records
+    an intent not to proceed.
+    """
+    forward = await ledger.find_committed_forward(saga_id, step.value)
+    return forward is not None
 
 
 def _log_background_task_exit(task: asyncio.Task[None]) -> None:
@@ -877,10 +916,20 @@ def create_app() -> FastAPI:
                 ill_request = IllRequest.model_validate(saga.request_payload)
                 rec = await agent.run(ill_request)
 
+                # Audit 2026-05-09 #19: cap candidate + diagnostics
+                # length before persisting to saga_event.payload (a
+                # JSONB column with no DB-level CHECK constraint). SRU
+                # responses can exceed 20 records; CrossRef is bounded
+                # by client config but defense in depth still wins. The
+                # ledger column stays bounded so a hostile-peer payload
+                # can't bloat the saga_event row.
                 payload: dict[str, Any] = {
                     "kind": "discovery",
-                    "candidates": [c.model_dump(mode="json") for c in rec.candidates],
-                    "diagnostics": list(rec.diagnostics),
+                    "candidates": [
+                        c.model_dump(mode="json")
+                        for c in rec.candidates[:_DISCOVER_MAX_CANDIDATES]
+                    ],
+                    "diagnostics": list(rec.diagnostics)[:_DISCOVER_MAX_DIAGNOSTICS],
                     "observed_at": datetime.now(UTC).isoformat(),
                 }
                 await ledger.append(
@@ -1132,6 +1181,15 @@ def create_app() -> FastAPI:
         async with session.begin():
             ledger = SagaLedger(session)
             saga_id = uuid4()
+            # Audit 2026-05-09 #20: server generates request_id always.
+            # Caller-supplied UUIDs let an attacker pre-seed a UUID to
+            # collide with future legitimate requests (UNIQUE on
+            # saga.request_id raises IntegrityError → 500 DoS) and to
+            # mint predictable saga URLs for phishing. Stamping fresh
+            # here means request.request_id (if the caller sent one) is
+            # silently ignored — the canonical id ships back in the
+            # response envelope.
+            request.request_id = uuid4()
             await ledger.create_saga(
                 saga_id=saga_id,
                 request_id=request.request_id,
@@ -1368,10 +1426,20 @@ def create_app() -> FastAPI:
                 ill_request = IllRequest.model_validate(saga.request_payload)
                 rec = await agent.run(ill_request)
 
+                # Audit 2026-05-09 #19: cap candidate + diagnostics
+                # length before persisting to saga_event.payload (a
+                # JSONB column with no DB-level CHECK constraint). SRU
+                # responses can exceed 20 records; CrossRef is bounded
+                # by client config but defense in depth still wins. The
+                # ledger column stays bounded so a hostile-peer payload
+                # can't bloat the saga_event row.
                 payload: dict[str, Any] = {
                     "kind": "discovery",
-                    "candidates": [c.model_dump(mode="json") for c in rec.candidates],
-                    "diagnostics": list(rec.diagnostics),
+                    "candidates": [
+                        c.model_dump(mode="json")
+                        for c in rec.candidates[:_DISCOVER_MAX_CANDIDATES]
+                    ],
+                    "diagnostics": list(rec.diagnostics)[:_DISCOVER_MAX_DIAGNOSTICS],
                     "observed_at": datetime.now(UTC).isoformat(),
                 }
                 ev = await ledger.append(
@@ -1408,13 +1476,38 @@ def create_app() -> FastAPI:
         async with session.begin():
             ledger = SagaLedger(session)
             saga = await ledger.get_saga(saga_id)
+            current = LifecycleState(saga.current_state)
+            # Audit 2026-05-09 #30: ``/reject`` was previously accepting
+            # any step value, including rejecting SUBMIT on a saga
+            # that's already SHIPPED — pure audit-log pollution. Refuse
+            # in two cases: the saga is terminal (rejection is
+            # meaningless) or the step has already committed forward
+            # (you can't reject something that already happened). Steps
+            # not yet run remain rejectable so the prototype's
+            # "advisory rejection" use case keeps working.
+            if current in TERMINAL_STATES:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"saga is terminal ({current.value!r}); rejection is "
+                        "no longer meaningful"
+                    ),
+                )
+            if await _step_already_committed_forward(ledger, saga_id, step):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"step {step.value!r} already committed a forward event; "
+                        "cannot reject after the fact (use /compensate to undo)"
+                    ),
+                )
             await ledger.append(
                 NewSagaEvent(
                     saga_id=saga_id,
                     kind=EventKind.GATE,
                     step=step,
-                    state_before=LifecycleState(saga.current_state),
-                    state_after=LifecycleState(saga.current_state),
+                    state_before=current,
+                    state_after=current,
                     actor=body.actor,
                     idempotency_key=new_idempotency_key(prefix="gate-reject"),
                     payload={"reason": body.rationale},
@@ -1570,7 +1663,17 @@ def create_app() -> FastAPI:
     @app.get("/portal/requests", response_class=HTMLResponse, include_in_schema=False)
     async def portal_requests(
         request: Request,
-        patron_id: str = Query(..., min_length=1),
+        patron_id: str = Query(
+            ...,
+            min_length=1,
+            max_length=64,
+            # Audit 2026-05-09 #17: bound the shape so a hostile or
+            # mistyped patron_id can't reach JSONB-path / template
+            # surfaces with control characters. Library cards / NetIDs /
+            # patron-database keys are all safely covered by alphanumeric
+            # + a few separators.
+            pattern=r"^[A-Za-z0-9_.@\-]+$",
+        ),
         session: AsyncSession = Depends(_get_session),
     ) -> HTMLResponse:
         """List all sagas belonging to this patron ID.
@@ -1625,7 +1728,17 @@ def create_app() -> FastAPI:
     async def portal_saga_detail(
         saga_id: UUID,
         request: Request,
-        patron_id: str = Query(..., min_length=1),
+        patron_id: str = Query(
+            ...,
+            min_length=1,
+            max_length=64,
+            # Audit 2026-05-09 #17: bound the shape so a hostile or
+            # mistyped patron_id can't reach JSONB-path / template
+            # surfaces with control characters. Library cards / NetIDs /
+            # patron-database keys are all safely covered by alphanumeric
+            # + a few separators.
+            pattern=r"^[A-Za-z0-9_.@\-]+$",
+        ),
         session: AsyncSession = Depends(_get_session),
     ) -> HTMLResponse:
         """Read-only patron view of a single saga.
