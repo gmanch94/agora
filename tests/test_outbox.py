@@ -1083,3 +1083,67 @@ async def test_outbox_claim_still_ours_false_when_pending(
     async with sm() as s:
         ours = await outbox_claim_still_ours(s, row_id, datetime.now(UTC))
     assert ours is False
+
+
+async def test_renew_request_dead_letters_after_one_attempt(
+    sm: async_sessionmaker[AsyncSession],
+) -> None:
+    """Audit #35: renew_request is fail-fast — dead-letters on attempt 1.
+
+    Pre-fix the always-raising HttpReShareClient.renew_request would
+    burn 10 retry slots over ~17 hours of exponential backoff before
+    dead-lettering. Post-fix the worker recognises the action as
+    fail-fast and dead-letters immediately so staff see the dead-letter
+    row in seconds rather than hours.
+    """
+
+    async def boom_handler(payload: dict[str, Any], idem: str) -> None:
+        raise RuntimeError("renew always raises")
+
+    row_id = await _enqueue(
+        sm,
+        target="reshare",
+        payload={"action": "renew_request", "args": {}},
+        idempotency_key="renew-fail-fast-1",
+    )
+
+    worker = OutboxWorker(
+        sm, {"reshare": boom_handler}, max_attempts=10, base_backoff_secs=1
+    )
+    stats = await worker.drain_once()
+
+    # Single attempt → dead_letter (not failed-with-retry-scheduled).
+    assert stats.dead_letter == 1
+    assert stats.failed == 0
+
+    row = await _row(sm, row_id)
+    assert row.status == "dead_letter"
+    assert row.attempts == 1
+
+
+async def test_non_fail_fast_action_uses_default_max_attempts(
+    sm: async_sessionmaker[AsyncSession],
+) -> None:
+    """Audit #35: non-fail-fast actions still get the worker's default cap.
+
+    Sibling of test_renew_request_dead_letters — a regular failure
+    schedules a retry instead of dead-lettering on attempt 1.
+    """
+
+    async def boom_handler(payload: dict[str, Any], idem: str) -> None:
+        raise RuntimeError("transient")
+
+    await _enqueue(
+        sm,
+        target="reshare",
+        payload={"action": "send_request", "args": {}},
+        idempotency_key="send-retry-1",
+    )
+
+    worker = OutboxWorker(
+        sm, {"reshare": boom_handler}, max_attempts=3, base_backoff_secs=1
+    )
+    stats = await worker.drain_once()
+
+    assert stats.failed == 1
+    assert stats.dead_letter == 0

@@ -55,6 +55,7 @@ without the ``FOR UPDATE`` hint.
 from __future__ import annotations
 
 import asyncio
+import random
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -262,6 +263,13 @@ class OutboxWorker:
                 # Fresh session for the failure write so a poisoned
                 # connection from the handler can't infect the
                 # delivered/failed bookkeeping.
+                # Audit 2026-05-09 #35: cap retries at 1 for actions
+                # that always raise (renew_request, etc.) so a known-
+                # failing call dead-letters fast instead of burning
+                # 10 retry slots over 17 hours.
+                effective_cap = _effective_max_attempts(
+                    payload, self._max_attempts
+                )
                 async with self._sessionmaker() as fail_session:
                     new_attempts = attempts + 1
                     backoff = self._base_backoff_secs * (2**attempts)
@@ -270,10 +278,10 @@ class OutboxWorker:
                         row_id,
                         error=str(exc),
                         requeue_after_secs=backoff,
-                        max_attempts=self._max_attempts,
+                        max_attempts=effective_cap,
                     )
                     await fail_session.commit()
-                if new_attempts >= self._max_attempts:
+                if new_attempts >= effective_cap:
                     stats.dead_letter += 1
                     log.error(
                         "outbox.dead_letter",
@@ -422,7 +430,13 @@ class OutboxWorker:
                     # Don't let a worker-level bug kill the loop; log
                     # and back off briefly.
                     log.exception("outbox.worker.unexpected_error", error=str(exc))
-                await asyncio.sleep(poll_interval)
+                # Audit 2026-05-09 #42: jitter the poll interval so
+                # multiple workers don't synchronise their drains and
+                # contend for the same outbox rows. Cap at 10% of
+                # poll_interval — small enough that latency is barely
+                # affected, large enough to break lock-step.
+                jitter = random.uniform(0, poll_interval * 0.1)
+                await asyncio.sleep(poll_interval + jitter)
         except asyncio.CancelledError:
             log.info("outbox.worker.cancelled")
             raise
@@ -450,6 +464,31 @@ _RESHARE_ACTIONS: frozenset[str] = frozenset(
     }
 )
 _NCIP_ACTIONS: frozenset[str] = frozenset({"check_out", "check_in"})
+
+# Audit 2026-05-09 #35: fail-fast actions. Known to raise immediately
+# in the current HttpReShareClient (e.g. ``renew_request`` is
+# sandbox-blocked per ADR-0017). Without an override, the worker
+# would retry 10x with exponential backoff (60s -> 30720s) for a
+# total of ~17 hours of pointless retry storm before dead-lettering.
+# These actions short-circuit to ``max_attempts=1`` so the row hits
+# dead-letter on first failure and staff see the issue immediately.
+_FAIL_FAST_ACTIONS: frozenset[str] = frozenset({"renew_request"})
+
+
+def _effective_max_attempts(
+    payload: dict[str, Any], default: int
+) -> int:
+    """Return the per-row max_attempts cap.
+
+    Audit 2026-05-09 #35: actions in ``_FAIL_FAST_ACTIONS`` cap at 1
+    so a known-failing client method dead-letters immediately rather
+    than burning 10 hours of retry slots. Other actions get the
+    worker's configured default.
+    """
+    action = payload.get("action") if isinstance(payload, dict) else None
+    if isinstance(action, str) and action in _FAIL_FAST_ACTIONS:
+        return 1
+    return default
 
 
 def make_reshare_handler(client: ReShareClient) -> Handler:
