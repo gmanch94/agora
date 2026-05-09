@@ -115,12 +115,14 @@ def _parse_sru_response(xml: str) -> list[SruRecord]:
     """
     from lxml import etree
 
+    from agora.clients._xml import SAFE_XML_PARSER
+
     ns = {
         "zs": "http://www.loc.gov/zing/srw/",
         "marc": "http://www.loc.gov/MARC21/slim",
     }
     try:
-        root = etree.fromstring(xml.encode("utf-8"))
+        root = etree.fromstring(xml.encode("utf-8"), SAFE_XML_PARSER)
     except etree.XMLSyntaxError:
         return []
 

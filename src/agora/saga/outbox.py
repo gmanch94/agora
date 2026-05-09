@@ -55,6 +55,7 @@ without the ``FOR UPDATE`` hint.
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -74,6 +75,7 @@ from agora.models.lifecycle import (
 )
 from agora.saga.idempotency import (
     outbox_claim,
+    outbox_claim_still_ours,
     outbox_mark_delivered,
     outbox_mark_failed,
     outbox_release_claim,
@@ -81,6 +83,20 @@ from agora.saga.idempotency import (
 from agora.saga.ledger import SagaLedger
 
 log = get_logger(__name__)
+
+
+# mod-rs returns a UUID for the patron-request id in production
+# (sandbox probe 2026-05-06: ``id`` field on the JSON response). The
+# ``MockReShareClient`` returns ``rs-000001``-style synthetic ids for
+# tests/dev. The pattern accepts both shapes — alphanumerics + dash +
+# underscore, bounded length — to reject anything that could smuggle a
+# control character / template fragment / path-traversal segment into
+# downstream URL components or staff-console templates. The check is a
+# format guard, not a security boundary by itself — Jinja autoescape
+# and httpx URL-encoding remain the load-bearing defenses.
+_RESHARE_ID_PATTERN: re.Pattern[str] = re.compile(
+    r"^[A-Za-z0-9_-]{1,128}$"
+)
 
 
 Handler = Callable[[dict[str, Any], str], Awaitable[Any]]
@@ -125,10 +141,17 @@ class DrainStats:
     failed: int = 0
     dead_letter: int = 0
     skipped_no_handler: int = 0
+    claim_lost: int = 0
 
     @property
     def total(self) -> int:
-        return self.delivered + self.failed + self.dead_letter + self.skipped_no_handler
+        return (
+            self.delivered
+            + self.failed
+            + self.dead_letter
+            + self.skipped_no_handler
+            + self.claim_lost
+        )
 
 
 class OutboxWorker:
@@ -195,7 +218,12 @@ class OutboxWorker:
             # Snapshot the fields we need so we don't depend on the
             # ORM session staying alive past this block. ``saga_id`` is
             # included so projection callbacks can locate the saga
-            # without a second read.
+            # without a second read. ``claimed_at`` is the lock-token
+            # we hand to ``outbox_claim_still_ours`` after the handler
+            # returns: if a peer's orphan-recovery sweep reclaimed the
+            # row mid-handler, ``claimed_at`` will have advanced and we
+            # know to drop the result rather than double-write the
+            # projection (audit 2026-05-09 #12).
             snapshots = [
                 (
                     r.id,
@@ -204,11 +232,12 @@ class OutboxWorker:
                     r.idempotency_key,
                     dict(r.payload),
                     r.attempts,
+                    r.claimed_at,
                 )
                 for r in rows
             ]
 
-        for row_id, saga_id, target, idem_key, payload, attempts in snapshots:
+        for row_id, saga_id, target, idem_key, payload, attempts, claim_ts in snapshots:
             handler = self._handlers.get(target)
             if handler is None:
                 log.warning(
@@ -274,6 +303,29 @@ class OutboxWorker:
             on_success = self._on_success.get(target)
             try:
                 async with self._sessionmaker() as ok_session:
+                    # Lease-race guard: between the handler-start and
+                    # here, a peer's orphan-recovery sweep may have
+                    # decided we're stale and re-claimed the row. The
+                    # supplier call itself already went through (and is
+                    # racing with the peer's call) — what we control is
+                    # whether *we* write the projection. Skip mark/
+                    # projection on lost ownership; let the peer win.
+                    # ``claim_ts`` is None only on the synthetic edge
+                    # case where outbox_claim returned a row whose
+                    # claimed_at the in-memory ORM didn't populate
+                    # (shouldn't happen in practice — flush stamps it).
+                    # Treat None as "we never claimed, skip safely."
+                    if claim_ts is None or not await outbox_claim_still_ours(
+                        ok_session, row_id, claim_ts
+                    ):
+                        log.warning(
+                            "outbox.claim_lost",
+                            row_id=row_id,
+                            target=target,
+                            idempotency_key=idem_key,
+                        )
+                        stats.claim_lost += 1
+                        continue
                     if on_success is not None:
                         await on_success(
                             ok_session,
@@ -349,6 +401,7 @@ class OutboxWorker:
             agg.failed += pass_stats.failed
             agg.dead_letter += pass_stats.dead_letter
             agg.skipped_no_handler += pass_stats.skipped_no_handler
+            agg.claim_lost += pass_stats.claim_lost
             if pass_stats.total == 0:
                 break
         return agg
@@ -380,13 +433,32 @@ class OutboxWorker:
 # ---------------------------------------------------------------------
 
 
+# Allow-listed action names per target. Any payload['action'] outside
+# this set is rejected hard, even though the row only lands here via a
+# saga step we control — defense in depth against a compromised path
+# that lets an attacker craft an outbox row, and against a future
+# refactor that adds private helpers reachable via ``getattr`` (audit
+# 2026-05-09 finding #4 / #28).
+_RESHARE_ACTIONS: frozenset[str] = frozenset(
+    {
+        "send_request",
+        "cancel_request",
+        "confirm_shipment",
+        "confirm_return",
+        "recall_request",
+        "renew_request",
+    }
+)
+_NCIP_ACTIONS: frozenset[str] = frozenset({"check_out", "check_in"})
+
+
 def make_reshare_handler(client: ReShareClient) -> Handler:
     """Build a Handler that dispatches ``payload['action']`` on ``client``.
 
     Expected payload shape::
 
         {"action": "send_request" | "cancel_request" | "confirm_shipment"
-                  | "confirm_return" | "recall_request",
+                  | "confirm_return" | "recall_request" | "renew_request",
          "args": { ...method kwargs (excluding idempotency_key)... }}
 
     The ``idempotency_key`` is sourced from the outbox row, not the
@@ -396,6 +468,12 @@ def make_reshare_handler(client: ReShareClient) -> Handler:
     (typically a :class:`ReShareSendResult`) is forwarded back to the
     worker, which passes it to the per-target ``on_success``
     projection callback.
+
+    Only actions in :data:`_RESHARE_ACTIONS` are accepted. ``getattr``
+    against an unrestricted action name would let a crafted payload
+    reach private helpers (``_perform_action``, ``aclose``, …) — the
+    allow-list closes that door even if the outbox-write path ever
+    leaks through a less-trusted code path.
     """
 
     async def handler(payload: dict[str, Any], idempotency_key: str) -> Any:
@@ -405,6 +483,11 @@ def make_reshare_handler(client: ReShareClient) -> Handler:
             raise ValueError(f"reshare outbox payload missing 'action': {payload!r}")
         if not isinstance(args, dict):
             raise ValueError(f"reshare outbox payload 'args' must be dict: {payload!r}")
+        if action not in _RESHARE_ACTIONS:
+            raise ValueError(
+                f"reshare action {action!r} not in allow-list "
+                f"{sorted(_RESHARE_ACTIONS)}"
+            )
 
         method = getattr(client, action, None)
         if method is None or not callable(method):
@@ -469,6 +552,23 @@ def make_reshare_on_success() -> OnSuccess:
                 result_type=type(result).__name__,
             )
             return
+
+        # Validate the supplier's reshare_id shape before persisting it
+        # into the ledger and downstream URL components. Audit
+        # 2026-05-09 #36: a compromised supplier could otherwise smuggle
+        # a control character / template fragment into ``reshare_id``,
+        # which flows into ``/rs/patronrequests/{reshare_id}/performAction``
+        # and into staff-console rationale strings. Refuse projection on
+        # malformed ids; the supplier call already succeeded and the
+        # row stays pending for retry — staff can investigate via logs.
+        if not (
+            isinstance(result.reshare_id, str)
+            and _RESHARE_ID_PATTERN.match(result.reshare_id)
+        ):
+            raise ValueError(
+                f"supplier returned malformed reshare_id "
+                f"{result.reshare_id!r}; refusing projection"
+            )
 
         ledger = SagaLedger(session)
         saga = await ledger.get_saga(saga_id)
@@ -557,6 +657,11 @@ def make_ncip_handler(client: NcipClient) -> Handler:
             raise ValueError(f"ncip outbox payload missing 'action': {payload!r}")
         if not isinstance(args, dict):
             raise ValueError(f"ncip outbox payload 'args' must be dict: {payload!r}")
+        if action not in _NCIP_ACTIONS:
+            raise ValueError(
+                f"ncip action {action!r} not in allow-list "
+                f"{sorted(_NCIP_ACTIONS)}"
+            )
 
         method = getattr(client, action, None)
         if method is None or not callable(method):

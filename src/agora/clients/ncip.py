@@ -87,6 +87,7 @@ from typing import Protocol, cast
 import httpx
 from lxml import etree
 
+from agora.clients._xml import SAFE_XML_PARSER as _XML_PARSER
 from agora.clients.errors import ClientError, RemoteUnavailableError
 from agora.clients.okapi_auth import OkapiAuth
 from agora.config import Settings, get_settings
@@ -98,8 +99,8 @@ log = get_logger(__name__)
 _NS = "http://www.niso.org/2008/ncip"
 _VERSION_ATTR = "http://www.niso.org/schemas/ncip/v2_0/ncip_v2_0.xsd"
 _NSMAP: dict[None, str] = {None: _NS}
-# Safe XML parser: no entity expansion, no network access (prevents XXE).
-_XML_PARSER = etree.XMLParser(resolve_entities=False, no_network=True)
+# _XML_PARSER imported above: shared, hardens XXE + huge-tree posture
+# across every client that calls etree.fromstring on peer-controlled bytes.
 
 
 class NcipError(ClientError):

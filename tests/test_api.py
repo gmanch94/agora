@@ -357,6 +357,72 @@ async def test_compensate_without_committed_forward_returns_409(
     assert "no committed forward" in r.json()["detail"]
 
 
+async def test_compensate_idempotent_on_repeat_call(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    """Audit #5: a second /compensate must NOT create a second compensator event.
+
+    The compensator now uses a deterministic idempotency key
+    ``f"comp-{step}-{saga_id}"`` so a duplicate call collides on
+    ``saga_event.UNIQUE(idempotency_key)`` and ``ledger.append`` returns
+    the prior event without re-firing the compensator. Defense in
+    depth alongside the terminal-state guard at ``ledger.py:91-99``.
+    """
+    saga_id = (await client.post("/requests", json=_request_payload())).json()[
+        "saga_id"
+    ]
+
+    # ROUTE forward.
+    r = await client.post(
+        f"/sagas/{saga_id}/approve",
+        json={
+            "step": "route",
+            "actor": "staff:test",
+            "rationale": "ok",
+            "extras": {"chosen_supplier": "MEMBER1"},
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    # First compensate — succeeds, saga goes to UNFILLED (ROUTE
+    # compensator's terminal target per flows.py).
+    r1 = await client.post(
+        f"/sagas/{saga_id}/compensate",
+        json={"step": "route", "actor": "staff:test", "rationale": "withdraw"},
+    )
+    assert r1.status_code == 200, r1.text
+    seq1 = r1.json()["seq"]
+
+    detail = (await client.get(f"/sagas/{saga_id}")).json()
+    initial_state = detail["saga"]["current_state"]
+    initial_event_count = len(detail["events"])
+
+    # Second compensate — terminal-state guard would normally reject
+    # via 409, but the deterministic idempotency key means even if the
+    # guard ever falters, the saga_event UNIQUE constraint absorbs the
+    # duplicate. Either outcome is acceptable; what's NOT acceptable is
+    # a second COMPENSATOR event landing.
+    r2 = await client.post(
+        f"/sagas/{saga_id}/compensate",
+        json={"step": "route", "actor": "staff:test", "rationale": "withdraw again"},
+    )
+    # Terminal-state guard wins first; on a non-terminal compensator
+    # in a future flow, the idempotency-key collision would surface as
+    # a 200 returning the prior event.
+    assert r2.status_code in (200, 409), r2.text
+
+    # Either way: no NEW compensator event landed.
+    detail = (await client.get(f"/sagas/{saga_id}")).json()
+    assert detail["saga"]["current_state"] == initial_state
+    assert len(detail["events"]) == initial_event_count
+    compensator_events = [
+        e for e in detail["events"]
+        if e["kind"] == "compensator" and e["step"] == "route"
+    ]
+    assert len(compensator_events) == 1
+    assert compensator_events[0]["seq"] == seq1
+
+
 async def test_compensate_unknown_step_returns_400(client: AsyncClient) -> None:
     saga_id = (await client.post("/requests", json=_request_payload())).json()[
         "saga_id"

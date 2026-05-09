@@ -223,3 +223,81 @@ async def test_network_error_raises_remote_unavailable() -> None:
             await client.search_isbn("9780000000001")
     finally:
         await client.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Audit 2026-05-09 #6 / #18: XXE / billion-laughs hardening
+# ---------------------------------------------------------------------------
+
+
+def test_parse_sru_response_blocks_external_entity_expansion() -> None:
+    """A MARCXML doc declaring a file:// external entity must NOT resolve it.
+
+    Pre-fix the SRU parser used the bare default lxml parser, which
+    resolves entities by default. A malicious or compromised SRU peer
+    could deliver a payload like::
+
+        <!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>
+        ... &xxe; ...
+
+    and exfiltrate local files via the parsed-record return path.
+    Post-fix (``SAFE_XML_PARSER`` from ``agora.clients._xml``) the
+    parser refuses entity resolution; either the parse fails or the
+    entity expands to the empty string. Either way no file content
+    leaks into ``raw_marcxml`` or any other returned field.
+    """
+    xxe_payload = (
+        '<?xml version="1.0"?>'
+        '<!DOCTYPE foo ['
+        '<!ENTITY xxe SYSTEM "file:///etc/passwd">'
+        ']>'
+        f'<zs:searchRetrieveResponse {_SRU_NS}>'
+        "<zs:records><zs:record><zs:recordData>"
+        '<marc:record xmlns:marc="http://www.loc.gov/MARC21/slim">'
+        '<marc:datafield tag="245"><marc:subfield code="a">&xxe;</marc:subfield></marc:datafield>'
+        "</marc:record>"
+        "</zs:recordData></zs:record></zs:records>"
+        "</zs:searchRetrieveResponse>"
+    )
+
+    records = _parse_sru_response(xxe_payload)
+
+    # Either the doc is rejected as a syntax error (lxml refuses the
+    # DTD with no_network=True + resolve_entities=False) and we get an
+    # empty list, OR it parses but the entity expands to nothing — in
+    # which case the title field must NOT contain anything that looks
+    # like an /etc/passwd line.
+    for r in records:
+        assert "root:" not in r.title
+        assert "/bin/" not in r.title
+        assert "root:" not in r.raw_marcxml
+        assert "/bin/" not in r.raw_marcxml
+
+
+def test_safe_xml_parser_blocks_billion_laughs_amplification() -> None:
+    """The shared parser refuses pathologically-amplified entity expansion.
+
+    A mild "billion laughs"-style payload (entity-of-entities, fewer
+    levels than a true attack so the test runs fast) must NOT expand
+    when parsed with ``SAFE_XML_PARSER``. lxml raises XMLSyntaxError
+    on entity references when ``resolve_entities=False``, which the
+    SRU client's caller catches as "no records."
+    """
+    from lxml import etree
+
+    from agora.clients._xml import SAFE_XML_PARSER
+
+    payload = (
+        '<?xml version="1.0"?>'
+        '<!DOCTYPE lolz [<!ENTITY a "AAA">'
+        '<!ENTITY b "&a;&a;&a;">]>'
+        "<doc>&b;</doc>"
+    )
+    # Either the parser raises, or it parses and refuses to expand the
+    # entity (returning the literal entity text or empty). Both are
+    # acceptable; the unsafe behaviour would expand "&b;" → "AAAAAAAAA".
+    try:
+        root = etree.fromstring(payload.encode(), SAFE_XML_PARSER)
+    except etree.XMLSyntaxError:
+        return
+    assert "AAA" not in (root.text or "")

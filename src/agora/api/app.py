@@ -291,6 +291,41 @@ def _derive_extras(
     return extras
 
 
+def _log_background_task_exit(task: asyncio.Task[None]) -> None:
+    """Log unexpected background-task exits so silent death is visible.
+
+    A bug in :meth:`OutboxWorker.run_forever` or
+    :meth:`OverdueScanner.run_forever` that escapes the inner
+    try/except leaves the task in ``done`` with an unretrieved
+    exception. Without this callback, no other code awaits the task
+    during normal operation, so its failure is invisible — outbox
+    rows pile up forever, the scanner stops emitting overdue
+    observations, and there is no signal to staff.
+
+    A normal cancel-on-shutdown raises ``CancelledError`` which we
+    classify as expected and log at INFO. Any other exception is logged
+    at ERROR with the task name and exc_info; restart-on-failure is
+    NOT attempted here because the right operator response depends on
+    the failure mode (DB outage, schema drift, code bug).
+
+    Audit 2026-05-09 #29.
+    """
+    try:
+        exc = task.exception()
+    except asyncio.CancelledError:
+        log.info("api.background_task.cancelled", task_name=task.get_name())
+        return
+    if exc is None:
+        log.info("api.background_task.exited", task_name=task.get_name())
+        return
+    log.error(
+        "api.background_task.failed",
+        task_name=task.get_name(),
+        error=str(exc),
+        exc_info=(type(exc), exc, exc.__traceback__),
+    )
+
+
 def _build_outbox_worker(
     sessionmaker: async_sessionmaker[AsyncSession],
     *,
@@ -334,13 +369,23 @@ def _make_context(
     step: StepName,
     extras: dict[str, Any],
     idem_prefix: str | None = None,
+    idempotency_key: str | None = None,
 ) -> SagaContext:
-    """Build a SagaContext for the coordinator."""
+    """Build a SagaContext for the coordinator.
+
+    Pass ``idempotency_key`` to use a fully-deterministic key (e.g. for
+    compensators where collision-on-replay is the desired behaviour;
+    audit 2026-05-09 #5). Otherwise a fresh ULID is appended to
+    ``idem_prefix`` (or ``step.value``) for forward steps where each
+    invocation must produce a distinct event.
+    """
+    if idempotency_key is None:
+        idempotency_key = new_idempotency_key(prefix=idem_prefix or step.value)
     return SagaContext(
         saga_id=saga_id,
         request=request,
         current_state=current_state,
-        idempotency_key=new_idempotency_key(prefix=idem_prefix or step.value),
+        idempotency_key=idempotency_key,
         actor=actor,
         extras=extras,
     )
@@ -430,6 +475,7 @@ def create_app() -> FastAPI:
                 ),
                 name="agora.outbox.worker",
             )
+            worker_task.add_done_callback(_log_background_task_exit)
             app.state.outbox_worker = worker
             app.state.outbox_worker_task = worker_task
             log.info(
@@ -452,6 +498,7 @@ def create_app() -> FastAPI:
                 ),
                 name="agora.tracking.scanner",
             )
+            scanner_task.add_done_callback(_log_background_task_exit)
             app.state.tracking_scanner = scanner
             app.state.tracking_scanner_task = scanner_task
             log.info(
@@ -936,7 +983,13 @@ def create_app() -> FastAPI:
                         actor="staff",
                         step=step_name,
                         extras=extras,
-                        idem_prefix=f"comp-{step_name.value}",
+                        # Deterministic key — second /compensate call
+                        # collides on saga_event UNIQUE(idempotency_key)
+                        # and ledger.append returns the prior event
+                        # without re-firing the compensator. Audit
+                        # 2026-05-09 #5 (defense in depth alongside the
+                        # terminal-state guard at ledger.py:91-99).
+                        idempotency_key=f"comp-{step_name.value}-{saga_id}",
                     ),
                     step=step_name,
                 )
@@ -1405,7 +1458,9 @@ def create_app() -> FastAPI:
                         actor=body.actor,
                         step=step,
                         extras=extras,
-                        idem_prefix=f"comp-{step.value}",
+                        # Deterministic key — see HTML compensator
+                        # endpoint for rationale (audit #5).
+                        idempotency_key=f"comp-{step.value}-{saga_id}",
                     ),
                     step=step,
                 )
