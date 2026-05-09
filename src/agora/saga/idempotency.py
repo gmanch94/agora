@@ -22,6 +22,16 @@ def new_idempotency_key(prefix: str | None = None) -> str:
 
     Optional ``prefix`` (e.g. ``"submit"``) makes keys easier to grep
     in logs without affecting uniqueness.
+
+    .. warning::
+        ULIDs are NOT cryptographic tokens. Their 80 random bits are
+        large enough to make collisions astronomically unlikely
+        (collision uniqueness is the contract this function provides),
+        but the timestamp half is monotonic and the random half comes
+        from ``random``-grade entropy in some Python builds. Do NOT use
+        idempotency keys as auth tokens, capability tokens, or anything
+        that needs to be unguessable. They are uniqueness primitives,
+        not secrecy primitives. Audit 2026-05-09 #33.
     """
     ulid = str(ULID())
     return f"{prefix}-{ulid}" if prefix else ulid

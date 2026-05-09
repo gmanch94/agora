@@ -1,8 +1,16 @@
-"""Application configuration loaded from environment variables."""
+"""Application configuration loaded from environment variables.
+
+Audit 2026-05-09 #10 / #25 / #34: credential fields use ``SecretStr``
+so ``model_dump()`` / ``repr()`` redact the value automatically (the
+``agora --config`` CLI no longer prints plaintext passwords). Use
+``.get_secret_value()`` at the consumer to read the actual string.
+The ``db_url`` field is also a ``SecretStr`` because the URL embeds
+credentials (``postgresql://user:password@host/db``).
+"""
 
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,11 +30,17 @@ class Settings(BaseSettings):
     env: str = Field(default="dev", alias="AGORA_ENV")
     log_level: str = Field(default="INFO", alias="AGORA_LOG_LEVEL")
 
-    api_host: str = Field(default="0.0.0.0", alias="AGORA_API_HOST")  # nosec B104  # dev default; production sets AGORA_API_HOST
+    # Audit 2026-05-09 #34: bind to loopback by default. Operators
+    # explicitly set ``AGORA_API_HOST=0.0.0.0`` (or container-network
+    # address) to expose the API beyond the host. Combined with the
+    # other auth/CSRF/rate-limit work in the audit-remediation sprint,
+    # this avoids the failure mode where a fresh deployment is
+    # immediately publicly reachable on every interface.
+    api_host: str = Field(default="127.0.0.1", alias="AGORA_API_HOST")
     api_port: int = Field(default=8000, alias="AGORA_API_PORT")
 
-    db_url: str = Field(
-        default="postgresql+asyncpg://agora:agora@localhost:5433/agora",
+    db_url: SecretStr = Field(
+        default=SecretStr("postgresql+asyncpg://agora:agora@localhost:5433/agora"),
         alias="AGORA_DB_URL",
     )
     db_pool_size: int = Field(default=10, alias="AGORA_DB_POOL_SIZE")
@@ -34,7 +48,7 @@ class Settings(BaseSettings):
     reshare_base_url: str = Field(default="", alias="RESHARE_BASE_URL")
     reshare_tenant: str = Field(default="consortium-a", alias="RESHARE_TENANT")
     reshare_user: str = Field(default="", alias="RESHARE_USER")
-    reshare_password: str = Field(default="", alias="RESHARE_PASSWORD")
+    reshare_password: SecretStr = Field(default=SecretStr(""), alias="RESHARE_PASSWORD")
     # When set, ``HttpReShareClient`` authenticates via the FOLIO Okapi
     # token flow (POST {okapi_url}/authn/login → ``x-okapi-token`` header)
     # instead of HTTP Basic. Reuses ``RESHARE_USER`` and ``RESHARE_PASSWORD``
@@ -140,7 +154,9 @@ class Settings(BaseSettings):
     # auth is disabled — dev convenience, no credentials required locally.
     # Set both vars in production-like envs to gate the HTML UI.
     console_username: str = Field(default="staff", alias="AGORA_CONSOLE_USERNAME")
-    console_password: str = Field(default="", alias="AGORA_CONSOLE_PASSWORD")
+    console_password: SecretStr = Field(
+        default=SecretStr(""), alias="AGORA_CONSOLE_PASSWORD"
+    )
 
     @property
     def reshare_enabled(self) -> bool:
@@ -149,6 +165,19 @@ class Settings(BaseSettings):
         When false, the in-process mock is used.
         """
         return bool(self.reshare_base_url)
+
+    @property
+    def db_url_uses_dev_default(self) -> bool:
+        """True iff ``db_url`` is the unmodified ``agora:agora@`` default.
+
+        Used by startup-time guards (``configure_logging`` /
+        ``create_app``) to warn loudly when a non-``dev`` environment
+        ships with the development credentials. Audit 2026-05-09 #25:
+        the default ``postgresql+asyncpg://agora:agora@localhost:5433/agora``
+        is fine for offline dev but lethal in any deployment that
+        forgets to override it.
+        """
+        return ":agora@" in self.db_url.get_secret_value()
 
     @property
     def consortium_members(self) -> set[str]:

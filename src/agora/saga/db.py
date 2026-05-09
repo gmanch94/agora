@@ -223,7 +223,7 @@ def get_engine() -> AsyncEngine:
     if _engine is None:
         settings = get_settings()
         _engine = create_async_engine(
-            settings.db_url,
+            settings.db_url.get_secret_value(),
             pool_size=settings.db_pool_size,
             future=True,
         )

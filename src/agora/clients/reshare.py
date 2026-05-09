@@ -191,10 +191,12 @@ class HttpReShareClient:
                 login_url=f"{s.okapi_url.rstrip('/')}/authn/login",
                 tenant=s.reshare_tenant,
                 username=s.reshare_user,
-                password=s.reshare_password,
+                password=s.reshare_password.get_secret_value(),
             )
         elif s.reshare_user:
-            self._auth = httpx.BasicAuth(s.reshare_user, s.reshare_password)
+            self._auth = httpx.BasicAuth(
+                s.reshare_user, s.reshare_password.get_secret_value()
+            )
         else:
             self._auth = None
         self._client = httpx.AsyncClient(timeout=10.0, auth=self._auth)
@@ -235,7 +237,26 @@ class HttpReShareClient:
         if resp.status_code >= 500:
             raise RemoteUnavailableError(f"{path}: {resp.status_code}")
         if resp.status_code >= 400:
-            raise ClientError(f"{path}: {resp.status_code} {resp.text}")
+            # Audit 2026-05-09 #7: do NOT echo the raw response body
+            # into the exception message. mod-rs error responses
+            # commonly include patron identifiers, the inbound request
+            # body echoed back, and occasional auth-header hints — all
+            # of which would land verbatim in ``outbox.last_error`` and
+            # any caller that surfaces ``str(exc)``. Truncate to a
+            # bounded snippet AND log the full body at DEBUG so an
+            # operator with log access can still diagnose, while a
+            # leaky-error-response surface (logs harvested by an
+            # attacker, debug endpoint, etc.) doesn't bleed PII.
+            log.debug(
+                "reshare.client_error_body",
+                path=path,
+                status_code=resp.status_code,
+                body=resp.text,
+            )
+            snippet = (resp.text or "").strip().replace("\n", " ")[:200]
+            raise ClientError(
+                f"{path}: HTTP {resp.status_code} (body truncated: {snippet!r})"
+            )
         data: dict[str, Any] = resp.json()
         return data
 

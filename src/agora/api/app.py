@@ -459,6 +459,19 @@ def create_app() -> FastAPI:
     configure_logging()
     settings = get_settings()
 
+    # Audit 2026-05-09 #25: refuse to boot with the dev-default
+    # ``agora:agora@`` db credentials in any non-dev environment. The
+    # default exists for offline laptop work; shipping it to staging or
+    # prod is a credential-leak waiting to happen. Operators must
+    # override ``AGORA_DB_URL`` explicitly. ``env=dev`` is the only
+    # environment that gets a pass.
+    if settings.env != "dev" and settings.db_url_uses_dev_default:
+        raise RuntimeError(
+            "AGORA_DB_URL is using the development default "
+            "(:agora@) in a non-dev environment. Refusing to boot "
+            "with leaked credentials. Set AGORA_DB_URL explicitly."
+        )
+
     # Wire saga step registry. ``get_reshare_client`` honours
     # ``settings.reshare_enabled`` and returns ``HttpReShareClient``
     # in production / ``MockReShareClient`` for offline dev + tests.
@@ -614,7 +627,9 @@ def create_app() -> FastAPI:
         credentials: HTTPBasicCredentials | None = Depends(_console_security),
         settings: Any = Depends(get_settings),
     ) -> None:
-        password = settings.console_password
+        # ``console_password`` is now SecretStr (audit #10) so unwrap
+        # before comparing. Empty string still means "auth disabled".
+        password = settings.console_password.get_secret_value()
         if not password:
             return  # auth disabled
         if credentials is None:

@@ -61,7 +61,7 @@ the process env. Defaults target local dev (Postgres on `localhost:5433`).
 | ----------------------------------- | ------------------------------------------------------ | ---------------------------------------------------------- |
 | `AGORA_ENV`                         | `dev`                                                  | Free-form tag in logs.                                     |
 | `AGORA_LOG_LEVEL`                   | `INFO`                                                 | Standard logging level.                                    |
-| `AGORA_API_HOST` / `AGORA_API_PORT` | `0.0.0.0` / `8000`                                     | uvicorn bind.                                              |
+| `AGORA_API_HOST` / `AGORA_API_PORT` | `127.0.0.1` / `8000`                                   | uvicorn bind. Loopback by default (audit 2026-05-09 #34); set to `0.0.0.0` for container/all-interface exposure. |
 | `AGORA_DB_URL`                      | `postgresql+asyncpg://agora:agora@localhost:5433/agora` <!-- pragma: allowlist secret --> | Tests override to `sqlite+aiosqlite:///:memory:`. Dev-default; production sets `AGORA_DB_URL`. |
 | `AGORA_DB_POOL_SIZE`                | `10`                                                   |                                                            |
 | `RESHARE_BASE_URL`                  | `""`                                                   | Empty → mock client. Non-empty triggers real HTTP client.  |

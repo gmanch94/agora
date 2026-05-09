@@ -335,7 +335,7 @@ class HttpNcipClient:
                 login_url=f"{s.okapi_url.rstrip('/')}/authn/login",
                 tenant=s.reshare_tenant,
                 username=s.reshare_user,
-                password=s.reshare_password,
+                password=s.reshare_password.get_secret_value(),
             )
         else:
             auth = None

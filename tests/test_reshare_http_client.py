@@ -110,6 +110,47 @@ async def test_post_raises_client_error_on_4xx() -> None:
 
 
 @respx.mock
+async def test_post_4xx_redacts_response_body_in_error() -> None:
+    """Audit #7: 4xx body must NOT appear verbatim in the ClientError message.
+
+    mod-rs error responses can include patron identifiers, the inbound
+    request echoed back, and occasionally auth-header hints. The
+    exception's ``str()`` lands in ``outbox.last_error`` (a String(2048)
+    column readable by anyone with API access), so the raw body must be
+    truncated AND redacted before raising. The full body is logged at
+    DEBUG for operator-side diagnosis.
+    """
+    leaky_body = (
+        "PATRON_ID=alice@example.org "
+        "REQUEST_BODY={'patron': {'patron_id': 'alice@example.org'}} "
+        "Authorization: Bearer eyJsecrettoken12345"
+        + ("X" * 2000)  # ensure body exceeds the 200-char snippet cap
+    )
+    respx.post(f"{_BASE_URL}/rs/patronrequests").mock(
+        return_value=Response(403, text=leaky_body)
+    )
+    client = _client()
+    try:
+        with pytest.raises(ClientError) as excinfo:
+            await client.send_request(
+                idempotency_key="k-redact",
+                request_payload={"title": "T"},
+                supplier_symbol="LIB-A",
+            )
+    finally:
+        await client.aclose()
+
+    msg = str(excinfo.value)
+    # Status code is preserved — operators need it for triage.
+    assert "403" in msg
+    # The verbatim body MUST be truncated. Snippet cap is 200, total
+    # message stays well under outbox.last_error's 2048 limit.
+    assert len(msg) < 600
+    # The raw 2000-X tail must NOT appear in the truncated snippet.
+    assert "X" * 1000 not in msg
+
+
+@respx.mock
 async def test_post_raises_remote_unavailable_on_5xx() -> None:
     """_post raises RemoteUnavailableError on 5xx response (line 232).
 
