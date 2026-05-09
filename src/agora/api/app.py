@@ -98,6 +98,55 @@ from agora.saga.steps import StepRegistry
 log = get_logger(__name__)
 
 
+_CSRF_COOKIE_NAME = "agora_csrf"
+_CSRF_FORM_FIELD = "csrf_token"
+
+
+class _RateLimitState:
+    """In-memory per-IP rate limiter (audit 2026-05-09 #23).
+
+    Sliding window: each IP keeps a deque of recent request
+    timestamps; on each call we drop entries older than
+    ``window_secs`` and count the remainder. Single-process by
+    construction — production MUST also rate-limit at the load
+    balancer / reverse proxy because this counter is per-worker.
+
+    Memory grows with active-IP count; pruning happens lazily on
+    access. For prototype scale this is fine; an LRU cap would be
+    a follow-up if memory pressure shows up.
+    """
+
+    def __init__(self, *, limit: int, window_secs: int) -> None:
+        from collections import defaultdict, deque
+
+        self._limit = limit
+        self._window_secs = window_secs
+        self._buckets: dict[str, Any] = defaultdict(deque)
+
+    def check(self, ip: str) -> tuple[bool, int]:
+        """Record a hit for ``ip``; return (allowed, retry_after_secs).
+
+        ``retry_after_secs`` is 0 when allowed and a hint at the
+        time-until-the-oldest-bucket-entry-falls-out when denied.
+        """
+        from collections import deque
+        from time import time
+
+        now = time()
+        bucket: Any = self._buckets[ip]
+        # Drop expired entries.
+        while bucket and bucket[0] <= now - self._window_secs:
+            bucket.popleft()
+        if len(bucket) >= self._limit:
+            retry_after = int(self._window_secs - (now - bucket[0])) + 1
+            return False, max(retry_after, 1)
+        bucket.append(now)
+        # Defensive: keep the bucket bounded — prune after threshold.
+        if len(bucket) > self._limit * 2:
+            self._buckets[ip] = deque(list(bucket)[-self._limit :])
+        return True, 0
+
+
 @dataclass(frozen=True)
 class ConsolePrincipal:
     """The authenticated identity behind a console / JSON-API request.
@@ -648,12 +697,150 @@ def create_app() -> FastAPI:
             await sru.aclose()
             log.info("api.discovery_clients.closed")
 
-    app = FastAPI(
-        title="Agora ILL",
-        description="Agentic Inter-Library Loan staff console",
-        version=__version__,
-        lifespan=lifespan,
-    )
+    # Audit 2026-05-09 #31: hide the auto-generated OpenAPI / Swagger
+    # / ReDoc surfaces outside dev. They expose every endpoint, schema,
+    # and override target — useful in dev, recon-friendly in prod.
+    # Operators can opt them back in for staging via AGORA_ENV=dev.
+    if settings.env == "dev":
+        app = FastAPI(
+            title="Agora ILL",
+            description="Agentic Inter-Library Loan staff console",
+            version=__version__,
+            lifespan=lifespan,
+        )
+    else:
+        app = FastAPI(
+            title="Agora ILL",
+            description="Agentic Inter-Library Loan staff console",
+            version=__version__,
+            lifespan=lifespan,
+            docs_url=None,
+            redoc_url=None,
+            openapi_url=None,
+        )
+
+    # Audit 2026-05-09 #38: every HTML response carries the standard
+    # browser-hardening headers. Staff console renders in same-origin
+    # iframes nowhere — DENY closes the clickjacking surface. CSP is
+    # restrictive (default-src 'self', no inline script except the
+    # HTMX bootstrap, no data: URIs except for img). nosniff prevents
+    # MIME-confusion attacks. The HSTS header is conditional on env
+    # = prod since dev / test typically run over plain HTTP.
+    @app.middleware("http")
+    async def _security_headers(
+        request: Request, call_next: Any
+    ) -> Any:
+        response = await call_next(request)
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        # CSP: same-origin everything, allow only the staticfiles mount.
+        # Inline styles permitted for the prototype's small inline blocks
+        # in detail.html; should be tightened to nonces in a follow-up.
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "img-src 'self' data:; "
+            "style-src 'self' 'unsafe-inline'; "
+            "script-src 'self'; "
+            "frame-ancestors 'none'; "
+            "form-action 'self'"
+        )
+        if settings.env == "prod":
+            # 6 months, includeSubDomains. Operators MUST front the API
+            # with HTTPS at the proxy layer before this is meaningful.
+            response.headers["Strict-Transport-Security"] = (
+                "max-age=15552000; includeSubDomains"
+            )
+        return response
+
+    # Audit 2026-05-09 #9: redirect plain-HTTP requests to HTTPS in
+    # prod. Defense in depth alongside the proxy-layer redirect that
+    # operators must run upstream — this catches the
+    # someone-misconfigures-the-proxy edge case. Dev / staging keep
+    # plain HTTP for ergonomics.
+    if settings.env == "prod":
+        from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
+
+        app.add_middleware(HTTPSRedirectMiddleware)
+
+    # Audit 2026-05-09 #23: per-IP rate limiting. Single-process
+    # in-memory counter; production MUST also rate-limit at the load
+    # balancer for multi-worker correctness (we can't share state
+    # across uvicorn replicas without a shared store like Redis,
+    # which is out of scope for the prototype). Bucket = IP address;
+    # window = settings.rate_limit_window_secs sliding; ceiling =
+    # settings.rate_limit_requests. Returns 429 + Retry-After when
+    # exceeded.
+    if settings.rate_limit_enabled:
+        rate_state = _RateLimitState(
+            limit=settings.rate_limit_requests,
+            window_secs=settings.rate_limit_window_secs,
+        )
+
+        @app.middleware("http")
+        async def _rate_limit(
+            request: Request, call_next: Any
+        ) -> Any:
+            client = request.client
+            ip = client.host if client is not None else "unknown"
+            ok, retry_after = rate_state.check(ip)
+            if not ok:
+                from fastapi.responses import JSONResponse
+
+                return JSONResponse(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    content={"detail": "rate limit exceeded"},
+                    headers={"Retry-After": str(retry_after)},
+                )
+            return await call_next(request)
+
+    # Audit 2026-05-09 #8: CSRF on HTML form endpoints. Double-submit
+    # cookie pattern: middleware sets a CSRF cookie on first GET,
+    # form templates echo it as a hidden ``csrf_token`` input,
+    # subsequent POST/PUT/DELETE/PATCH on /ui/* paths must carry a
+    # form-field value matching the cookie. JSON API endpoints are
+    # exempt because they're called from server-to-server contexts
+    # where CSRF doesn't apply (and they're auth-gated separately).
+    if settings.csrf_enabled:
+
+        @app.middleware("http")
+        async def _csrf(request: Request, call_next: Any) -> Any:
+            from fastapi.responses import JSONResponse
+
+            cookie_token = request.cookies.get(_CSRF_COOKIE_NAME)
+            if (
+                request.method in {"POST", "PUT", "PATCH", "DELETE"}
+                and request.url.path.startswith("/ui/")
+            ):
+                # Read form data — Starlette caches it so the
+                # downstream handler still sees it.
+                form = await request.form()
+                form_token = form.get(_CSRF_FORM_FIELD)
+                if (
+                    not cookie_token
+                    or not form_token
+                    or not isinstance(form_token, str)
+                    or not secrets.compare_digest(cookie_token, form_token)
+                ):
+                    return JSONResponse(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        content={"detail": "CSRF token missing or invalid"},
+                    )
+            response = await call_next(request)
+            # Stamp a fresh cookie if absent (or if it doesn't match
+            # the strict shape). 32 bytes of secrets.token_urlsafe
+            # is overkill for CSRF and just-right for forgery
+            # resistance.
+            if not cookie_token:
+                response.set_cookie(
+                    _CSRF_COOKIE_NAME,
+                    secrets.token_urlsafe(32),
+                    max_age=86400,
+                    httponly=False,  # form needs to read it via JS / template
+                    samesite="strict",
+                    secure=(settings.env == "prod"),
+                )
+            return response
 
     app.state.registry = registry
     app.state.reshare = reshare

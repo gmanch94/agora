@@ -455,3 +455,158 @@ def test_okapi_auth_extract_expiry_missing_field_returns_none() -> None:
 
     response = httpx.Response(201, json={})
     assert OkapiAuth._extract_expiry(response) is None
+
+
+# ---------------------------------------------------------------------
+# Audit batch 5 — web hardening
+# ---------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture
+async def hardened_app(
+    engine: AsyncEngine, monkeypatch: Any
+) -> AsyncIterator[FastAPI]:
+    """App with rate limit + CSRF enabled."""
+    monkeypatch.setenv("AGORA_RATE_LIMIT_ENABLED", "true")
+    monkeypatch.setenv("AGORA_RATE_LIMIT_REQUESTS", "3")
+    monkeypatch.setenv("AGORA_RATE_LIMIT_WINDOW_SECS", "60")
+    monkeypatch.setenv("AGORA_CSRF_ENABLED", "true")
+    get_settings.cache_clear()
+    try:
+        yield create_app()
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest_asyncio.fixture
+async def hardened_client(hardened_app: FastAPI) -> AsyncIterator[AsyncClient]:
+    transport = ASGITransport(app=hardened_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c
+
+
+async def test_security_headers_present_on_html_response(
+    hardened_client: AsyncClient,
+) -> None:
+    """Audit #38: every response carries X-Frame-Options + CSP + nosniff."""
+    r = await hardened_client.get("/health")
+    assert r.headers["X-Frame-Options"] == "DENY"
+    assert r.headers["X-Content-Type-Options"] == "nosniff"
+    assert "default-src 'self'" in r.headers["Content-Security-Policy"]
+    assert "frame-ancestors 'none'" in r.headers["Content-Security-Policy"]
+
+
+async def test_rate_limit_returns_429_after_ceiling(
+    hardened_client: AsyncClient,
+) -> None:
+    """Audit #23: per-IP requests beyond the ceiling get 429 + Retry-After."""
+    # Fixture sets requests=3 / window=60s. Three /health hits succeed;
+    # the fourth must 429.
+    for _ in range(3):
+        r = await hardened_client.get("/health")
+        assert r.status_code == 200
+
+    r = await hardened_client.get("/health")
+    assert r.status_code == 429
+    assert "Retry-After" in r.headers
+    assert int(r.headers["Retry-After"]) > 0
+
+
+async def test_csrf_middleware_refuses_post_without_token(
+    hardened_client: AsyncClient,
+) -> None:
+    """Audit #8: a /ui POST without a CSRF cookie + form-field returns 403.
+
+    The middleware enforces double-submit cookie: the form's
+    ``csrf_token`` field must equal the ``agora_csrf`` cookie. Cross-site
+    POSTs from a malicious page can't read or set our cookie, so they
+    fail the check.
+    """
+    # First GET to get the cookie set.
+    await hardened_client.get("/health")
+    # POST without the cookie OR form field.
+    r = await hardened_client.post(
+        "/ui/sagas/00000000-0000-0000-0000-000000000000/approve",
+        data={"step": "route", "rationale": "x"},
+    )
+    assert r.status_code == 403
+    assert "CSRF" in r.json()["detail"]
+
+
+async def test_csrf_middleware_accepts_matching_token(
+    hardened_app: FastAPI,
+) -> None:
+    """Cookie + form field with matching values pass the CSRF check.
+
+    Need raw cookie control so we drive httpx's AsyncClient with an
+    explicit cookie jar that can hold the same token we send as the
+    form field.
+    """
+    from httpx import AsyncClient as RawClient
+
+    transport = ASGITransport(app=hardened_app)
+    cookies = {"agora_csrf": "matching-token-abc"}
+    async with RawClient(
+        transport=transport, base_url="http://test", cookies=cookies
+    ) as c:
+        # Saga doesn't exist so we expect a 4xx from the handler, NOT
+        # a 403 from CSRF — that's the assertion.
+        r = await c.post(
+            "/ui/sagas/00000000-0000-0000-0000-000000000000/approve",
+            data={"step": "route", "rationale": "x", "csrf_token": "matching-token-abc"},
+        )
+    assert r.status_code != 403
+    # Whatever the handler returned, the CSRF gate let it through.
+
+
+async def test_json_endpoints_exempt_from_csrf(
+    hardened_client: AsyncClient,
+) -> None:
+    """Audit #8: JSON API paths (not /ui/*) skip CSRF enforcement.
+
+    Server-to-server JSON callers don't have browser cookies; they
+    rely on Basic auth (or a future bearer token) for authentication.
+    """
+    # Without auth this is 401 — but the point is it's NOT 403/CSRF.
+    r = await hardened_client.post(
+        "/sagas/00000000-0000-0000-0000-000000000000/approve",
+        json={"step": "route", "actor": "x", "rationale": "x"},
+    )
+    assert r.status_code != 403
+
+
+async def test_docs_endpoints_exposed_in_dev(
+    engine: AsyncEngine, monkeypatch: Any
+) -> None:
+    """Audit #31: /docs is exposed in dev (env=dev)."""
+    monkeypatch.setenv("AGORA_ENV", "dev")
+    get_settings.cache_clear()
+    try:
+        app = create_app()
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            r = await c.get("/openapi.json")
+            assert r.status_code == 200
+    finally:
+        get_settings.cache_clear()
+
+
+async def test_docs_endpoints_hidden_in_prod(
+    engine: AsyncEngine, monkeypatch: Any
+) -> None:
+    """Audit #31: /docs and /openapi.json return 404 outside dev."""
+    monkeypatch.setenv("AGORA_ENV", "staging")
+    monkeypatch.setenv(
+        "AGORA_DB_URL", "sqlite+aiosqlite:///:memory:"
+    )  # bypass #25 dev-default refusal
+    get_settings.cache_clear()
+    try:
+        app = create_app()
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            r = await c.get("/openapi.json")
+            assert r.status_code == 404
+            r = await c.get("/docs")
+            assert r.status_code == 404
+    finally:
+        get_settings.cache_clear()

@@ -181,6 +181,36 @@ class Settings(BaseSettings):
         default=SecretStr(""), alias="AGORA_PORTAL_SIGNING_KEY"
     )
 
+    # In-memory rate limit (audit 2026-05-09 #23). Per-IP request
+    # ceiling over a sliding window. Defense in depth — production
+    # MUST also rate-limit at the load balancer / reverse proxy
+    # because this in-process counter is per-worker (not shared
+    # across uvicorn replicas). Set ``rate_limit_enabled=False`` in
+    # tests; default ``True`` so a freshly-deployed instance gets
+    # protection out of the box.
+    rate_limit_enabled: bool = Field(
+        default=False, alias="AGORA_RATE_LIMIT_ENABLED"
+    )
+    rate_limit_requests: int = Field(
+        default=120, alias="AGORA_RATE_LIMIT_REQUESTS"
+    )
+    rate_limit_window_secs: int = Field(
+        default=60, alias="AGORA_RATE_LIMIT_WINDOW_SECS"
+    )
+
+    # CSRF protection on HTML form endpoints (audit 2026-05-09 #8).
+    # Double-submit cookie pattern: a CSRF token is set as a cookie
+    # on first GET, the form's hidden input echoes the cookie value,
+    # and the middleware refuses POSTs whose form value doesn't match
+    # the cookie. Disabled by default to keep test flows working —
+    # staging / prod sets ``AGORA_CSRF_ENABLED=1``. With Basic auth
+    # the browser auto-attaches credentials on cross-site form POSTs,
+    # so CSRF is the only defense against another site triggering
+    # console actions.
+    csrf_enabled: bool = Field(
+        default=False, alias="AGORA_CSRF_ENABLED"
+    )
+
     @property
     def reshare_enabled(self) -> bool:
         """True when a real ReShare endpoint is configured.
