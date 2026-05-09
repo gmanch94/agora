@@ -331,17 +331,26 @@ class HttpNcipClient:
         self._tenant = s.reshare_tenant  # same FOLIO deployment
         auth: httpx.Auth | None
         if s.okapi_url:
+            # Same with-expiry endpoint as the ReShare client (audit #11).
             auth = OkapiAuth(
-                login_url=f"{s.okapi_url.rstrip('/')}/authn/login",
+                login_url=f"{s.okapi_url.rstrip('/')}/authn/login-with-expiry",
                 tenant=s.reshare_tenant,
                 username=s.reshare_user,
                 password=s.reshare_password.get_secret_value(),
             )
         else:
             auth = None
+        # Keep a typed reference so ``aclose`` can call
+        # ``clear_token()`` (audit #11). httpx stashes ``auth`` on the
+        # client but doesn't expose it directly.
+        self._auth: httpx.Auth | None = auth
         self._client = httpx.AsyncClient(timeout=10.0, auth=auth)
 
     async def aclose(self) -> None:
+        # Drop cached Okapi credentials before tearing down the pool.
+        # Audit 2026-05-09 #11.
+        if isinstance(self._auth, OkapiAuth):
+            self._auth.clear_token()
         await self._client.aclose()
 
     def _headers(self, *, idempotency_key: str | None = None) -> dict[str, str]:

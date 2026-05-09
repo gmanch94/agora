@@ -157,6 +157,29 @@ class Settings(BaseSettings):
     console_password: SecretStr = Field(
         default=SecretStr(""), alias="AGORA_CONSOLE_PASSWORD"
     )
+    # Tenant-scoping stopgap (audit 2026-05-09 #3). When set, the Basic-auth
+    # principal carries this library symbol and every saga endpoint refuses
+    # operations on sagas whose ``requesting_library.symbol`` doesn't match.
+    # Single-tenant by construction (one console password ↔ one library).
+    # Multi-tenant needs a real auth model with per-principal claims —
+    # tracked as an ADR follow-up. Empty default = no scoping = existing
+    # dev behaviour where any authenticated caller can touch any saga.
+    console_library_symbol: str = Field(
+        default="", alias="AGORA_CONSOLE_LIBRARY_SYMBOL"
+    )
+
+    # Patron portal HMAC signing key (audit 2026-05-09 #2). When set,
+    # ``/portal/requests`` and ``/portal/requests/{saga_id}`` require a
+    # ``token`` query parameter whose HMAC matches the patron-id (and
+    # saga-id, for the detail view). The token is issued out-of-band —
+    # typically emailed to the patron — so an attacker who guesses a
+    # patron_id alone cannot enumerate the patron's circulation
+    # history. Empty default disables HMAC gating (preserves the
+    # form-entry dev experience); production sets a 32-byte random
+    # value via env-var rotation.
+    portal_signing_key: SecretStr = Field(
+        default=SecretStr(""), alias="AGORA_PORTAL_SIGNING_KEY"
+    )
 
     @property
     def reshare_enabled(self) -> bool:
