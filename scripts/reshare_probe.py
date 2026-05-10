@@ -44,7 +44,6 @@ from typing import Any
 
 import httpx
 
-
 # ── Config ────────────────────────────────────────────────────────────────────
 
 BASE_URL: str = os.getenv("RESHARE_BASE_URL", "http://localhost:8081").rstrip("/")

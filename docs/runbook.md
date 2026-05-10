@@ -624,7 +624,72 @@ saga or coordinator code.
 
 ---
 
-## 9. References
+## 9. Network posture (operator responsibilities)
+
+The 2026-05-09 security audit (`docs/security-audits/2026-05-09.md`)
+identified network-layer concerns that aren't fixable in code — they
+require operator action at deploy time. This section is the
+checklist.
+
+### 9.1 TLS for outbound clients (audit #24)
+
+`HttpReShareClient` and `HttpNcipClient` use `httpx.AsyncClient` with
+`verify=True` (default — system CA bundle). For production deployments
+that front a real FOLIO instance behind a corporate MITM proxy or
+self-signed CA, the operator must ensure the right CA bundle is
+trusted by the Python process. Two paths:
+
+1. **Add the CA to the system bundle.** The cleanest in container
+   deployments — bake the cert into the base image's
+   `/etc/ssl/certs/ca-certificates.crt`.
+2. **Set `SSL_CERT_FILE` env var.** Point at a file containing the
+   relevant CA chain. `httpx` honours this without code changes.
+
+Certificate pinning beyond the system bundle is NOT implemented. If
+your threat model requires pinning to a specific FOLIO cert, file a
+follow-up — the auth client construction in `src/agora/clients/reshare.py`
+and `src/agora/clients/ncip.py` is the seam.
+
+### 9.2 RESHARE_BASE_URL is operator-controlled (audit #32)
+
+`RESHARE_BASE_URL` is read from env at startup and used verbatim for
+every outbound ReShare request. Misconfiguration (or a deploy
+pipeline that allows a less-trusted role to set env vars) becomes
+SSRF — pointing the client at `http://169.254.169.254/...` would
+exfiltrate cloud metadata, internal services, etc.
+
+**Mitigation:** treat `RESHARE_BASE_URL` as a trusted-deploy-config
+value. CI / staging / prod env injection should be limited to the
+same role that ships code. Consider an allow-list of expected
+schemes/hosts at startup if your threat model includes
+less-trusted-than-deploy roles.
+
+### 9.3 HTTPS termination
+
+`HTTPSRedirectMiddleware` is mounted only when `AGORA_ENV=prod`. The
+operator MUST front the API with HTTPS at the proxy / load balancer
+layer:
+
+- Plain HTTP requests redirect to HTTPS via the middleware.
+- HSTS header (6 months, includeSubDomains) is added to every
+  response in prod — meaningful only when HTTPS is the actual
+  reachable transport.
+- HTTP Basic credentials transit cleartext under the proxy boundary;
+  the proxy MUST be configured to terminate TLS upstream of any
+  network where credentials could be sniffed.
+
+### 9.4 Rate limiting at the load balancer (audit #23)
+
+`AGORA_RATE_LIMIT_ENABLED=true` enables an in-process per-IP rate
+limiter — single-worker only. Multi-worker deployments need
+rate-limiting at the load balancer / reverse proxy because the
+in-process counter is per-replica and won't catch an attacker
+distributing requests across workers. Treat the in-process limiter
+as defense in depth, not the primary defense.
+
+---
+
+## 10. References
 
 - `CLAUDE.md` — invariants, known gaps, behavioural rules
 - `docs/prd/` — product requirements

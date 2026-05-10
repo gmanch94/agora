@@ -47,6 +47,9 @@ git checkout master && git pull
 ### Needs sandbox / design work
 - **ADR-0017 follow-up (renew_request)**: Confirm mod-rs action for borrower-initiated renewal against a live two-tenant sandbox. Update `HttpReShareClient.renew_request` and add wire-level test.
 - **ADR-0016 follow-up (production recall)**: ISO 18626 Cancel via `message` performAction. Needs two-tenant sandbox and wire-level testing.
+- **Audit 2026-05-09 #11/#13 — FOLIO `/authn/login-with-expiry` probe**: Batch 4 of the audit-remediation sprint switched OkapiAuth to `/authn/login-with-expiry` and parses `accessTokenExpiration` from the JSON body. The endpoint exists per FOLIO docs but has not been verified against a live FOLIO instance. Verify: (a) endpoint returns 201 + body shape `{"accessTokenExpiration": "<iso>"}` (b) `x-okapi-token` header still set, (c) FOLIO honours the expiry as a soft limit (token continues working past expiry until 401). Tolerant body parsing falls back to legacy reactive-only refresh on shape mismatch, but live verification closes the unknown.
+- **Audit 2026-05-09 #3 follow-up — multi-principal auth**: ADR-0018 documents the single-principal scoping stopgap. The proper fix is JWT (or equivalent) with a `library_symbol` claim per principal. The `ConsolePrincipal` dataclass in `src/agora/api/app.py` is the seam — the dependency function changes shape, the rest of the API stays. Adds per-staff scoping and re-opens audit #26 (PII filtering on cross-library views).
+- **Audit 2026-05-09 #26 (PII filtering)**: Deferred until #3 multi-principal lands. After roles exist, `SagaDetail` should redact `patron_id` and similar fields when the caller's library doesn't own the saga.
 
 ### Coverage state — at the summit
 
