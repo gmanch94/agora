@@ -948,6 +948,16 @@ def create_app() -> FastAPI:
         """
         async with session.begin():
             stmt = select(Saga).order_by(Saga.updated_at.desc()).limit(200)
+            # Audit 2026-05-09 #3 (post-batch-4 reviewer follow-up):
+            # the staff console inbox HTML was returning every saga
+            # in the table — the JSON `/sagas` SQL-filtered, this
+            # didn't. Mirror the JSON path so a scoped principal sees
+            # only their library's rows.
+            if principal.library_symbol is not None:
+                stmt = stmt.where(
+                    Saga.request_payload["requesting_library"]["symbol"].astext
+                    == principal.library_symbol
+                )
             rows = (await session.execute(stmt)).scalars().all()
             ctx_sagas = [_to_inbox_row(saga) for saga in rows]
         return templates.TemplateResponse(
@@ -976,6 +986,15 @@ def create_app() -> FastAPI:
         """
         async with session.begin():
             stmt = select(Saga).order_by(Saga.created_at.desc()).limit(500)
+
+            # Audit 2026-05-09 #3 (post-batch-4 reviewer follow-up):
+            # tenant-scope filter mirrors the JSON `/sagas` and the
+            # inbox HTML view.
+            if principal.library_symbol is not None:
+                stmt = stmt.where(
+                    Saga.request_payload["requesting_library"]["symbol"].astext
+                    == principal.library_symbol
+                )
 
             # SQL-native filters (indexed columns).
             if state:
@@ -1067,6 +1086,12 @@ def create_app() -> FastAPI:
             saga = await session.get(Saga, saga_id)
             if saga is None:
                 raise HTTPException(status_code=404, detail="saga not found")
+            # Audit 2026-05-09 #3 (post-batch-4 reviewer follow-up):
+            # the staff HTML detail view was leaking cross-library
+            # ledger contents — every other saga endpoint guarded but
+            # this one snuck through the audit-#3 sweep. Same shape
+            # as the JSON `/sagas/{id}` and HTML form endpoints.
+            _assert_saga_in_scope(saga, principal)
             ledger = SagaLedger(session)
             events = await ledger.events_for(saga_id)
 

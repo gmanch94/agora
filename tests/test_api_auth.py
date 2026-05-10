@@ -282,6 +282,86 @@ async def test_get_saga_refuses_cross_library_access(
     assert "principal is" in r.json()["detail"]
 
 
+async def test_html_saga_detail_view_refuses_cross_library(
+    auth_client: AsyncClient, auth_app: FastAPI
+) -> None:
+    """Audit #3 reviewer follow-up: staff HTML detail view scopes too.
+
+    Pre-fix `GET /sagas/{id}/view` (HTML) snuck through the audit-#3
+    sweep — every JSON sibling and HTML mutator gated, but the
+    detail view rendered any saga's full ledger to any authenticated
+    principal. Post-fix it 403s on cross-library.
+    """
+    headers = _basic("alice", "alice-pw")
+
+    from uuid import uuid4
+
+    from agora.models.lifecycle import LifecycleState
+    from agora.models.request import IllRequest
+    from agora.saga.db import get_sessionmaker
+    from agora.saga.ledger import SagaLedger
+
+    foreign_id = uuid4()
+    sm = get_sessionmaker()
+    async with sm() as session, session.begin():
+        ledger = SagaLedger(session)
+        req = IllRequest.model_validate(_request_payload(library_symbol="B"))
+        await ledger.create_saga(
+            saga_id=foreign_id,
+            request_id=req.request_id,
+            request_payload=req.model_dump(mode="json"),
+            initial_state=LifecycleState.SUBMITTED,
+        )
+
+    r = await auth_client.get(f"/sagas/{foreign_id}/view", headers=headers)
+    assert r.status_code == 403
+
+
+async def test_html_inbox_filters_to_principal_library(
+    auth_client: AsyncClient,
+) -> None:
+    """Audit #3 reviewer follow-up: inbox HTML view SQL-filters too.
+
+    The JSON `/sagas` endpoint scopes via JSONB-path WHERE; the HTML
+    inbox at `/` was returning every row in the table. Now both
+    surfaces use the same filter.
+    """
+    headers = _basic("alice", "alice-pw")
+
+    # Submit a library-A saga via API (in scope).
+    r = await auth_client.post(
+        "/requests", json=_request_payload(library_symbol="A"), headers=headers
+    )
+    saga_a = r.json()["saga_id"]
+
+    # Seed a foreign library-B saga directly (would be 403 via API).
+    from uuid import uuid4
+
+    from agora.models.lifecycle import LifecycleState
+    from agora.models.request import IllRequest
+    from agora.saga.db import get_sessionmaker
+    from agora.saga.ledger import SagaLedger
+
+    sm = get_sessionmaker()
+    foreign_id = uuid4()
+    async with sm() as session, session.begin():
+        ledger = SagaLedger(session)
+        req = IllRequest.model_validate(_request_payload(library_symbol="B"))
+        await ledger.create_saga(
+            saga_id=foreign_id,
+            request_id=req.request_id,
+            request_payload=req.model_dump(mode="json"),
+            initial_state=LifecycleState.SUBMITTED,
+        )
+
+    r = await auth_client.get("/", headers=headers)
+    assert r.status_code == 200
+    body = r.text
+    # Saga A's UUID appears in the inbox; foreign B's does NOT.
+    assert saga_a[:8] in body or saga_a in body, "library A saga must be visible"
+    assert str(foreign_id)[:8] not in body, "foreign library saga must be filtered out"
+
+
 async def test_list_sagas_filters_to_principal_library(
     auth_client: AsyncClient,
 ) -> None:
