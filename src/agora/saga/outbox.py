@@ -435,7 +435,11 @@ class OutboxWorker:
                 # contend for the same outbox rows. Cap at 10% of
                 # poll_interval — small enough that latency is barely
                 # affected, large enough to break lock-step.
-                jitter = random.uniform(0, poll_interval * 0.1)
+                #
+                # ``random`` (not ``secrets``) is correct here: this is
+                # cadence decorrelation, not a cryptographic primitive.
+                # The poll interval doesn't carry any secret.
+                jitter = random.uniform(0, poll_interval * 0.1)  # nosec B311
                 await asyncio.sleep(poll_interval + jitter)
         except asyncio.CancelledError:
             log.info("outbox.worker.cancelled")

@@ -5,7 +5,7 @@ so ``model_dump()`` / ``repr()`` redact the value automatically (the
 ``agora --config`` CLI no longer prints plaintext passwords). Use
 ``.get_secret_value()`` at the consumer to read the actual string.
 The ``db_url`` field is also a ``SecretStr`` because the URL embeds
-credentials (``postgresql://user:password@host/db``).
+credentials (``postgresql://user:password@host/db``).  # pragma: allowlist secret
 """
 
 from functools import lru_cache
@@ -226,7 +226,7 @@ class Settings(BaseSettings):
         Used by startup-time guards (``configure_logging`` /
         ``create_app``) to warn loudly when a non-``dev`` environment
         ships with the development credentials. Audit 2026-05-09 #25:
-        the default ``postgresql+asyncpg://agora:agora@localhost:5433/agora``
+        the default ``postgresql+asyncpg://agora:agora@localhost:5433/agora``  # pragma: allowlist secret
         is fine for offline dev but lethal in any deployment that
         forgets to override it.
         """

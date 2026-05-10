@@ -251,7 +251,7 @@ def test_db_url_uses_dev_default_property() -> None:
 def test_create_app_refuses_dev_db_in_non_dev_env(monkeypatch: object) -> None:
     """Audit #25: refuse to boot with ``:agora@`` creds when env != 'dev'.
 
-    The default ``postgresql+asyncpg://agora:agora@localhost:5433/agora``
+    The default ``postgresql+asyncpg://agora:agora@localhost:5433/agora``  # pragma: allowlist secret
     is fine for offline laptop work; shipping it to staging/prod is a
     credential leak. ``create_app`` raises RuntimeError so the operator
     sees a clean refuse-to-start instead of a silently-running service.

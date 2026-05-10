@@ -47,10 +47,11 @@ def test_config_flag_redacts_credentials(
     """
     from agora.config import get_settings
 
-    monkeypatch.setenv("RESHARE_PASSWORD", "supersecret123")
-    monkeypatch.setenv("AGORA_CONSOLE_PASSWORD", "consolepw456")
+    monkeypatch.setenv("RESHARE_PASSWORD", "supersecret123")  # pragma: allowlist secret
+    monkeypatch.setenv("AGORA_CONSOLE_PASSWORD", "consolepw456")  # pragma: allowlist secret
     monkeypatch.setenv(
-        "AGORA_DB_URL", "postgresql+asyncpg://user:realpw@db:5432/prod"
+        "AGORA_DB_URL",
+        "postgresql+asyncpg://user:realpw@db:5432/prod",  # pragma: allowlist secret
     )
     get_settings.cache_clear()
     try:
