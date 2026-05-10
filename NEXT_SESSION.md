@@ -1,34 +1,51 @@
 # Next session resume note
 
-**Last updated:** 2026-05-07 (PRs #133-#139 merged; master at 503 collected / 492 pass + 11 skipped / 99% coverage).
+**Last updated:** 2026-05-09 (audit-remediation sprint complete; master at 553 collected / 542 pass + 11 skipped).
 
 ## Repo state
 
-- `master` clean at `5e77360` (PR #139 — `security_scan.py` Windows path-normalization).
-- Test count **503 collected** on master (492 pass + 11 skipped env-gated).
-- ADR count: **17** (ADR-0017 documents `renew_request` sandbox gap).
-- Overall coverage: **99%** (`pytest --cov=src/agora`).
-- LLM routing baseline: **top-1 1.0000 / mean Spearman 1.0000** (40 scenarios, gemini-2.5-flash).
-- Security audit: **bandit 0 / pip-audit 0 / detect-secrets 0** (post #139 — script no longer false-positives on Windows).
+- `master` at `a6eb6fa` (audit-remediation sprint final commit). Local-only — no PR opened yet; commits are NOT pushed.
+- Test count **553 collected** (542 pass + 11 skipped env-gated). 39 new tests this sprint.
+- ADR count: **18** (ADR-0018 documents the multi-principal auth follow-up after the tenant-scoping stopgap landed).
+- LLM routing baseline: **top-1 1.0000 / mean Spearman 1.0000** (40 scenarios, gemini-2.5-flash) — unchanged.
+- Security audit: **bandit 0 / pip-audit 0 / detect-secrets 0**. mypy `--strict` clean over `src/` and `tests/`. ruff clean.
+- Latest audit: `docs/security-audits/2026-05-09.md`. 36 of 42 findings closed in code; 6 documented as operator-side or scoped-out (see SECURITY_MODEL.md § 6).
 
-## PRs this session (in order)
+## Sprint commits this session (audit remediation)
 
-| PR | Branch | Title | Status |
-|----|--------|-------|--------|
-| #133 | `docs/prd-refresh-2026-05-07` | docs(prd): refresh all 7 PRDs against code (post #100/#101/#102/#116/#117) | Merged |
-| #134 | `fix/renew-portal-blockers` | fix(renew,portal): close three ship-blockers from post-#117 strict review | Merged |
-| #135 | `chore/next-session-post-134` | chore: update NEXT_SESSION.md after PRs #133-#134 | Merged |
-| #136 | `docs/lessons-post-134` | docs(lessons): capture three post-#134 lessons | Merged |
-| #137 | `fix/portal-requests-sql-filter` | fix(portal): SQL-side patron_id filter — patrons with sagas outside the top-200 now show | Merged |
-| #138 | `docs/stale-check-post-117` | docs: stale-check sweep — 11 drift fixes across 4 files (post #100-#134) | Merged |
-| #139 | `fix/security-audit-script-windows` | fix(security-audit): two false-positive sources in bundled detect-secrets filter | Merged |
+| Commit | Batch | Findings closed |
+|--------|-------|-----------------|
+| `eb15ed9` | 1: XML safety + outbox hardening | #4, #5, #6, #12, #18, #28, #29, #36 |
+| `9b6ba41` | 2: Input validation tightening | #14, #15, #17, #19, #20, #22, #30 |
+| `2ef8085` | 3: Credential / config hygiene | #7, #10, #25, #33, #34 |
+| `d06adfa` | 4: Auth + tenant stopgap + portal HMAC + OkapiAuth expiry | #1, #2, #3, #11/#13, #21 |
+| `512ede5` | 5: Web hardening | #8, #9, #23, #31, #38 |
+| `5b16277` | 6: LLM prompt injection guard | #16 |
+| `29c36fb` | 7: Tracking race + JSONB index + jitter + fail-fast renew | #27, #35, #37, #42 |
+| `a6eb6fa` | 8: Network-posture docs + SECURITY_MODEL fill + Jinja XSS guard | #24, #32, #39 |
 
-### Notable code changes landed
+### Substantive new behaviour to know about
 
-- **#134**: `renew_forward` validates `extension_days ∈ [1, 180]` (single chokepoint for JSON + HTMX); `_portal_due_date` is compensator-aware (renew stack push/pop); patron-id 404 dropped from `portal_saga_detail` (saga UUID is the secret, patron-id is a UX label). Lessons in `docs/lessons.md` 2026-05-07 entries.
-- **#137**: `portal_requests` filters via SQL JSON path `Saga.request_payload['patron']['patron_id'].astext == patron_id` so the LIMIT 200 caps the patron's rows, not the table's. Closes the post-#134 advisor-leftover false-negative.
-- **#138**: README ADR count fixed (16 → 17), broken ADR-0016 link fixed, RENEW + portal coverage added to runbook + solution API tables and architecture.md state machine + layer cake.
-- **#139**: `security_scan.py` filter now normalises Windows backslashes to forward slashes for baseline lookup, and skips `.secrets.baseline` itself in scan-result post-processing. Aligns local audit with CI behaviour.
+- **Auth on JSON API.** `/sagas/*`, `/requests`, `/portal/*` now require Basic auth when `AGORA_CONSOLE_PASSWORD` is set. ADR-0007's no-auth posture is superseded by ADR-0018.
+- **Tenant scoping.** `AGORA_CONSOLE_LIBRARY_SYMBOL` binds the principal to one library; saga endpoints 403 on cross-library access. `GET /sagas` SQL-filters. `POST /requests` rejects out-of-scope. Single-tenant by construction (multi-principal is the ADR-0018 follow-up).
+- **Patron portal HMAC.** `AGORA_PORTAL_SIGNING_KEY` set → `/portal/*` requires `?token=<HMAC>`. Detail signs (saga_id, patron_id) AND verifies stored patron_id matches. Empty key = dev-only form-entry path.
+- **OkapiAuth proactive refresh.** Login switched to `/authn/login-with-expiry`; body parses `accessTokenExpiration`; refreshes 60s before expiry. Live FOLIO probe still pending (backlog).
+- **Outbox hardening:** allow-list dispatch (`_RESHARE_ACTIONS` / `_NCIP_ACTIONS`), lease-race verification (`outbox_claim_still_ours`), deterministic compensator key, fail-fast for `renew_request`.
+- **XML safety:** shared `agora.clients._xml.SAFE_XML_PARSER` everywhere.
+- **Input validation:** `StepExtras` typed model, `IllRequest` field-level `max_length`, server-side `request_id`, `IdempotencyConflictError` on collision.
+- **LLM prompt injection guard:** `HolderCandidate.symbol` regex, `repr()`-quoted prompt rendering, allow-listed raw keys, system-prompt directive.
+- **Web hardening:** CSRF (`AGORA_CSRF_ENABLED`), rate limit (`AGORA_RATE_LIMIT_ENABLED`), HTTPSRedirect in prod, security headers, `/docs` hidden in prod.
+- **Credentials:** `SecretStr` for password / db_url fields; CLI redacts; `create_app` refuses dev `:agora@` default outside `AGORA_ENV=dev`; `api_host` defaults to `127.0.0.1`.
+- **CI guards:** `scripts/check_template_xss_guards.py` + `tests/test_template_xss_guards.py` for Jinja autoescape bypasses.
+
+New env vars (5 added): `AGORA_CONSOLE_LIBRARY_SYMBOL`,
+`AGORA_PORTAL_SIGNING_KEY`, `AGORA_RATE_LIMIT_ENABLED` /
+`AGORA_RATE_LIMIT_REQUESTS` / `AGORA_RATE_LIMIT_WINDOW_SECS`,
+`AGORA_CSRF_ENABLED`. All documented in `.env.example` + runbook §
+1.2.
+
+New ADR: ADR-0018 (tenant-scoping stopgap).
+New skill / script: `scripts/check_template_xss_guards.py`.
 
 ## What to do at session start
 
@@ -36,11 +53,17 @@
 git checkout master && git pull
 
 # Verify
-.venv/Scripts/python.exe -m pytest tests/ -q          # expect 492 pass, 11 skip (503 collected)
-.venv/Scripts/python.exe -m ruff check src tests      # clean
+.venv/Scripts/python.exe -m pytest tests/ -q          # expect 542 pass, 11 skip (553 collected)
+.venv/Scripts/python.exe -m ruff check src tests scripts   # clean
 .venv/Scripts/python.exe -m mypy --strict             # clean
-.venv/Scripts/python.exe .claude/skills/security-audit/scripts/security_scan.py .  # 0 findings
+.venv/Scripts/python.exe scripts/check_template_xss_guards.py  # OK (no XSS-guard violations)
+.venv/Scripts/python.exe .claude/skills/security-audit/scripts/security_scan.py .  # 0 findings (bandit + pip-audit + detect-secrets)
 ```
+
+**The 8 audit-remediation commits are local-only.** If the user
+wants them pushed as a single PR (or split into per-batch PRs),
+that decision is theirs — the work is staged, lint+types+tests
+green, ready for review.
 
 ## Backlog (prioritised)
 

@@ -25,9 +25,12 @@ day-to-day operation (outbox, overdue scan, gate workflow), and
 incident triage. Pair with `CLAUDE.md` for invariants and `docs/adr/`
 for design rationale.
 
-> **Scope.** Research prototype, not production. No auth. No real
-> peers. Postgres + Mock ReShare client by default. See
-> `docs/adr/0007-fedramp-deferred.md`.
+> **Scope.** Research prototype, not production. Auth is single-
+> principal HTTP Basic + tenant-scoping stopgap (audit 2026-05-09 #1
+> / #3, [ADR-0018](adr/0018-tenant-scoping-stopgap.md)); production
+> multi-principal OIDC still deferred per
+> [ADR-0007](adr/0007-fedramp-deferred.md). No real peers by default.
+> Postgres + Mock ReShare client by default.
 
 ---
 

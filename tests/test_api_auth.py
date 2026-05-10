@@ -148,6 +148,47 @@ async def test_health_does_not_require_auth(
 # ---------------------------------------------------------------------
 
 
+async def test_html_form_actor_is_principal_not_hardcoded_staff(
+    auth_client: AsyncClient,
+) -> None:
+    """Audit #21 regression — HTML form endpoints had previously
+    hard-coded ``actor="staff"`` instead of using ``principal.actor``.
+
+    Pre-fix the audit-remediation sprint closed the JSON path but left
+    the HTML form endpoints (`/ui/sagas/.../approve` etc.) writing
+    ``actor="staff"`` to the ledger, breaking audit-trail attribution
+    for staff who actually used the HTML console. The independent
+    reviewer caught this gap. This test pins the HTML path to the
+    same principal-as-actor contract as the JSON path.
+    """
+    headers = _basic("alice", "alice-pw")
+
+    # Submit a request via JSON (HTML submit isn't an endpoint).
+    r = await auth_client.post(
+        "/requests", json=_request_payload(library_symbol="A"), headers=headers
+    )
+    assert r.status_code == 201, r.text
+    saga_id = r.json()["saga_id"]
+
+    # Drive ROUTE forward via the HTML form endpoint with explicit
+    # cookie-handling for CSRF (CSRF is off by default in fixture).
+    r = await auth_client.post(
+        f"/ui/sagas/{saga_id}/approve",
+        data={"step": "route", "rationale": "ok", "chosen_supplier": "MEMBER1"},
+        headers=headers,
+    )
+    assert r.status_code in (200, 303), r.text
+
+    detail = (await auth_client.get(f"/sagas/{saga_id}", headers=headers)).json()
+    route_events = [
+        e for e in detail["events"] if e["step"] == "route" and e["kind"] == "forward"
+    ]
+    assert len(route_events) == 1
+    # Pre-fix this would have been "staff" (hard-coded). Post-fix the
+    # principal's authenticated identity lands on the ledger.
+    assert route_events[0]["actor"] == "staff:alice@A"
+
+
 async def test_actor_on_ledger_event_is_principal_not_body(
     auth_client: AsyncClient,
 ) -> None:

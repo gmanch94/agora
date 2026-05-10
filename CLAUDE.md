@@ -16,7 +16,7 @@ Returned** with saga compensators paired to every forward step.
 .venv/Scripts/python.exe -m pip install -e ".[dev]"
 
 # Verify
-.venv/Scripts/python.exe -m pytest tests/ -q              # 553 tests (+6 postgres-only).venv/Scripts/python.exe -m ruff check src tests          # lint
+.venv/Scripts/python.exe -m pytest tests/ -q              # 554 tests (+6 postgres-only).venv/Scripts/python.exe -m ruff check src tests          # lint
 .venv/Scripts/python.exe -m mypy --strict                 # types
 make audit                                                # bandit + pip-audit + detect-secrets
 .venv/Scripts/python.exe -m agora.demos.happy_path        # end-to-end demo
@@ -57,7 +57,7 @@ agora/
 │   ├── saga/                    # ledger, coordinator, idempotency,
 │   │                            #   flows (forward+compensator pairs)
 │   ├── cli.py / config.py / logging.py
-├── tests/                       # 553 tests (unit + property + e2e)├── docker-compose.yml           # Postgres-only sandbox
+├── tests/                       # 554 tests (unit + property + e2e)├── docker-compose.yml           # Postgres-only sandbox
 ├── Makefile / pyproject.toml
 ```
 
@@ -103,6 +103,76 @@ ISO 18626 message types — see table in `clients/reshare.py`.
   write Status / Context / Decision / Consequences sections.
 
 ## Known gaps (do not silently fix — flag to user)
+
+- **Audit 2026-05-09 sprint outcomes (`docs/security-audits/2026-05-09.md`).**
+  36 of 42 findings closed across 8 commits (b15ed9..a6eb6fa).
+  Substantive new behaviour to be aware of:
+  * **Auth on JSON API endpoints (audit #1).** Every `/sagas/*`,
+    `/requests`, `/portal/*` route runs `_require_console_auth`.
+    Empty `AGORA_CONSOLE_PASSWORD` disables the gate (dev only);
+    set both `AGORA_CONSOLE_USERNAME` + `AGORA_CONSOLE_PASSWORD` in
+    staging / prod. ADR-0007's "no auth, trusted-network" posture is
+    superseded by ADR-0018.
+  * **Tenant scoping stopgap (audit #3, ADR-0018).**
+    `AGORA_CONSOLE_LIBRARY_SYMBOL` binds the principal to one
+    library; saga endpoints 403 on cross-library access. Single-
+    tenant by construction; multi-principal auth is the ADR-0018
+    follow-up. The `ConsolePrincipal` dataclass in
+    `src/agora/api/app.py` is the seam — change the dependency,
+    keep the rest.
+  * **Patron portal HMAC (audit #2).** `AGORA_PORTAL_SIGNING_KEY` set
+    → `/portal/*` endpoints require a `token` query param. Detail
+    URL signs (saga_id, patron_id) AND verifies the saga's stored
+    patron_id matches the query param. Empty key = dev-only
+    form-entry path.
+  * **OkapiAuth proactive refresh (audit #11/#13).** Login URL
+    switched to `/authn/login-with-expiry`; body parse extracts
+    `accessTokenExpiration`; `_token_is_fresh` triggers proactive
+    refresh 60s before expiry. Body parsing is tolerant (legacy
+    `/authn/login` shape falls through to reactive-only). Live FOLIO
+    verification of the with-expiry response shape is in NEXT_SESSION
+    backlog.
+  * **Outbox hardening:** allow-list dispatch (audit #4/#28),
+    `outbox_claim_still_ours` lease-race verification (audit #12),
+    deterministic compensator key `comp-{step}-{saga_id}` (audit #5),
+    fail-fast `_FAIL_FAST_ACTIONS` for `renew_request` (audit #35),
+    `add_done_callback` for silent-task-death detection (audit #29).
+  * **XML safety:** shared `agora.clients._xml.SAFE_XML_PARSER`
+    (`resolve_entities=False, no_network=True, huge_tree=False`) used
+    by SRU + NCIP. SRU was the regression source (audit #6/#18).
+  * **Input validation:** typed `StepExtras` model (audit #15)
+    replaces `dict[str, Any]` extras; `IllRequest` fields all carry
+    `max_length` (audit #14); `request_id` server-overwritten on
+    `POST /requests` (audit #20); `IdempotencyConflictError` on
+    real key collision (audit #22).
+  * **LLM prompt injection (audit #16):** `HolderCandidate.symbol`
+    regex `^[A-Za-z0-9.\-/]{1,64}$`; prompt rendering uses `repr()`
+    + 256-char per-value cap + allow-listed raw keys; system prompt
+    has explicit "ATTACK RESISTANCE" directive.
+  * **Web hardening:** CSRF middleware (`AGORA_CSRF_ENABLED`),
+    rate-limit middleware (`AGORA_RATE_LIMIT_ENABLED`),
+    HTTPSRedirectMiddleware in prod, security-headers middleware
+    (X-Frame-Options DENY, CSP, nosniff, HSTS in prod), `/docs`
+    hidden when `AGORA_ENV != dev`.
+  * **Credentials:** `reshare_password`, `console_password`, `db_url`
+    are `pydantic.SecretStr` (audit #10); `agora --config` redacts
+    via `_CREDENTIAL_KEY_FRAGMENTS`; `create_app` refuses to boot
+    with the `:agora@` default db_url outside `dev` (audit #25);
+    `api_host` defaults to `127.0.0.1` (audit #34).
+  * **Tracking scanner race (audit #27):** `session.refresh(saga)`
+    + state guard before each per-tier append. Best-effort race
+    mitigation (microseconds), not full closure.
+  * **CI-as-enforcement (audit #39):**
+    `scripts/check_template_xss_guards.py` + `tests/test_template_xss_guards.py`
+    catch `|safe`, `|raw`, autoescape disables, inline `<script>`
+    interpolation, `on*=` attrs, `javascript:` URIs.
+
+  Remaining gaps (deferred or operator-side): #11/#13 live FOLIO
+  probe, #24 TLS pinning beyond system bundle (runbook § 9.1), #26
+  PII filtering deferred until multi-principal lands (ADR-0018
+  follow-up), #32 `RESHARE_BASE_URL` allow-list (runbook § 9.2).
+  Full enforcement table at `docs/SECURITY_MODEL.md` § 4; known-gap
+  registry at § 6.
 
 - `HttpReShareClient` paths and action vocabulary verified against
   mod-rs master (UrlMappings.groovy, PatronRequestController.groovy,

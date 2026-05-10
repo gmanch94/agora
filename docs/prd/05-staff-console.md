@@ -62,17 +62,28 @@ timeline labelled in patron-friendly language via `_patron_event_label`).
 **No write endpoints** — patrons cannot submit, cancel, renew, or
 override through the portal; staff still drive every state change.
 
-**Privacy posture (prototype-grade).** The **saga UUID is the secret
-token** — anyone who knows the UUID can read the saga via
-`/portal/requests/{saga_id}?patron_id=<anything>`. The `patron_id`
-query parameter is a **UX label echoed into the page**, not an access
-gate. Earlier behaviour 404'd on patron-id mismatch but
-`/portal/requests?patron_id=...` accepts arbitrary IDs and returns
-that patron's saga IDs anyway, so a `patron_id` gate on the detail
-view was false reassurance. The honest posture for a no-auth prototype
-is to make this explicit and document it. Production needs real patron
-auth (SAML/Shibboleth, PIV/CAC — see ADR-0007); until then treat the
-saga UUID as the only access secret.
+**Privacy posture (post-2026-05-09 audit, audit #2).** Two modes,
+toggled by `AGORA_PORTAL_SIGNING_KEY`:
+
+- **Empty key (dev mode):** form-entry path active, the **saga UUID
+  is the secret token**, and `patron_id` is a UX label echoed into
+  the page rather than an access gate (a gate on patron-id while
+  `/portal/requests` accepts arbitrary IDs would be false reassurance).
+  Use this only for local development.
+- **Key set (production mode):** every `/portal/*` endpoint requires
+  a `?token=<HMAC>` query parameter. The list view signs `patron_id`;
+  the detail view signs `(saga_id, patron_id)` AND verifies that
+  the saga's stored `patron_id` matches the query param (so a token
+  issued for one patron cannot enumerate another patron's sagas).
+  Tokens are minted out-of-band — typically emailed to the patron —
+  so guessing or harvesting a `patron_id` alone does not unlock
+  circulation history. 404 on every failure path; no oracle for
+  token validity.
+
+Long-term federal-grade auth (SAML/Shibboleth, PIV/CAC) is still
+deferred per [ADR-0007](../adr/0007-fedramp-deferred.md); the HMAC
+gate is the prototype-grade interim. See `mint_portal_token` /
+`verify_portal_token` in `src/agora/api/app.py`.
 
 **Due date semantics.** `_portal_due_date` walks committed events in
 `seq` order: `forward.ship.due_at` seeds the value, each
@@ -110,8 +121,8 @@ POST   /ui/sagas/{id}/renew            # form submit → renew; 303 redirect to 
 
 # Patron portal — read-only (server-rendered HTML, PR #117)
 GET    /portal                         # patron-id lookup form (landing)
-GET    /portal/requests                # ?patron_id=…  list this patron's sagas (most recent 200)
-GET    /portal/requests/{saga_id}      # ?patron_id=…  saga detail (404 only if saga unknown; patron_id is a label, not a gate)
+GET    /portal/requests                # ?patron_id=… [&token=…]  list this patron's sagas (most recent 200; token required when AGORA_PORTAL_SIGNING_KEY is set)
+GET    /portal/requests/{saga_id}      # ?patron_id=… [&token=…]  saga detail; with key set, HMAC over (saga_id, patron_id) AND stored patron_id must match query param
 ```
 
 **Idempotency keys are minted server-side** — every saga event
@@ -131,11 +142,23 @@ be settled out-of-band by staff (see `saga/flows.py` § RECEIVE
 compensator for rationale). Broader override (arbitrary state
 forcing, PolicyAgent hard-fail integration) remains out of scope.
 
-**Auth:** optional HTTP Basic on the HTML console routes via
-`AGORA_CONSOLE_USERNAME` / `AGORA_CONSOLE_PASSWORD`. Default is empty
-(no credentials required in local dev). JSON API routes are unaffected
-(trusted-network assumption, ADR-0007). Full FedRAMP-grade auth deferred
-(SAML/Shibboleth, PIV/CAC — see `docs/adr/0007-fedramp-deferred.md`).
+**Auth (post-2026-05-09 audit, #1 / #3 / #21).** HTTP Basic gates
+**every** route now (HTML console + JSON API + patron portal —
+the trusted-network assumption from the previous baseline is
+superseded by [ADR-0018](../adr/0018-tenant-scoping-stopgap.md)).
+Set `AGORA_CONSOLE_USERNAME` / `AGORA_CONSOLE_PASSWORD` to enable;
+empty password keeps auth off for local dev. With
+`AGORA_CONSOLE_LIBRARY_SYMBOL` set the principal binds to a single
+library and saga endpoints 403 on cross-library access (`GET /sagas`
+also SQL-filters); single-tenant by construction, multi-principal
+auth is the ADR-0018 follow-up. The `actor` recorded on every ledger
+event is sourced from the authenticated principal, not from the
+request body. `/health` is the only unauthenticated route. Full
+FedRAMP-grade auth (SAML/Shibboleth, PIV/CAC) remains deferred per
+[ADR-0007](../adr/0007-fedramp-deferred.md). CSRF + rate-limit +
+HTTPS redirect + security-headers middleware all toggleable via
+the audit-batch-5 env vars (`AGORA_CSRF_ENABLED`,
+`AGORA_RATE_LIMIT_ENABLED`).
 
 ## UX principles
 

@@ -54,7 +54,10 @@ liability).
 
 - ISO 18626 wire-level XML serialisation. **mod-rs does that.** We
   drive mod-rs over REST.
-- Auth, FedRAMP controls, multi-region HA. Out of scope per ADR-0007.
+- Multi-principal auth, FedRAMP controls, multi-region HA. Single-
+  principal Basic auth + tenant-scoping stopgap ARE in scope and
+  shipped per [ADR-0018](adr/0018-tenant-scoping-stopgap.md);
+  per-staff OIDC + FedRAMP remain out of scope per ADR-0007.
 - Patron-facing UI; only a staff console.
 - Z39.50 binary protocol; SRU only (ADR-0006).
 - Real money / billing / payment.
@@ -152,7 +155,10 @@ approvable.
 
 Schemas live in `api/schemas.py` (pydantic v2). Settings are sourced
 from `agora.config.get_settings()` (`@lru_cache`-decorated). Auth is
-intentionally not implemented — ADR-0007.
+single-principal HTTP Basic with optional tenant scoping per
+[ADR-0018](adr/0018-tenant-scoping-stopgap.md) (audit 2026-05-09 #1
+/ #3); multi-principal OIDC remains deferred per
+[ADR-0007](adr/0007-fedramp-deferred.md).
 
 ### 3.2 Saga core (`src/agora/saga/`)
 
@@ -426,7 +432,7 @@ during the APPROVING window (supplier ack still pending) returns
 
 ### 7.5 Test strategy
 
-- 553 tests across unit, property (Hypothesis on compensator  symmetry), and end-to-end (FastAPI + ASGITransport + in-memory
+- 554 tests across unit, property (Hypothesis on compensator  symmetry), and end-to-end (FastAPI + ASGITransport + in-memory
   SQLite), plus 6 postgres-only tests gated behind
   `AGORA_TEST_DB_URL` / the `postgres-tests.yml` CI service container.
 - `pytest-asyncio` in `asyncio_mode = "auto"`.
@@ -486,7 +492,8 @@ catalogs publish SRU anyway. SRU covers the prototype scope.
 | Area                          | Risk / gap                                                                                                                |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
 | `HttpReShareClient`           | Create-request body shape unverified vs `PatronRequest` Grails domain. Recall mapping unverified — raises until confirmed. |
-| Auth                          | HTTP Basic only. Production needs Okapi token flow.                                                                       |
+| Auth (Agora console)          | HTTP Basic single-principal + optional tenant scoping (ADR-0018, audit 2026-05-09 #1/#3); multi-principal OIDC pending.    |
+| Auth (ReShare upstream)       | HTTP Basic for dev; Okapi `/authn/login-with-expiry` token flow with proactive expiry refresh in production (ADR-0013, audit #11/#13). |
 | ReconciliationAgent           | Thin wrapper today; lacks failure-classification policy (when to run which compensator automatically).                     |
 | NCIP client                   | `HttpNcipClient` shipped (PR #98/#99; source-review-only); live mod-ncip probe pending (see `tests/test_ncip_http_smoke.py`). |
 | ISO 18626 XSD validation      | Validation harness (`scripts/validate_iso18626.py`) + minimal XSD/XML fixtures shipped #52; CI exercises plumbing on every PR. The real ISO 18626 v1.3 XSD is an opt-in cache step at `docs/standards/iso18626/` — not bundled. Wire-level conformance still delegated to mod-rs. |

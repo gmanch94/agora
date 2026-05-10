@@ -938,7 +938,7 @@ def create_app() -> FastAPI:
     async def staff_console_inbox(
         request: Request,
         session: AsyncSession = Depends(_get_session),
-        _auth: None = Depends(_require_console_auth),
+        principal: ConsolePrincipal = Depends(_require_console_auth),
     ) -> HTMLResponse:
         """Staff console inbox — HTML view over recent sagas.
 
@@ -960,7 +960,7 @@ def create_app() -> FastAPI:
     async def saga_browser(
         request: Request,
         session: AsyncSession = Depends(_get_session),
-        _auth: None = Depends(_require_console_auth),
+        principal: ConsolePrincipal = Depends(_require_console_auth),
         state: str | None = Query(default=None),
         library: str | None = Query(default=None),
         date_from: str | None = Query(default=None),
@@ -1060,7 +1060,7 @@ def create_app() -> FastAPI:
         saga_id: UUID,
         request: Request,
         session: AsyncSession = Depends(_get_session),
-        _auth: None = Depends(_require_console_auth),
+        principal: ConsolePrincipal = Depends(_require_console_auth),
     ) -> HTMLResponse:
         """Staff console detail view — full ledger timeline + action forms."""
         async with session.begin():
@@ -1141,7 +1141,7 @@ def create_app() -> FastAPI:
         saga_id: UUID,
         session: AsyncSession = Depends(_get_session),
         registry: StepRegistry = Depends(_get_registry),
-        _auth: None = Depends(_require_console_auth),
+        principal: ConsolePrincipal = Depends(_require_console_auth),
         step: str = Form(...),
         rationale: str = Form("Staff approved."),
         chosen_supplier: str = Form(""),
@@ -1159,13 +1159,19 @@ def create_app() -> FastAPI:
             async with session.begin():
                 coord = Coordinator(session=session, registry=registry)
                 ledger = SagaLedger(session)
+                # Audit 2026-05-09 #21: HTML form path uses
+                # ``principal.actor`` (was hard-coded ``"staff"``).
+                # Tenant scope check via ``_assert_saga_in_scope``
+                # mirrors the JSON path's audit-#3 guard.
+                saga = await ledger.get_saga(saga_id)
+                _assert_saga_in_scope(saga, principal)
+                actor = principal.actor
                 await coord.commit_gate(
                     saga_id=saga_id,
                     step=step_name,
-                    actor="staff",
+                    actor=actor,
                     rationale=rationale,
                 )
-                saga = await ledger.get_saga(saga_id)
                 events = await ledger.events_for(saga_id)
                 full_extras = _derive_extras(events, extras or None)
                 ill_request = IllRequest.model_validate(saga.request_payload)
@@ -1174,7 +1180,7 @@ def create_app() -> FastAPI:
                         saga_id=saga_id,
                         request=ill_request,
                         current_state=LifecycleState(saga.current_state),
-                        actor="staff",
+                        actor=actor,
                         step=step_name,
                         extras=full_extras,
                     ),
@@ -1192,7 +1198,7 @@ def create_app() -> FastAPI:
         saga_id: UUID,
         http_request: Request,
         session: AsyncSession = Depends(_get_session),
-        _auth: None = Depends(_require_console_auth),
+        principal: ConsolePrincipal = Depends(_require_console_auth),
     ) -> HTMLResponse:
         """HTMX partial: run DiscoveryAgent, return candidate list as HTML fragment.
 
@@ -1207,6 +1213,7 @@ def create_app() -> FastAPI:
             async with session.begin():
                 ledger = SagaLedger(session)
                 saga = await ledger.get_saga(saga_id)
+                _assert_saga_in_scope(saga, principal)
                 current = LifecycleState(saga.current_state)
                 if current in TERMINAL_STATES:
                     raise HTTPException(
@@ -1239,7 +1246,7 @@ def create_app() -> FastAPI:
                         step=StepName.ROUTE,
                         state_before=current,
                         state_after=current,
-                        actor="agent:discovery",
+                        actor=principal.actor,
                         idempotency_key=new_idempotency_key(prefix="discovery"),
                         payload=payload,
                         outcome=StepOutcome.COMMITTED,
@@ -1276,7 +1283,7 @@ def create_app() -> FastAPI:
     async def ui_saga_reject(
         saga_id: UUID,
         session: AsyncSession = Depends(_get_session),
-        _auth: None = Depends(_require_console_auth),
+        principal: ConsolePrincipal = Depends(_require_console_auth),
         step: str = Form(...),
         rationale: str = Form("Staff rejected."),
     ) -> RedirectResponse:
@@ -1286,14 +1293,34 @@ def create_app() -> FastAPI:
             async with session.begin():
                 ledger = SagaLedger(session)
                 saga = await ledger.get_saga(saga_id)
+                _assert_saga_in_scope(saga, principal)
+                current = LifecycleState(saga.current_state)
+                # Audit #30 (consistency with JSON path): refuse on
+                # terminal saga or already-committed forward.
+                if current in TERMINAL_STATES:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"saga is terminal ({current.value!r}); rejection is "
+                            "no longer meaningful"
+                        ),
+                    )
+                if await _step_already_committed_forward(ledger, saga_id, step_name):
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"step {step_name.value!r} already committed a forward event; "
+                            "cannot reject after the fact (use /compensate to undo)"
+                        ),
+                    )
                 await ledger.append(
                     NewSagaEvent(
                         saga_id=saga_id,
                         kind=EventKind.GATE,
                         step=step_name,
-                        state_before=LifecycleState(saga.current_state),
-                        state_after=LifecycleState(saga.current_state),
-                        actor="staff",
+                        state_before=current,
+                        state_after=current,
+                        actor=principal.actor,
                         idempotency_key=new_idempotency_key(prefix="gate-reject"),
                         payload={"reason": rationale},
                         outcome=StepOutcome.FAILED,
@@ -1310,7 +1337,7 @@ def create_app() -> FastAPI:
         saga_id: UUID,
         session: AsyncSession = Depends(_get_session),
         registry: StepRegistry = Depends(_get_registry),
-        _auth: None = Depends(_require_console_auth),
+        principal: ConsolePrincipal = Depends(_require_console_auth),
         step: str = Form(...),
         rationale: str = Form("Staff compensated."),
     ) -> RedirectResponse:
@@ -1321,6 +1348,7 @@ def create_app() -> FastAPI:
                 coord = Coordinator(session=session, registry=registry)
                 ledger = SagaLedger(session)
                 saga = await ledger.get_saga(saga_id)
+                _assert_saga_in_scope(saga, principal)
                 events = await ledger.events_for(saga_id)
                 extras = _derive_extras(events, None)
                 ill_request = IllRequest.model_validate(saga.request_payload)
@@ -1329,7 +1357,7 @@ def create_app() -> FastAPI:
                         saga_id=saga_id,
                         request=ill_request,
                         current_state=LifecycleState(saga.current_state),
-                        actor="staff",
+                        actor=principal.actor,
                         step=step_name,
                         extras=extras,
                         # Deterministic key — second /compensate call
@@ -1355,10 +1383,9 @@ def create_app() -> FastAPI:
     async def ui_saga_override(
         saga_id: UUID,
         session: AsyncSession = Depends(_get_session),
-        _auth: None = Depends(_require_console_auth),
+        principal: ConsolePrincipal = Depends(_require_console_auth),
         target_state: str = Form(...),
         rationale: str = Form("Staff override."),
-        actor: str = Form("staff"),
     ) -> RedirectResponse:
         """HTML form endpoint: resolve DISPUTED saga, then redirect to detail."""
         try:
@@ -1388,6 +1415,7 @@ def create_app() -> FastAPI:
             except SagaNotFoundError as exc:
                 raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+            _assert_saga_in_scope(saga, principal)
             current = LifecycleState(saga.current_state)
             if current != LifecycleState.DISPUTED:
                 raise HTTPException(
@@ -1405,7 +1433,7 @@ def create_app() -> FastAPI:
                     step=StepName.RESOLVE,
                     state_before=current,
                     state_after=target,
-                    actor=actor,
+                    actor=principal.actor,
                     idempotency_key=new_idempotency_key("override"),
                     outcome=StepOutcome.COMMITTED,
                     rationale=rationale,
@@ -1420,7 +1448,7 @@ def create_app() -> FastAPI:
         saga_id: UUID,
         session: AsyncSession = Depends(_get_session),
         registry: StepRegistry = Depends(_get_registry),
-        _auth: None = Depends(_require_console_auth),
+        principal: ConsolePrincipal = Depends(_require_console_auth),
         extension_days: int = Form(28),
         rationale: str = Form("Staff approved renewal."),
     ) -> RedirectResponse:
@@ -1430,16 +1458,18 @@ def create_app() -> FastAPI:
                 coord = Coordinator(session=session, registry=registry)
                 ledger = SagaLedger(session)
                 saga = await ledger.get_saga(saga_id)
+                _assert_saga_in_scope(saga, principal)
                 current = LifecycleState(saga.current_state)
                 if current != LifecycleState.RECEIVED:
                     raise HTTPException(
                         status_code=409,
                         detail=f"renew requires 'received' state; got {current.value!r}",
                     )
+                actor = principal.actor
                 await coord.commit_gate(
                     saga_id=saga_id,
                     step=StepName.RENEW,
-                    actor="staff",
+                    actor=actor,
                     rationale=rationale,
                 )
                 events = await ledger.events_for(saga_id)
@@ -1450,7 +1480,7 @@ def create_app() -> FastAPI:
                         saga_id=saga_id,
                         request=ill_request,
                         current_state=current,
-                        actor="staff",
+                        actor=actor,
                         step=StepName.RENEW,
                         extras=extras,
                     ),
