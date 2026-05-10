@@ -22,6 +22,16 @@ def new_idempotency_key(prefix: str | None = None) -> str:
 
     Optional ``prefix`` (e.g. ``"submit"``) makes keys easier to grep
     in logs without affecting uniqueness.
+
+    .. warning::
+        ULIDs are NOT cryptographic tokens. Their 80 random bits are
+        large enough to make collisions astronomically unlikely
+        (collision uniqueness is the contract this function provides),
+        but the timestamp half is monotonic and the random half comes
+        from ``random``-grade entropy in some Python builds. Do NOT use
+        idempotency keys as auth tokens, capability tokens, or anything
+        that needs to be unguessable. They are uniqueness primitives,
+        not secrecy primitives. Audit 2026-05-09 #33.
     """
     ulid = str(ULID())
     return f"{prefix}-{ulid}" if prefix else ulid
@@ -177,6 +187,55 @@ async def outbox_claim(
         row.claimed_at = now
     await session.flush()
     return rows
+
+
+def _normalize_dt_for_compare(dt: datetime | None) -> datetime | None:
+    """Strip tz to UTC-naive for cross-session comparison.
+
+    SQLAlchemy + aiosqlite drops tzinfo on round-trip even with
+    ``DateTime(timezone=True)``: writes a tz-aware datetime as a UTC
+    ISO string and reads it back tz-naive. Comparing the in-memory
+    snapshot (tz-aware) against a fresh-session read (tz-naive) would
+    always be False on SQLite. Postgres preserves tz, so this is a
+    no-op there. Normalize both sides so the comparator is portable.
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt
+    return dt.astimezone(UTC).replace(tzinfo=None)
+
+
+async def outbox_claim_still_ours(
+    session: AsyncSession, row_id: int, expected_claimed_at: datetime
+) -> bool:
+    """Return True iff row ``row_id`` is still claimed at ``expected_claimed_at``.
+
+    Used by the outbox worker just before ``mark_delivered`` to detect
+    the lease-race window: worker A claims a row, A's handler hangs
+    past ``claim_lease_secs``, B's orphan-recovery sweep flips the row
+    back to ``pending`` and B re-claims it with a fresh ``claimed_at``.
+    Without this check, A would then write ``mark_delivered`` and the
+    on_success projection while B's HTTP call is also in flight —
+    duplicate supplier-side actions follow because mod-rs does not
+    honour ``Idempotency-Key`` (per ``clients/reshare.py`` module
+    docstring).
+
+    Returning False tells the worker: drop the result silently and
+    let B's call win. The supplier-side duplication is not avoided —
+    both calls already went out — but at least the projection and
+    ledger don't double-write.
+
+    Audit 2026-05-09 #12.
+    """
+    row = await session.get(OutboxRow, row_id)
+    if row is None:
+        return False
+    if row.status != "in_flight":
+        return False
+    return _normalize_dt_for_compare(row.claimed_at) == _normalize_dt_for_compare(
+        expected_claimed_at
+    )
 
 
 async def outbox_release_claim(session: AsyncSession, row_id: int) -> None:

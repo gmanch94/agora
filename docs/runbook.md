@@ -25,9 +25,12 @@ day-to-day operation (outbox, overdue scan, gate workflow), and
 incident triage. Pair with `CLAUDE.md` for invariants and `docs/adr/`
 for design rationale.
 
-> **Scope.** Research prototype, not production. No auth. No real
-> peers. Postgres + Mock ReShare client by default. See
-> `docs/adr/0007-fedramp-deferred.md`.
+> **Scope.** Research prototype, not production. Auth is single-
+> principal HTTP Basic + tenant-scoping stopgap (audit 2026-05-09 #1
+> / #3, [ADR-0018](adr/0018-tenant-scoping-stopgap.md)); production
+> multi-principal OIDC still deferred per
+> [ADR-0007](adr/0007-fedramp-deferred.md). No real peers by default.
+> Postgres + Mock ReShare client by default.
 
 ---
 
@@ -61,7 +64,7 @@ the process env. Defaults target local dev (Postgres on `localhost:5433`).
 | ----------------------------------- | ------------------------------------------------------ | ---------------------------------------------------------- |
 | `AGORA_ENV`                         | `dev`                                                  | Free-form tag in logs.                                     |
 | `AGORA_LOG_LEVEL`                   | `INFO`                                                 | Standard logging level.                                    |
-| `AGORA_API_HOST` / `AGORA_API_PORT` | `0.0.0.0` / `8000`                                     | uvicorn bind.                                              |
+| `AGORA_API_HOST` / `AGORA_API_PORT` | `127.0.0.1` / `8000`                                   | uvicorn bind. Loopback by default (audit 2026-05-09 #34); set to `0.0.0.0` for container/all-interface exposure. |
 | `AGORA_DB_URL`                      | `postgresql+asyncpg://agora:agora@localhost:5433/agora` <!-- pragma: allowlist secret --> | Tests override to `sqlite+aiosqlite:///:memory:`. Dev-default; production sets `AGORA_DB_URL`. |
 | `AGORA_DB_POOL_SIZE`                | `10`                                                   |                                                            |
 | `RESHARE_BASE_URL`                  | `""`                                                   | Empty → mock client. Non-empty triggers real HTTP client.  |
@@ -92,7 +95,13 @@ the process env. Defaults target local dev (Postgres on `localhost:5433`).
 | `AGORA_ROUTING_LLM_TIMEOUT_SECS`    | `30.0`                                                 | Per-call timeout. Raised from 5s (too tight for Gemini 2.5 cold-start) to 30s to match the eval harness recommendation. Stuck LLM raises; the seam catches and falls back to the rules pick + diagnostic. |
 | `AGORA_ROUTING_LLM_LOCATION`        | `us-central1`                                          | Vertex AI region for the `LlmAgent` runtime.               |
 | `AGORA_CONSOLE_USERNAME`            | `staff`                                                | HTTP Basic username for the staff console HTML routes. Ignored when `AGORA_CONSOLE_PASSWORD` is empty. |
-| `AGORA_CONSOLE_PASSWORD`            | `""`                                                   | HTTP Basic password. Empty (default) disables auth entirely — no credentials required in local dev. Set a non-empty value to enable. JSON API routes are unaffected (trusted-network assumption, ADR-0007). |
+| `AGORA_CONSOLE_PASSWORD`            | `""`                                                   | HTTP Basic password. Empty (default) disables auth entirely — no credentials required in local dev. Set a non-empty value to enable. **Audit 2026-05-09 #1:** JSON API routes now also require Basic auth (previously HTML-only). |
+| `AGORA_CONSOLE_LIBRARY_SYMBOL`      | `""`                                                   | Tenant-scoping stopgap (audit #3, ADR-0018). When set, the authenticated principal carries this library symbol and every saga endpoint refuses operations on sagas with a different `requesting_library`. Single-tenant by construction. Empty default = no scoping (dev only). |
+| `AGORA_PORTAL_SIGNING_KEY`          | `""`                                                   | Patron-portal HMAC key (audit #2). When set, `/portal/requests` and `/portal/requests/{saga_id}` require a `token` query parameter. Empty default = no signing (preserves form-entry dev experience). Generate via `python -c 'import secrets; print(secrets.token_hex(32))'`. |
+| `AGORA_RATE_LIMIT_ENABLED`          | `false`                                                | Audit #23 rate limiting toggle. Per-IP request ceiling, in-process — production MUST also rate-limit at the load balancer for multi-worker correctness. |
+| `AGORA_RATE_LIMIT_REQUESTS`         | `120`                                                  | Requests per `AGORA_RATE_LIMIT_WINDOW_SECS` per IP. |
+| `AGORA_RATE_LIMIT_WINDOW_SECS`      | `60`                                                   | Sliding-window length for the rate limiter. |
+| `AGORA_CSRF_ENABLED`                | `false`                                                | Audit #8 CSRF middleware toggle. Double-submit cookie pattern on `/ui/*` form endpoints. With Basic auth (no session cookie) this is the only defense against cross-site form POSTs. Off by default for test convenience; set true in staging / prod. |
 | `GOOGLE_GENAI_USE_VERTEXAI`         | `true`                                                 | Read by `google-adk` / `google-genai`, not by Agora `Settings`. Mirrors `.env.example`. **Required** when `AGORA_ROUTING_LLM_ENABLED=true` — without it the SDK routes through the public Gemini API instead of Vertex/ADC and 401s every call. |
 | `GOOGLE_CLOUD_PROJECT`              | `""`                                                   | Read by `google-adk` / `google-genai`. The GCP project that hosts the bound ADC + Vertex enablement. Set to your project id (e.g. `my-project-1234`). |
 | `GOOGLE_CLOUD_LOCATION`             | `us-central1`                                          | Read by `google-adk` / `google-genai`. Vertex region; should match `AGORA_ROUTING_LLM_LOCATION`. |
@@ -618,7 +627,72 @@ saga or coordinator code.
 
 ---
 
-## 9. References
+## 9. Network posture (operator responsibilities)
+
+The 2026-05-09 security audit (`docs/security-audits/2026-05-09.md`)
+identified network-layer concerns that aren't fixable in code — they
+require operator action at deploy time. This section is the
+checklist.
+
+### 9.1 TLS for outbound clients (audit #24)
+
+`HttpReShareClient` and `HttpNcipClient` use `httpx.AsyncClient` with
+`verify=True` (default — system CA bundle). For production deployments
+that front a real FOLIO instance behind a corporate MITM proxy or
+self-signed CA, the operator must ensure the right CA bundle is
+trusted by the Python process. Two paths:
+
+1. **Add the CA to the system bundle.** The cleanest in container
+   deployments — bake the cert into the base image's
+   `/etc/ssl/certs/ca-certificates.crt`.
+2. **Set `SSL_CERT_FILE` env var.** Point at a file containing the
+   relevant CA chain. `httpx` honours this without code changes.
+
+Certificate pinning beyond the system bundle is NOT implemented. If
+your threat model requires pinning to a specific FOLIO cert, file a
+follow-up — the auth client construction in `src/agora/clients/reshare.py`
+and `src/agora/clients/ncip.py` is the seam.
+
+### 9.2 RESHARE_BASE_URL is operator-controlled (audit #32)
+
+`RESHARE_BASE_URL` is read from env at startup and used verbatim for
+every outbound ReShare request. Misconfiguration (or a deploy
+pipeline that allows a less-trusted role to set env vars) becomes
+SSRF — pointing the client at `http://169.254.169.254/...` would
+exfiltrate cloud metadata, internal services, etc.
+
+**Mitigation:** treat `RESHARE_BASE_URL` as a trusted-deploy-config
+value. CI / staging / prod env injection should be limited to the
+same role that ships code. Consider an allow-list of expected
+schemes/hosts at startup if your threat model includes
+less-trusted-than-deploy roles.
+
+### 9.3 HTTPS termination
+
+`HTTPSRedirectMiddleware` is mounted only when `AGORA_ENV=prod`. The
+operator MUST front the API with HTTPS at the proxy / load balancer
+layer:
+
+- Plain HTTP requests redirect to HTTPS via the middleware.
+- HSTS header (6 months, includeSubDomains) is added to every
+  response in prod — meaningful only when HTTPS is the actual
+  reachable transport.
+- HTTP Basic credentials transit cleartext under the proxy boundary;
+  the proxy MUST be configured to terminate TLS upstream of any
+  network where credentials could be sniffed.
+
+### 9.4 Rate limiting at the load balancer (audit #23)
+
+`AGORA_RATE_LIMIT_ENABLED=true` enables an in-process per-IP rate
+limiter — single-worker only. Multi-worker deployments need
+rate-limiting at the load balancer / reverse proxy because the
+in-process counter is per-replica and won't catch an attacker
+distributing requests across workers. Treat the in-process limiter
+as defense in depth, not the primary defense.
+
+---
+
+## 10. References
 
 - `CLAUDE.md` — invariants, known gaps, behavioural rules
 - `docs/prd/` — product requirements

@@ -3,18 +3,22 @@
 > Research prototype. Multi-library consortium. Agents over FOLIO/ReShare.
 > Saga + idempotency. Human-approval at every state transition.
 
-> Last reviewed against code: 2026-05-07 (post PRs #100/#101/#102/#116/#117/#134
-> — DiscoveryAgent consortium-member fallback (#100, `unverified_holdings`
-> when SRU yields no MARC 852), NCIP HTTP smoke test (#101), drift
-> sweep including HttpNcipClient shipped (#102), RENEW saga step +
-> JSON + HTMX endpoints (#116), read-only patron portal `/portal/*`
-> (#117), strict-grade post-merge bug fixes (#134 — extension_days
-> bounds-check chokepoint, compensator-aware portal due date,
-> portal privacy posture). Earlier baseline: PRs #41-#93 — staff
-> console UI HTMX + Jinja2 (ADR-0015, #80), NCIP item-barcode (#89),
-> override endpoint (#90), override HTMX form (#92), saga browser
-> (#93), `sync-doc-counts` pytest gate as the single source of truth
-> for test/ADR counts).
+> Last reviewed against code: 2026-05-09 (audit-remediation sprint —
+> commits b15ed9..a6eb6fa close 36 of 42 findings from the 2026-05-09
+> security audit: JSON API auth + tenant-scoping stopgap (ADR-0018);
+> patron-portal HMAC; OkapiAuth proactive expiry refresh; outbox
+> action allow-list + lease-race verification + deterministic
+> compensator key + fail-fast renew; LLM tie-breaker prompt-injection
+> guard; CSRF / rate-limit / HTTPS / security-headers middleware;
+> typed StepExtras + IllRequest field-level max_length; SecretStr
+> credentials; SAFE_XML_PARSER for SRU + NCIP; tracking-scanner
+> race mitigation; JSONB GIN index; jitter on poll loops; Jinja
+> XSS-guard CI script. Earlier baselines: PRs #100/#101/#102/#116/#117/#134
+> shipped DiscoveryAgent consortium-member fallback, NCIP HTTP smoke
+> test, RENEW saga step + JSON + HTMX endpoints, read-only patron
+> portal, and strict-grade post-merge bug fixes; PRs #41-#93 shipped
+> the HTMX/Jinja2 staff console (ADR-0015), NCIP item-barcode,
+> override endpoint, and the `sync-doc-counts` pytest gate.
 
 ## What this is
 
@@ -33,9 +37,8 @@ reimplement them.
 ## Status
 
 **Working prototype.** End-to-end demo runs via `make demo`
-(`agora.demos.happy_path`). **503 tests** green (+6 postgres-only in CI).
+(`agora.demos.happy_path`). **556 tests** green (+6 postgres-only in CI).
 Saga + outbox + APPROVING-via-outbox (ADR-0012), multi-worker outbox
-(`agora.demos.happy_path`). **503 tests** green (+6 postgres-only in CI).Saga + outbox + APPROVING-via-outbox (ADR-0012), multi-worker outbox
 safety (`SELECT … FOR UPDATE SKIP LOCKED`), TrackingAgent three-tier
 overdue scanner (overdue / recall-proposed / receipt-unconfirmed) wired
 into the FastAPI lifespan, NCIP fan-out on RECEIVE / RETURN forwards,
@@ -46,13 +49,20 @@ RoutingAgent LLM tie-breaker (ADR-0014, top-1 0.95 against the
 `renew_request` outbox intent — sandbox-blocked on `HttpReShareClient`
 per ADR-0017; mock succeeds), read-only patron portal at `/portal/*`
 (PR #117, status + due date + renewal count), ISO 18626 XSD validation
-harness, and Alembic-on-real-Postgres all shipped. CI gates: bandit +
-pip-audit + detect-secrets, pytest + ruff + mypy --strict, alembic+ORM
-parity against `postgres:15-alpine`, routing-eval rules-floor regression
-check.
+harness, Alembic-on-real-Postgres, and the 2026-05-09 audit-remediation
+sprint hardening (JSON API Basic auth, tenant scoping stopgap per
+ADR-0018, patron portal HMAC, OkapiAuth proactive expiry refresh,
+outbox action allow-list + lease-race guard + fail-fast renew, LLM
+prompt injection guard, CSRF + rate-limit + HTTPS + security-headers
+middleware, SecretStr credentials, SAFE_XML_PARSER, tracking-scanner
+race mitigation, JSONB GIN index, Jinja XSS-guard CI script) all
+shipped. CI gates: bandit + pip-audit + detect-secrets, pytest + ruff +
+mypy --strict, alembic+ORM parity against `postgres:15-alpine`,
+routing-eval rules-floor regression check, Jinja autoescape-bypass
+guard.
 
 See `docs/prd/` for product requirements, `docs/adr/` for architecture
-decisions (17 ADRs through 0017), `docs/architecture.md` for the
+decisions (18 ADRs through 0018), `docs/architecture.md` for the
 hand-drawn diagrams, `docs/runbook.md` for operations, `docs/solution.md`
 for the solution doc, `docs/lessons.md` for accumulated gotchas, and
 `prompts/build-agora.md` to bootstrap a fresh dev session.
@@ -64,7 +74,7 @@ agora/
 ├── prompts/             # Project bootstrap prompt
 ├── docs/
 │   ├── prd/             # Product requirements (00-06)
-│   ├── adr/             # Architecture decisions (0001-0016)
+│   ├── adr/             # Architecture decisions (0001-0018)
 │   ├── architecture.md  # Hand-drawn Mermaid diagrams
 │   ├── runbook.md       # Operations / on-call notes
 │   ├── solution.md      # Solution overview
@@ -87,7 +97,8 @@ agora/
 │   ├── evals/           # Routing eval harness (run via make eval-routing)
 │   ├── models/          # pydantic schemas (ISO 18626 subset)
 │   ├── config.py / cli.py / logging.py / py.typed
-├── tests/               # 503 unit + property + e2e (+6 postgres-only)├── .github/workflows/   # audit.yml, postgres-tests.yml, triple-gate.yml,
+├── tests/               # 556 unit + property + e2e (+6 postgres-only)
+├── .github/workflows/   # audit.yml, postgres-tests.yml, triple-gate.yml,
 │                        #   routing-eval-floor.yml
 ├── docker-compose.yml   # Postgres-only sandbox today
 ├── Makefile
@@ -143,10 +154,10 @@ make api
 - [Runbook](docs/runbook.md)
 - [Solution overview](docs/solution.md)
 - [Lessons learned](docs/lessons.md)
-- [ADRs](docs/adr/) — 17 records, latest are
-  [ADR-0015 (staff console HTMX + Jinja2)](docs/adr/0015-staff-console-htmx-jinja2.md),
+- [ADRs](docs/adr/) — 18 records, latest are
   [ADR-0016 (compensate-ship via manualClose)](docs/adr/0016-compensate-ship-manualclose.md),
-  and [ADR-0017 (renew_request sandbox gap)](docs/adr/0017-renew-request-sandbox-gap.md)
+  [ADR-0017 (renew_request sandbox gap)](docs/adr/0017-renew-request-sandbox-gap.md),
+  and [ADR-0018 (tenant-scoping stopgap)](docs/adr/0018-tenant-scoping-stopgap.md)
 - [Bootstrap prompt](prompts/build-agora.md)
 
 ## License

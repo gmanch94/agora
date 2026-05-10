@@ -45,6 +45,7 @@ the demo and tests can drive directly.
 from __future__ import annotations
 
 import asyncio
+import random
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -204,6 +205,21 @@ class OverdueScanner:
             ledger = SagaLedger(session)
             coord = Coordinator(session=session)
             for saga in sagas:
+                # Audit 2026-05-09 #27: re-check current_state right
+                # before the per-tier writes. Between the SELECT at
+                # the top and this point another transaction may have
+                # advanced the saga (RECEIVED, DISPUTED, terminal).
+                # Without the re-check we'd write an "overdue" badge
+                # against state-before=SHIPPED on a now-RECEIVED row,
+                # which the staff console renders confusingly. Race is
+                # not fully closed (could change between this refresh
+                # and append), but the window shrinks from "duration
+                # of scan" to "microseconds." Full closure needs a
+                # SELECT FOR UPDATE lock; not worth the I/O for an
+                # advisory-only emission.
+                await session.refresh(saga)
+                if saga.current_state != LifecycleState.SHIPPED.value:
+                    continue
                 ship_event = await ledger.find_committed_forward(
                     saga.id, StepName.SHIP.value
                 )
@@ -424,7 +440,17 @@ class OverdueScanner:
                     log.exception(
                         "tracking.scanner.unexpected_error", error=str(exc)
                     )
-                await asyncio.sleep(poll_interval)
+                # Audit 2026-05-09 #42: small random jitter (≤10% of
+                # poll_interval) so a horde of concurrent scanners /
+                # workers don't synchronise their poll cadence and
+                # hammer the DB in lockstep. Cosmetic at single-replica
+                # scale; matters under horizontal scale-out.
+                #
+                # ``random`` (not ``secrets``) is correct here: this is
+                # cadence decorrelation, not a cryptographic primitive.
+                # The poll interval doesn't carry any secret.
+                jitter = random.uniform(0, poll_interval * 0.1)  # nosec B311
+                await asyncio.sleep(poll_interval + jitter)
         except asyncio.CancelledError:
             log.info("tracking.scanner.cancelled")
             raise

@@ -17,10 +17,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hmac
 import secrets
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from datetime import date as _date
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -49,6 +52,7 @@ from agora.api.schemas import (
     SagaDetail,
     SagaEventOut,
     SagaSummary,
+    StepExtras,
     StepRunResponse,
     SubmitRequestResponse,
 )
@@ -92,6 +96,83 @@ from agora.saga.outbox import (
 from agora.saga.steps import StepRegistry
 
 log = get_logger(__name__)
+
+
+_CSRF_COOKIE_NAME = "agora_csrf"
+_CSRF_FORM_FIELD = "csrf_token"
+
+
+class _RateLimitState:
+    """In-memory per-IP rate limiter (audit 2026-05-09 #23).
+
+    Sliding window: each IP keeps a deque of recent request
+    timestamps; on each call we drop entries older than
+    ``window_secs`` and count the remainder. Single-process by
+    construction — production MUST also rate-limit at the load
+    balancer / reverse proxy because this counter is per-worker.
+
+    Memory grows with active-IP count; pruning happens lazily on
+    access. For prototype scale this is fine; an LRU cap would be
+    a follow-up if memory pressure shows up.
+    """
+
+    def __init__(self, *, limit: int, window_secs: int) -> None:
+        from collections import defaultdict, deque
+
+        self._limit = limit
+        self._window_secs = window_secs
+        self._buckets: dict[str, Any] = defaultdict(deque)
+
+    def check(self, ip: str) -> tuple[bool, int]:
+        """Record a hit for ``ip``; return (allowed, retry_after_secs).
+
+        ``retry_after_secs`` is 0 when allowed and a hint at the
+        time-until-the-oldest-bucket-entry-falls-out when denied.
+        """
+        from collections import deque
+        from time import time
+
+        now = time()
+        bucket: Any = self._buckets[ip]
+        # Drop expired entries.
+        while bucket and bucket[0] <= now - self._window_secs:
+            bucket.popleft()
+        if len(bucket) >= self._limit:
+            retry_after = int(self._window_secs - (now - bucket[0])) + 1
+            return False, max(retry_after, 1)
+        bucket.append(now)
+        # Defensive: keep the bucket bounded — prune after threshold.
+        if len(bucket) > self._limit * 2:
+            self._buckets[ip] = deque(list(bucket)[-self._limit :])
+        return True, 0
+
+
+@dataclass(frozen=True)
+class ConsolePrincipal:
+    """The authenticated identity behind a console / JSON-API request.
+
+    Created by ``_require_console_auth`` and threaded into every saga
+    handler so the ``actor`` recorded on ledger events is the
+    authenticated principal — not whatever the request body claimed
+    (audit 2026-05-09 #21). When ``library_symbol`` is non-None the
+    principal is also tenant-scoped: every saga endpoint refuses
+    operations on sagas with a different ``requesting_library``
+    (audit #3 stopgap; multi-principal model is an ADR follow-up).
+    """
+
+    username: str
+    library_symbol: str | None
+
+    @property
+    def actor(self) -> str:
+        """Canonical ``actor`` string for ledger events.
+
+        Includes the library symbol when scoped — staff console renders
+        cross-library audit events with the source library visible.
+        """
+        if self.library_symbol:
+            return f"staff:{self.username}@{self.library_symbol}"
+        return f"staff:{self.username}"
 
 
 # Steps that can be approved + run via /approve. SUBMIT is not gated;
@@ -225,6 +306,14 @@ def _patron_event_label(ev: SagaEvent) -> str | None:
     return _PATRON_EVENT_LABELS.get((ev.kind.value, ev.step.value))
 
 
+# Audit 2026-05-09 #19: ceilings for the number of candidates /
+# diagnostics persisted from a single ``/sagas/{id}/discover`` run.
+# SRU responses can exceed 20 records and CrossRef is configurable;
+# the ceilings here are the load-bearing defense at the saga ledger.
+_DISCOVER_MAX_CANDIDATES = 50
+_DISCOVER_MAX_DIAGNOSTICS = 50
+
+
 def _parse_step(name: str) -> StepName:
     try:
         return StepName(name)
@@ -234,7 +323,7 @@ def _parse_step(name: str) -> StepName:
 
 def _derive_extras(
     events: list[SagaEvent],
-    override: dict[str, Any] | None,
+    override: StepExtras | dict[str, Any] | None,
 ) -> dict[str, Any]:
     """Reconstruct step-input extras from prior committed events.
 
@@ -284,11 +373,104 @@ def _derive_extras(
             elif ev.step == StepName.APPROVE:
                 extras.pop("reshare_id", None)
 
-    if override:
-        for k, v in override.items():
+    if override is not None:
+        # Accept either the typed StepExtras (preferred — API path) or
+        # a plain dict (used by HTML form endpoints that build the
+        # override map ad-hoc). Audit 2026-05-09 #15: typed StepExtras
+        # rejects unknown keys + invalid shapes at the boundary.
+        if isinstance(override, StepExtras):
+            override_dict = override.model_dump(exclude_none=True)
+        else:
+            override_dict = override
+        for k, v in override_dict.items():
             if v is not None:
                 extras[k] = v
     return extras
+
+
+def mint_portal_token(signing_key: str, *parts: str) -> str:
+    """HMAC-SHA256 hex over ``parts`` joined with ASCII record separator.
+
+    Used by patron-portal magic links (audit 2026-05-09 #2). The
+    signing key comes from ``Settings.portal_signing_key`` (SecretStr,
+    rotated periodically by ops). Caller composes the parts to bind
+    the token to the resource — for a saga detail link the parts are
+    ``(saga_id, patron_id)`` so the token can't be reused across
+    sagas or patrons. The record-separator delimiter prevents
+    ambiguity between (e.g.) ``foo|bar`` and ``foob|ar``.
+
+    The signing key is the secret; the parts are public. ``hmac.new``
+    in constant-time mode keeps verification side-channel-resistant.
+    """
+    msg = "\x1e".join(parts).encode("utf-8")
+    return hmac.new(
+        signing_key.encode("utf-8"), msg, sha256
+    ).hexdigest()
+
+
+def verify_portal_token(signing_key: str, presented: str, *parts: str) -> bool:
+    """Constant-time compare presented HMAC against re-derivation."""
+    if not signing_key or not presented:
+        return False
+    expected = mint_portal_token(signing_key, *parts)
+    return hmac.compare_digest(expected, presented)
+
+
+async def _step_already_committed_forward(
+    ledger: SagaLedger, saga_id: UUID, step: StepName
+) -> bool:
+    """Return True iff ``step`` already has a committed FORWARD event.
+
+    Used by ``/reject`` to refuse rejections of steps the saga has
+    already passed (audit 2026-05-09 #30). Rejecting SUBMIT on a saga
+    that's already SHIPPED was previously accepted — it just polluted
+    the audit log with a FAILED gate that no future code path could
+    coherently act on. Hard-rejecting at the API instead of silently
+    appending makes the staff-console error state meaningful.
+
+    The shape is "you can't reject something that already happened."
+    Steps with no committed forward yet — including freshly-submitted
+    sagas where ROUTE hasn't run — are still rejectable, preserving
+    the prototype's "advisory rejection" use case where staff records
+    an intent not to proceed.
+    """
+    forward = await ledger.find_committed_forward(saga_id, step.value)
+    return forward is not None
+
+
+def _log_background_task_exit(task: asyncio.Task[None]) -> None:
+    """Log unexpected background-task exits so silent death is visible.
+
+    A bug in :meth:`OutboxWorker.run_forever` or
+    :meth:`OverdueScanner.run_forever` that escapes the inner
+    try/except leaves the task in ``done`` with an unretrieved
+    exception. Without this callback, no other code awaits the task
+    during normal operation, so its failure is invisible — outbox
+    rows pile up forever, the scanner stops emitting overdue
+    observations, and there is no signal to staff.
+
+    A normal cancel-on-shutdown raises ``CancelledError`` which we
+    classify as expected and log at INFO. Any other exception is logged
+    at ERROR with the task name and exc_info; restart-on-failure is
+    NOT attempted here because the right operator response depends on
+    the failure mode (DB outage, schema drift, code bug).
+
+    Audit 2026-05-09 #29.
+    """
+    try:
+        exc = task.exception()
+    except asyncio.CancelledError:
+        log.info("api.background_task.cancelled", task_name=task.get_name())
+        return
+    if exc is None:
+        log.info("api.background_task.exited", task_name=task.get_name())
+        return
+    log.error(
+        "api.background_task.failed",
+        task_name=task.get_name(),
+        error=str(exc),
+        exc_info=(type(exc), exc, exc.__traceback__),
+    )
 
 
 def _build_outbox_worker(
@@ -334,13 +516,23 @@ def _make_context(
     step: StepName,
     extras: dict[str, Any],
     idem_prefix: str | None = None,
+    idempotency_key: str | None = None,
 ) -> SagaContext:
-    """Build a SagaContext for the coordinator."""
+    """Build a SagaContext for the coordinator.
+
+    Pass ``idempotency_key`` to use a fully-deterministic key (e.g. for
+    compensators where collision-on-replay is the desired behaviour;
+    audit 2026-05-09 #5). Otherwise a fresh ULID is appended to
+    ``idem_prefix`` (or ``step.value``) for forward steps where each
+    invocation must produce a distinct event.
+    """
+    if idempotency_key is None:
+        idempotency_key = new_idempotency_key(prefix=idem_prefix or step.value)
     return SagaContext(
         saga_id=saga_id,
         request=request,
         current_state=current_state,
-        idempotency_key=new_idempotency_key(prefix=idem_prefix or step.value),
+        idempotency_key=idempotency_key,
         actor=actor,
         extras=extras,
     )
@@ -374,6 +566,19 @@ def create_app() -> FastAPI:
     """
     configure_logging()
     settings = get_settings()
+
+    # Audit 2026-05-09 #25: refuse to boot with the dev-default
+    # ``agora:agora@`` db credentials in any non-dev environment. The
+    # default exists for offline laptop work; shipping it to staging or
+    # prod is a credential-leak waiting to happen. Operators must
+    # override ``AGORA_DB_URL`` explicitly. ``env=dev`` is the only
+    # environment that gets a pass.
+    if settings.env != "dev" and settings.db_url_uses_dev_default:
+        raise RuntimeError(
+            "AGORA_DB_URL is using the development default "
+            "(:agora@) in a non-dev environment. Refusing to boot "
+            "with leaked credentials. Set AGORA_DB_URL explicitly."
+        )
 
     # Wire saga step registry. ``get_reshare_client`` honours
     # ``settings.reshare_enabled`` and returns ``HttpReShareClient``
@@ -430,6 +635,7 @@ def create_app() -> FastAPI:
                 ),
                 name="agora.outbox.worker",
             )
+            worker_task.add_done_callback(_log_background_task_exit)
             app.state.outbox_worker = worker
             app.state.outbox_worker_task = worker_task
             log.info(
@@ -452,6 +658,7 @@ def create_app() -> FastAPI:
                 ),
                 name="agora.tracking.scanner",
             )
+            scanner_task.add_done_callback(_log_background_task_exit)
             app.state.tracking_scanner = scanner
             app.state.tracking_scanner_task = scanner_task
             log.info(
@@ -490,12 +697,150 @@ def create_app() -> FastAPI:
             await sru.aclose()
             log.info("api.discovery_clients.closed")
 
-    app = FastAPI(
-        title="Agora ILL",
-        description="Agentic Inter-Library Loan staff console",
-        version=__version__,
-        lifespan=lifespan,
-    )
+    # Audit 2026-05-09 #31: hide the auto-generated OpenAPI / Swagger
+    # / ReDoc surfaces outside dev. They expose every endpoint, schema,
+    # and override target — useful in dev, recon-friendly in prod.
+    # Operators can opt them back in for staging via AGORA_ENV=dev.
+    if settings.env == "dev":
+        app = FastAPI(
+            title="Agora ILL",
+            description="Agentic Inter-Library Loan staff console",
+            version=__version__,
+            lifespan=lifespan,
+        )
+    else:
+        app = FastAPI(
+            title="Agora ILL",
+            description="Agentic Inter-Library Loan staff console",
+            version=__version__,
+            lifespan=lifespan,
+            docs_url=None,
+            redoc_url=None,
+            openapi_url=None,
+        )
+
+    # Audit 2026-05-09 #38: every HTML response carries the standard
+    # browser-hardening headers. Staff console renders in same-origin
+    # iframes nowhere — DENY closes the clickjacking surface. CSP is
+    # restrictive (default-src 'self', no inline script except the
+    # HTMX bootstrap, no data: URIs except for img). nosniff prevents
+    # MIME-confusion attacks. The HSTS header is conditional on env
+    # = prod since dev / test typically run over plain HTTP.
+    @app.middleware("http")
+    async def _security_headers(
+        request: Request, call_next: Any
+    ) -> Any:
+        response = await call_next(request)
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        # CSP: same-origin everything, allow only the staticfiles mount.
+        # Inline styles permitted for the prototype's small inline blocks
+        # in detail.html; should be tightened to nonces in a follow-up.
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "img-src 'self' data:; "
+            "style-src 'self' 'unsafe-inline'; "
+            "script-src 'self'; "
+            "frame-ancestors 'none'; "
+            "form-action 'self'"
+        )
+        if settings.env == "prod":
+            # 6 months, includeSubDomains. Operators MUST front the API
+            # with HTTPS at the proxy layer before this is meaningful.
+            response.headers["Strict-Transport-Security"] = (
+                "max-age=15552000; includeSubDomains"
+            )
+        return response
+
+    # Audit 2026-05-09 #9: redirect plain-HTTP requests to HTTPS in
+    # prod. Defense in depth alongside the proxy-layer redirect that
+    # operators must run upstream — this catches the
+    # someone-misconfigures-the-proxy edge case. Dev / staging keep
+    # plain HTTP for ergonomics.
+    if settings.env == "prod":
+        from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
+
+        app.add_middleware(HTTPSRedirectMiddleware)
+
+    # Audit 2026-05-09 #23: per-IP rate limiting. Single-process
+    # in-memory counter; production MUST also rate-limit at the load
+    # balancer for multi-worker correctness (we can't share state
+    # across uvicorn replicas without a shared store like Redis,
+    # which is out of scope for the prototype). Bucket = IP address;
+    # window = settings.rate_limit_window_secs sliding; ceiling =
+    # settings.rate_limit_requests. Returns 429 + Retry-After when
+    # exceeded.
+    if settings.rate_limit_enabled:
+        rate_state = _RateLimitState(
+            limit=settings.rate_limit_requests,
+            window_secs=settings.rate_limit_window_secs,
+        )
+
+        @app.middleware("http")
+        async def _rate_limit(
+            request: Request, call_next: Any
+        ) -> Any:
+            client = request.client
+            ip = client.host if client is not None else "unknown"
+            ok, retry_after = rate_state.check(ip)
+            if not ok:
+                from fastapi.responses import JSONResponse
+
+                return JSONResponse(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    content={"detail": "rate limit exceeded"},
+                    headers={"Retry-After": str(retry_after)},
+                )
+            return await call_next(request)
+
+    # Audit 2026-05-09 #8: CSRF on HTML form endpoints. Double-submit
+    # cookie pattern: middleware sets a CSRF cookie on first GET,
+    # form templates echo it as a hidden ``csrf_token`` input,
+    # subsequent POST/PUT/DELETE/PATCH on /ui/* paths must carry a
+    # form-field value matching the cookie. JSON API endpoints are
+    # exempt because they're called from server-to-server contexts
+    # where CSRF doesn't apply (and they're auth-gated separately).
+    if settings.csrf_enabled:
+
+        @app.middleware("http")
+        async def _csrf(request: Request, call_next: Any) -> Any:
+            from fastapi.responses import JSONResponse
+
+            cookie_token = request.cookies.get(_CSRF_COOKIE_NAME)
+            if (
+                request.method in {"POST", "PUT", "PATCH", "DELETE"}
+                and request.url.path.startswith("/ui/")
+            ):
+                # Read form data — Starlette caches it so the
+                # downstream handler still sees it.
+                form = await request.form()
+                form_token = form.get(_CSRF_FORM_FIELD)
+                if (
+                    not cookie_token
+                    or not form_token
+                    or not isinstance(form_token, str)
+                    or not secrets.compare_digest(cookie_token, form_token)
+                ):
+                    return JSONResponse(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        content={"detail": "CSRF token missing or invalid"},
+                    )
+            response = await call_next(request)
+            # Stamp a fresh cookie if absent (or if it doesn't match
+            # the strict shape). 32 bytes of secrets.token_urlsafe
+            # is overkill for CSRF and just-right for forgery
+            # resistance.
+            if not cookie_token:
+                response.set_cookie(
+                    _CSRF_COOKIE_NAME,
+                    secrets.token_urlsafe(32),
+                    max_age=86400,
+                    httponly=False,  # form needs to read it via JS / template
+                    samesite="strict",
+                    secure=(settings.env == "prod"),
+                )
+            return response
 
     app.state.registry = registry
     app.state.reshare = reshare
@@ -519,18 +864,30 @@ def create_app() -> FastAPI:
     )
     templates = Jinja2Templates(directory=str(_ui_root / "templates"))
 
-    # HTTP Basic auth guard for the HTML console.
-    # When AGORA_CONSOLE_PASSWORD is empty (default) the check is skipped —
-    # no credentials required in local dev. Set both vars to enable.
+    # HTTP Basic auth guard for the HTML console + JSON API (audit
+    # 2026-05-09 #1). When ``AGORA_CONSOLE_PASSWORD`` is empty (default)
+    # the check is skipped — no credentials required in local dev. Set
+    # both vars to enable. The dependency now returns a typed
+    # ``ConsolePrincipal`` so downstream handlers can derive the canonical
+    # ``actor`` (audit #21) and assert tenant scoping (audit #3).
     _console_security = HTTPBasic(auto_error=False)
 
     def _require_console_auth(
         credentials: HTTPBasicCredentials | None = Depends(_console_security),
         settings: Any = Depends(get_settings),
-    ) -> None:
-        password = settings.console_password
+    ) -> ConsolePrincipal:
+        password = settings.console_password.get_secret_value()
+        library = settings.console_library_symbol or None
         if not password:
-            return  # auth disabled
+            # Auth disabled: synthesise a dev principal carrying the
+            # configured username so audit-log ``actor`` strings stay
+            # honest even in dev. ``library_symbol`` flows through
+            # whether or not a password is set — ops can scope-test
+            # locally by setting ``AGORA_CONSOLE_LIBRARY_SYMBOL`` alone.
+            return ConsolePrincipal(
+                username=settings.console_username,
+                library_symbol=library,
+            )
         if credentials is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -547,12 +904,41 @@ def create_app() -> FastAPI:
                 detail="Invalid credentials",
                 headers={"WWW-Authenticate": "Basic realm='Agora staff console'"},
             )
+        return ConsolePrincipal(
+            username=credentials.username,
+            library_symbol=library,
+        )
+
+    def _assert_saga_in_scope(saga: Saga, principal: ConsolePrincipal) -> None:
+        """Refuse cross-library saga access when tenant scoping is on.
+
+        Audit 2026-05-09 #3 stopgap: when ``AGORA_CONSOLE_LIBRARY_SYMBOL``
+        is set the principal binds to that symbol; any saga whose
+        ``request_payload['requesting_library']['symbol']`` differs is
+        someone else's data. 403 instead of 404 so a misconfigured
+        operator sees the boundary instead of a confusing missing-saga
+        error. Multi-tenant requires per-principal claims — see
+        ``docs/adr/0018-tenant-scoping-stopgap.md``.
+        """
+        if principal.library_symbol is None:
+            return
+        payload = saga.request_payload or {}
+        requesting = payload.get("requesting_library") or {}
+        symbol = requesting.get("symbol")
+        if symbol != principal.library_symbol:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    f"saga belongs to library {symbol!r}; principal is "
+                    f"scoped to {principal.library_symbol!r}"
+                ),
+            )
 
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
     async def staff_console_inbox(
         request: Request,
         session: AsyncSession = Depends(_get_session),
-        _auth: None = Depends(_require_console_auth),
+        principal: ConsolePrincipal = Depends(_require_console_auth),
     ) -> HTMLResponse:
         """Staff console inbox — HTML view over recent sagas.
 
@@ -562,6 +948,16 @@ def create_app() -> FastAPI:
         """
         async with session.begin():
             stmt = select(Saga).order_by(Saga.updated_at.desc()).limit(200)
+            # Audit 2026-05-09 #3 (post-batch-4 reviewer follow-up):
+            # the staff console inbox HTML was returning every saga
+            # in the table — the JSON `/sagas` SQL-filtered, this
+            # didn't. Mirror the JSON path so a scoped principal sees
+            # only their library's rows.
+            if principal.library_symbol is not None:
+                stmt = stmt.where(
+                    Saga.request_payload["requesting_library"]["symbol"].astext
+                    == principal.library_symbol
+                )
             rows = (await session.execute(stmt)).scalars().all()
             ctx_sagas = [_to_inbox_row(saga) for saga in rows]
         return templates.TemplateResponse(
@@ -574,7 +970,7 @@ def create_app() -> FastAPI:
     async def saga_browser(
         request: Request,
         session: AsyncSession = Depends(_get_session),
-        _auth: None = Depends(_require_console_auth),
+        principal: ConsolePrincipal = Depends(_require_console_auth),
         state: str | None = Query(default=None),
         library: str | None = Query(default=None),
         date_from: str | None = Query(default=None),
@@ -590,6 +986,15 @@ def create_app() -> FastAPI:
         """
         async with session.begin():
             stmt = select(Saga).order_by(Saga.created_at.desc()).limit(500)
+
+            # Audit 2026-05-09 #3 (post-batch-4 reviewer follow-up):
+            # tenant-scope filter mirrors the JSON `/sagas` and the
+            # inbox HTML view.
+            if principal.library_symbol is not None:
+                stmt = stmt.where(
+                    Saga.request_payload["requesting_library"]["symbol"].astext
+                    == principal.library_symbol
+                )
 
             # SQL-native filters (indexed columns).
             if state:
@@ -674,13 +1079,19 @@ def create_app() -> FastAPI:
         saga_id: UUID,
         request: Request,
         session: AsyncSession = Depends(_get_session),
-        _auth: None = Depends(_require_console_auth),
+        principal: ConsolePrincipal = Depends(_require_console_auth),
     ) -> HTMLResponse:
         """Staff console detail view — full ledger timeline + action forms."""
         async with session.begin():
             saga = await session.get(Saga, saga_id)
             if saga is None:
                 raise HTTPException(status_code=404, detail="saga not found")
+            # Audit 2026-05-09 #3 (post-batch-4 reviewer follow-up):
+            # the staff HTML detail view was leaking cross-library
+            # ledger contents — every other saga endpoint guarded but
+            # this one snuck through the audit-#3 sweep. Same shape
+            # as the JSON `/sagas/{id}` and HTML form endpoints.
+            _assert_saga_in_scope(saga, principal)
             ledger = SagaLedger(session)
             events = await ledger.events_for(saga_id)
 
@@ -755,7 +1166,7 @@ def create_app() -> FastAPI:
         saga_id: UUID,
         session: AsyncSession = Depends(_get_session),
         registry: StepRegistry = Depends(_get_registry),
-        _auth: None = Depends(_require_console_auth),
+        principal: ConsolePrincipal = Depends(_require_console_auth),
         step: str = Form(...),
         rationale: str = Form("Staff approved."),
         chosen_supplier: str = Form(""),
@@ -773,13 +1184,19 @@ def create_app() -> FastAPI:
             async with session.begin():
                 coord = Coordinator(session=session, registry=registry)
                 ledger = SagaLedger(session)
+                # Audit 2026-05-09 #21: HTML form path uses
+                # ``principal.actor`` (was hard-coded ``"staff"``).
+                # Tenant scope check via ``_assert_saga_in_scope``
+                # mirrors the JSON path's audit-#3 guard.
+                saga = await ledger.get_saga(saga_id)
+                _assert_saga_in_scope(saga, principal)
+                actor = principal.actor
                 await coord.commit_gate(
                     saga_id=saga_id,
                     step=step_name,
-                    actor="staff",
+                    actor=actor,
                     rationale=rationale,
                 )
-                saga = await ledger.get_saga(saga_id)
                 events = await ledger.events_for(saga_id)
                 full_extras = _derive_extras(events, extras or None)
                 ill_request = IllRequest.model_validate(saga.request_payload)
@@ -788,7 +1205,7 @@ def create_app() -> FastAPI:
                         saga_id=saga_id,
                         request=ill_request,
                         current_state=LifecycleState(saga.current_state),
-                        actor="staff",
+                        actor=actor,
                         step=step_name,
                         extras=full_extras,
                     ),
@@ -806,7 +1223,7 @@ def create_app() -> FastAPI:
         saga_id: UUID,
         http_request: Request,
         session: AsyncSession = Depends(_get_session),
-        _auth: None = Depends(_require_console_auth),
+        principal: ConsolePrincipal = Depends(_require_console_auth),
     ) -> HTMLResponse:
         """HTMX partial: run DiscoveryAgent, return candidate list as HTML fragment.
 
@@ -821,6 +1238,7 @@ def create_app() -> FastAPI:
             async with session.begin():
                 ledger = SagaLedger(session)
                 saga = await ledger.get_saga(saga_id)
+                _assert_saga_in_scope(saga, principal)
                 current = LifecycleState(saga.current_state)
                 if current in TERMINAL_STATES:
                     raise HTTPException(
@@ -830,10 +1248,20 @@ def create_app() -> FastAPI:
                 ill_request = IllRequest.model_validate(saga.request_payload)
                 rec = await agent.run(ill_request)
 
+                # Audit 2026-05-09 #19: cap candidate + diagnostics
+                # length before persisting to saga_event.payload (a
+                # JSONB column with no DB-level CHECK constraint). SRU
+                # responses can exceed 20 records; CrossRef is bounded
+                # by client config but defense in depth still wins. The
+                # ledger column stays bounded so a hostile-peer payload
+                # can't bloat the saga_event row.
                 payload: dict[str, Any] = {
                     "kind": "discovery",
-                    "candidates": [c.model_dump(mode="json") for c in rec.candidates],
-                    "diagnostics": list(rec.diagnostics),
+                    "candidates": [
+                        c.model_dump(mode="json")
+                        for c in rec.candidates[:_DISCOVER_MAX_CANDIDATES]
+                    ],
+                    "diagnostics": list(rec.diagnostics)[:_DISCOVER_MAX_DIAGNOSTICS],
                     "observed_at": datetime.now(UTC).isoformat(),
                 }
                 await ledger.append(
@@ -843,7 +1271,7 @@ def create_app() -> FastAPI:
                         step=StepName.ROUTE,
                         state_before=current,
                         state_after=current,
-                        actor="agent:discovery",
+                        actor=principal.actor,
                         idempotency_key=new_idempotency_key(prefix="discovery"),
                         payload=payload,
                         outcome=StepOutcome.COMMITTED,
@@ -880,7 +1308,7 @@ def create_app() -> FastAPI:
     async def ui_saga_reject(
         saga_id: UUID,
         session: AsyncSession = Depends(_get_session),
-        _auth: None = Depends(_require_console_auth),
+        principal: ConsolePrincipal = Depends(_require_console_auth),
         step: str = Form(...),
         rationale: str = Form("Staff rejected."),
     ) -> RedirectResponse:
@@ -890,14 +1318,34 @@ def create_app() -> FastAPI:
             async with session.begin():
                 ledger = SagaLedger(session)
                 saga = await ledger.get_saga(saga_id)
+                _assert_saga_in_scope(saga, principal)
+                current = LifecycleState(saga.current_state)
+                # Audit #30 (consistency with JSON path): refuse on
+                # terminal saga or already-committed forward.
+                if current in TERMINAL_STATES:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"saga is terminal ({current.value!r}); rejection is "
+                            "no longer meaningful"
+                        ),
+                    )
+                if await _step_already_committed_forward(ledger, saga_id, step_name):
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"step {step_name.value!r} already committed a forward event; "
+                            "cannot reject after the fact (use /compensate to undo)"
+                        ),
+                    )
                 await ledger.append(
                     NewSagaEvent(
                         saga_id=saga_id,
                         kind=EventKind.GATE,
                         step=step_name,
-                        state_before=LifecycleState(saga.current_state),
-                        state_after=LifecycleState(saga.current_state),
-                        actor="staff",
+                        state_before=current,
+                        state_after=current,
+                        actor=principal.actor,
                         idempotency_key=new_idempotency_key(prefix="gate-reject"),
                         payload={"reason": rationale},
                         outcome=StepOutcome.FAILED,
@@ -914,7 +1362,7 @@ def create_app() -> FastAPI:
         saga_id: UUID,
         session: AsyncSession = Depends(_get_session),
         registry: StepRegistry = Depends(_get_registry),
-        _auth: None = Depends(_require_console_auth),
+        principal: ConsolePrincipal = Depends(_require_console_auth),
         step: str = Form(...),
         rationale: str = Form("Staff compensated."),
     ) -> RedirectResponse:
@@ -925,6 +1373,7 @@ def create_app() -> FastAPI:
                 coord = Coordinator(session=session, registry=registry)
                 ledger = SagaLedger(session)
                 saga = await ledger.get_saga(saga_id)
+                _assert_saga_in_scope(saga, principal)
                 events = await ledger.events_for(saga_id)
                 extras = _derive_extras(events, None)
                 ill_request = IllRequest.model_validate(saga.request_payload)
@@ -933,10 +1382,16 @@ def create_app() -> FastAPI:
                         saga_id=saga_id,
                         request=ill_request,
                         current_state=LifecycleState(saga.current_state),
-                        actor="staff",
+                        actor=principal.actor,
                         step=step_name,
                         extras=extras,
-                        idem_prefix=f"comp-{step_name.value}",
+                        # Deterministic key — second /compensate call
+                        # collides on saga_event UNIQUE(idempotency_key)
+                        # and ledger.append returns the prior event
+                        # without re-firing the compensator. Audit
+                        # 2026-05-09 #5 (defense in depth alongside the
+                        # terminal-state guard at ledger.py:91-99).
+                        idempotency_key=f"comp-{step_name.value}-{saga_id}",
                     ),
                     step=step_name,
                 )
@@ -953,10 +1408,9 @@ def create_app() -> FastAPI:
     async def ui_saga_override(
         saga_id: UUID,
         session: AsyncSession = Depends(_get_session),
-        _auth: None = Depends(_require_console_auth),
+        principal: ConsolePrincipal = Depends(_require_console_auth),
         target_state: str = Form(...),
         rationale: str = Form("Staff override."),
-        actor: str = Form("staff"),
     ) -> RedirectResponse:
         """HTML form endpoint: resolve DISPUTED saga, then redirect to detail."""
         try:
@@ -986,6 +1440,7 @@ def create_app() -> FastAPI:
             except SagaNotFoundError as exc:
                 raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+            _assert_saga_in_scope(saga, principal)
             current = LifecycleState(saga.current_state)
             if current != LifecycleState.DISPUTED:
                 raise HTTPException(
@@ -1003,7 +1458,7 @@ def create_app() -> FastAPI:
                     step=StepName.RESOLVE,
                     state_before=current,
                     state_after=target,
-                    actor=actor,
+                    actor=principal.actor,
                     idempotency_key=new_idempotency_key("override"),
                     outcome=StepOutcome.COMMITTED,
                     rationale=rationale,
@@ -1018,7 +1473,7 @@ def create_app() -> FastAPI:
         saga_id: UUID,
         session: AsyncSession = Depends(_get_session),
         registry: StepRegistry = Depends(_get_registry),
-        _auth: None = Depends(_require_console_auth),
+        principal: ConsolePrincipal = Depends(_require_console_auth),
         extension_days: int = Form(28),
         rationale: str = Form("Staff approved renewal."),
     ) -> RedirectResponse:
@@ -1028,16 +1483,18 @@ def create_app() -> FastAPI:
                 coord = Coordinator(session=session, registry=registry)
                 ledger = SagaLedger(session)
                 saga = await ledger.get_saga(saga_id)
+                _assert_saga_in_scope(saga, principal)
                 current = LifecycleState(saga.current_state)
                 if current != LifecycleState.RECEIVED:
                     raise HTTPException(
                         status_code=409,
                         detail=f"renew requires 'received' state; got {current.value!r}",
                     )
+                actor = principal.actor
                 await coord.commit_gate(
                     saga_id=saga_id,
                     step=StepName.RENEW,
-                    actor="staff",
+                    actor=actor,
                     rationale=rationale,
                 )
                 events = await ledger.events_for(saga_id)
@@ -1048,7 +1505,7 @@ def create_app() -> FastAPI:
                         saga_id=saga_id,
                         request=ill_request,
                         current_state=current,
-                        actor="staff",
+                        actor=actor,
                         step=StepName.RENEW,
                         extras=extras,
                     ),
@@ -1075,10 +1532,35 @@ def create_app() -> FastAPI:
     async def submit_request(
         request: IllRequest,
         session: AsyncSession = Depends(_get_session),
+        principal: ConsolePrincipal = Depends(_require_console_auth),
     ) -> SubmitRequestResponse:
+        # Audit #3 stopgap: when scoping is enabled, the request must
+        # belong to the principal's library (caller can't submit
+        # requests "on behalf of" another library).
+        if (
+            principal.library_symbol is not None
+            and request.requesting_library.symbol != principal.library_symbol
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    f"requesting_library {request.requesting_library.symbol!r} "
+                    f"does not match principal scope "
+                    f"{principal.library_symbol!r}"
+                ),
+            )
         async with session.begin():
             ledger = SagaLedger(session)
             saga_id = uuid4()
+            # Audit 2026-05-09 #20: server generates request_id always.
+            # Caller-supplied UUIDs let an attacker pre-seed a UUID to
+            # collide with future legitimate requests (UNIQUE on
+            # saga.request_id raises IntegrityError → 500 DoS) and to
+            # mint predictable saga URLs for phishing. Stamping fresh
+            # here means request.request_id (if the caller sent one) is
+            # silently ignored — the canonical id ships back in the
+            # response envelope.
+            request.request_id = uuid4()
             await ledger.create_saga(
                 saga_id=saga_id,
                 request_id=request.request_id,
@@ -1104,9 +1586,18 @@ def create_app() -> FastAPI:
     @app.get("/sagas", response_model=list[SagaSummary])
     async def list_sagas(
         session: AsyncSession = Depends(_get_session),
+        principal: ConsolePrincipal = Depends(_require_console_auth),
     ) -> list[SagaSummary]:
         async with session.begin():
             stmt = select(Saga).order_by(Saga.updated_at.desc()).limit(200)
+            # Audit #3: scope to the principal's library when set. The
+            # JSONB filter is portable across Postgres and SQLite via
+            # ``request_payload['requesting_library']['symbol']``.
+            if principal.library_symbol is not None:
+                stmt = stmt.where(
+                    Saga.request_payload["requesting_library"]["symbol"].astext
+                    == principal.library_symbol
+                )
             rows = (await session.execute(stmt)).scalars().all()
             return [_to_summary(r) for r in rows]
 
@@ -1114,11 +1605,13 @@ def create_app() -> FastAPI:
     async def get_saga(
         saga_id: UUID,
         session: AsyncSession = Depends(_get_session),
+        principal: ConsolePrincipal = Depends(_require_console_auth),
     ) -> SagaDetail:
         async with session.begin():
             saga = await session.get(Saga, saga_id)
             if saga is None:
                 raise HTTPException(status_code=404, detail="saga not found")
+            _assert_saga_in_scope(saga, principal)
             ledger = SagaLedger(session)
             events = await ledger.events_for(saga_id)
             return SagaDetail(
@@ -1138,6 +1631,7 @@ def create_app() -> FastAPI:
         body: ApprovalBody,
         session: AsyncSession = Depends(_get_session),
         registry: StepRegistry = Depends(_get_registry),
+        principal: ConsolePrincipal = Depends(_require_console_auth),
     ) -> StepRunResponse:
         """Commit the gate for ``body.step`` and run the forward step.
 
@@ -1159,30 +1653,37 @@ def create_app() -> FastAPI:
             async with session.begin():
                 coord = Coordinator(session=session, registry=registry)
                 ledger = SagaLedger(session)
+                saga = await ledger.get_saga(saga_id)
+                _assert_saga_in_scope(saga, principal)
+
+                # Audit #21: ``actor`` recorded on the ledger event is
+                # always the authenticated principal, never the
+                # request-body string. ``body.actor`` becomes
+                # informational only (kept on the schema for
+                # backwards-compat).
+                actor = principal.actor
 
                 # 1. Commit the gate (records staff approval).
                 await coord.commit_gate(
                     saga_id=saga_id,
                     step=step,
-                    actor=body.actor,
+                    actor=actor,
                     rationale=body.rationale,
                 )
 
                 # 2. Reload events so derivation sees the just-committed
                 #    gate plus all prior committed forwards.
-                saga = await ledger.get_saga(saga_id)
                 events = await ledger.events_for(saga_id)
                 extras = _derive_extras(events, body.extras)
 
                 # 3. Build context and run the forward step.
                 request = IllRequest.model_validate(saga.request_payload)
-                ctx_actor = body.actor
                 ev = await coord.run_forward(
                     ctx=_make_context(
                         saga_id=saga_id,
                         request=request,
                         current_state=LifecycleState(saga.current_state),
-                        actor=ctx_actor,
+                        actor=actor,
                         step=step,
                         extras=extras,
                     ),
@@ -1211,6 +1712,7 @@ def create_app() -> FastAPI:
         body: RenewBody,
         session: AsyncSession = Depends(_get_session),
         registry: StepRegistry = Depends(_get_registry),
+        principal: ConsolePrincipal = Depends(_require_console_auth),
     ) -> StepRunResponse:
         """Commit a RENEW gate and run the forward step.
 
@@ -1225,6 +1727,7 @@ def create_app() -> FastAPI:
                 ledger = SagaLedger(session)
 
                 saga = await ledger.get_saga(saga_id)
+                _assert_saga_in_scope(saga, principal)
                 current = LifecycleState(saga.current_state)
                 if current != LifecycleState.RECEIVED:
                     raise HTTPException(
@@ -1235,10 +1738,11 @@ def create_app() -> FastAPI:
                         ),
                     )
 
+                actor = principal.actor
                 await coord.commit_gate(
                     saga_id=saga_id,
                     step=StepName.RENEW,
-                    actor=body.actor,
+                    actor=actor,
                     rationale=body.rationale,
                 )
 
@@ -1253,7 +1757,7 @@ def create_app() -> FastAPI:
                         saga_id=saga_id,
                         request=request,
                         current_state=current,
-                        actor=body.actor,
+                        actor=actor,
                         step=StepName.RENEW,
                         extras=extras,
                     ),
@@ -1281,6 +1785,7 @@ def create_app() -> FastAPI:
         http_request: Request,
         body: DiscoverBody | None = None,
         session: AsyncSession = Depends(_get_session),
+        principal: ConsolePrincipal = Depends(_require_console_auth),
     ) -> DiscoverResponse:
         """Run DiscoveryAgent against the saga's stored request.
 
@@ -1295,13 +1800,17 @@ def create_app() -> FastAPI:
         produces a new event. Staff console renders the latest
         DISCOVERY observation as the live candidate list.
         """
-        actor = body.actor if body is not None else "agent:discovery"
+        # Audit #21 / #41: actor sourced from the authenticated
+        # principal, not the request body. ``body.actor`` becomes
+        # informational only.
+        actor = principal.actor
         agent: DiscoveryAgent = http_request.app.state.discovery
 
         try:
             async with session.begin():
                 ledger = SagaLedger(session)
                 saga = await ledger.get_saga(saga_id)
+                _assert_saga_in_scope(saga, principal)
                 current = LifecycleState(saga.current_state)
                 if current in TERMINAL_STATES:
                     raise HTTPException(
@@ -1315,10 +1824,20 @@ def create_app() -> FastAPI:
                 ill_request = IllRequest.model_validate(saga.request_payload)
                 rec = await agent.run(ill_request)
 
+                # Audit 2026-05-09 #19: cap candidate + diagnostics
+                # length before persisting to saga_event.payload (a
+                # JSONB column with no DB-level CHECK constraint). SRU
+                # responses can exceed 20 records; CrossRef is bounded
+                # by client config but defense in depth still wins. The
+                # ledger column stays bounded so a hostile-peer payload
+                # can't bloat the saga_event row.
                 payload: dict[str, Any] = {
                     "kind": "discovery",
-                    "candidates": [c.model_dump(mode="json") for c in rec.candidates],
-                    "diagnostics": list(rec.diagnostics),
+                    "candidates": [
+                        c.model_dump(mode="json")
+                        for c in rec.candidates[:_DISCOVER_MAX_CANDIDATES]
+                    ],
+                    "diagnostics": list(rec.diagnostics)[:_DISCOVER_MAX_DIAGNOSTICS],
                     "observed_at": datetime.now(UTC).isoformat(),
                 }
                 ev = await ledger.append(
@@ -1350,19 +1869,46 @@ def create_app() -> FastAPI:
         saga_id: UUID,
         body: RejectionBody,
         session: AsyncSession = Depends(_get_session),
+        principal: ConsolePrincipal = Depends(_require_console_auth),
     ) -> None:
         step = _parse_step(body.step)
         async with session.begin():
             ledger = SagaLedger(session)
             saga = await ledger.get_saga(saga_id)
+            _assert_saga_in_scope(saga, principal)
+            current = LifecycleState(saga.current_state)
+            # Audit 2026-05-09 #30: ``/reject`` was previously accepting
+            # any step value, including rejecting SUBMIT on a saga
+            # that's already SHIPPED — pure audit-log pollution. Refuse
+            # in two cases: the saga is terminal (rejection is
+            # meaningless) or the step has already committed forward
+            # (you can't reject something that already happened). Steps
+            # not yet run remain rejectable so the prototype's
+            # "advisory rejection" use case keeps working.
+            if current in TERMINAL_STATES:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"saga is terminal ({current.value!r}); rejection is "
+                        "no longer meaningful"
+                    ),
+                )
+            if await _step_already_committed_forward(ledger, saga_id, step):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"step {step.value!r} already committed a forward event; "
+                        "cannot reject after the fact (use /compensate to undo)"
+                    ),
+                )
             await ledger.append(
                 NewSagaEvent(
                     saga_id=saga_id,
                     kind=EventKind.GATE,
                     step=step,
-                    state_before=LifecycleState(saga.current_state),
-                    state_after=LifecycleState(saga.current_state),
-                    actor=body.actor,
+                    state_before=current,
+                    state_after=current,
+                    actor=principal.actor,
                     idempotency_key=new_idempotency_key(prefix="gate-reject"),
                     payload={"reason": body.rationale},
                     outcome=StepOutcome.FAILED,
@@ -1380,6 +1926,7 @@ def create_app() -> FastAPI:
         body: CompensateBody,
         session: AsyncSession = Depends(_get_session),
         registry: StepRegistry = Depends(_get_registry),
+        principal: ConsolePrincipal = Depends(_require_console_auth),
     ) -> StepRunResponse:
         """Run the compensator for ``body.step`` against its committed forward.
 
@@ -1393,6 +1940,7 @@ def create_app() -> FastAPI:
                 coord = Coordinator(session=session, registry=registry)
                 ledger = SagaLedger(session)
                 saga = await ledger.get_saga(saga_id)
+                _assert_saga_in_scope(saga, principal)
                 events = await ledger.events_for(saga_id)
                 extras = _derive_extras(events, body.extras)
 
@@ -1402,10 +1950,12 @@ def create_app() -> FastAPI:
                         saga_id=saga_id,
                         request=request,
                         current_state=LifecycleState(saga.current_state),
-                        actor=body.actor,
+                        actor=principal.actor,
                         step=step,
                         extras=extras,
-                        idem_prefix=f"comp-{step.value}",
+                        # Deterministic key — see HTML compensator
+                        # endpoint for rationale (audit #5).
+                        idempotency_key=f"comp-{step.value}-{saga_id}",
                     ),
                     step=step,
                 )
@@ -1434,6 +1984,7 @@ def create_app() -> FastAPI:
         saga_id: UUID,
         body: OverrideBody,
         session: AsyncSession = Depends(_get_session),
+        principal: ConsolePrincipal = Depends(_require_console_auth),
     ) -> StepRunResponse:
         """Resolve a DISPUTED saga by force-setting it to CANCELLED or UNFILLED.
 
@@ -1472,6 +2023,8 @@ def create_app() -> FastAPI:
             except SagaNotFoundError as exc:
                 raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+            _assert_saga_in_scope(saga, principal)
+
             current = LifecycleState(saga.current_state)
             if current != LifecycleState.DISPUTED:
                 raise HTTPException(
@@ -1489,7 +2042,7 @@ def create_app() -> FastAPI:
                     step=StepName.RESOLVE,
                     state_before=current,
                     state_after=target,
-                    actor=body.actor,
+                    actor=principal.actor,
                     idempotency_key=new_idempotency_key("override"),
                     outcome=StepOutcome.COMMITTED,
                     rationale=body.rationale,
@@ -1515,7 +2068,25 @@ def create_app() -> FastAPI:
     @app.get("/portal/requests", response_class=HTMLResponse, include_in_schema=False)
     async def portal_requests(
         request: Request,
-        patron_id: str = Query(..., min_length=1),
+        patron_id: str = Query(
+            ...,
+            min_length=1,
+            max_length=64,
+            # Audit 2026-05-09 #17: bound the shape so a hostile or
+            # mistyped patron_id can't reach JSONB-path / template
+            # surfaces with control characters. Library cards / NetIDs /
+            # patron-database keys are all safely covered by alphanumeric
+            # + a few separators.
+            pattern=r"^[A-Za-z0-9_.@\-]+$",
+        ),
+        token: str | None = Query(
+            default=None,
+            max_length=128,
+            # Hex-only — verify_portal_token re-derives via mint and
+            # compare_digest, but bound the shape at the API layer too.
+            pattern=r"^[0-9a-f]{0,128}$",
+            description="HMAC token signing patron_id when AGORA_PORTAL_SIGNING_KEY is set.",
+        ),
         session: AsyncSession = Depends(_get_session),
     ) -> HTMLResponse:
         """List all sagas belonging to this patron ID.
@@ -1525,7 +2096,23 @@ def create_app() -> FastAPI:
         200 table-wide and filtered in Python — patrons whose sagas fell
         outside that window saw an empty list (false negative). Portable
         across Postgres JSONB and SQLite JSON via ``_json_type``.
+
+        Audit 2026-05-09 #2: when ``AGORA_PORTAL_SIGNING_KEY`` is set,
+        the request must carry a ``token`` query param whose HMAC of
+        ``patron_id`` matches the signing key. The discovery surface
+        (typing a guessable patron-id like a library card number into a
+        form) is closed off in production; tokens are issued
+        out-of-band (e.g. via email magic link). Empty signing key
+        preserves the form-entry dev/test path.
         """
+        signing_key = settings.portal_signing_key.get_secret_value()
+        if signing_key:
+            if not token or not verify_portal_token(signing_key, token, patron_id):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="request not found",
+                )
+
         async with session.begin():
             stmt = (
                 select(Saga)
@@ -1570,26 +2157,66 @@ def create_app() -> FastAPI:
     async def portal_saga_detail(
         saga_id: UUID,
         request: Request,
-        patron_id: str = Query(..., min_length=1),
+        patron_id: str = Query(
+            ...,
+            min_length=1,
+            max_length=64,
+            # Audit 2026-05-09 #17: bound the shape so a hostile or
+            # mistyped patron_id can't reach JSONB-path / template
+            # surfaces with control characters. Library cards / NetIDs /
+            # patron-database keys are all safely covered by alphanumeric
+            # + a few separators.
+            pattern=r"^[A-Za-z0-9_.@\-]+$",
+        ),
+        token: str | None = Query(
+            default=None,
+            max_length=128,
+            pattern=r"^[0-9a-f]{0,128}$",
+            description="HMAC token over (saga_id, patron_id) when AGORA_PORTAL_SIGNING_KEY is set.",
+        ),
         session: AsyncSession = Depends(_get_session),
     ) -> HTMLResponse:
         """Read-only patron view of a single saga.
 
-        Privacy posture for the prototype: the **saga UUID is the secret
-        token**. There is no patron auth, so any caller who knows the
-        saga-id may view it (typically reached via a private link). The
-        ``patron_id`` query param is a UX label echoed into the page —
-        not an access gate. Gating on patron-id while ``/portal/requests``
-        accepts arbitrary IDs would be false reassurance: an attacker who
-        can enumerate one can enumerate the other. See PRD-05 § Patron
-        portal for the full prototype-limits writeup.
+        Audit 2026-05-09 #2: when ``AGORA_PORTAL_SIGNING_KEY`` is set,
+        the URL must carry a ``token`` whose HMAC of
+        ``(saga_id, patron_id)`` matches the signing key AND the
+        saga's stored patron_id must match the query parameter. Three
+        layers gate access: the unguessable saga UUID, the patron-id
+        match, and the HMAC over both. Empty signing key preserves the
+        prototype's "saga UUID as private link" model for offline
+        dev — production sets the key.
 
-        Returns 404 only when the saga does not exist.
+        Returns 404 when the saga does not exist OR the token is
+        absent / invalid (no information leaked about which way the
+        check failed).
         """
+        signing_key = settings.portal_signing_key.get_secret_value()
+        if signing_key:
+            if not token or not verify_portal_token(
+                signing_key, token, str(saga_id), patron_id
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="request not found",
+                )
+
         async with session.begin():
             saga = await session.get(Saga, saga_id)
             if saga is None:
                 raise HTTPException(status_code=404, detail="request not found")
+
+            # Audit #2 second layer: the saga's stored patron_id must
+            # match the query param. Without this, knowing any signed
+            # token + any saga UUID would suffice (token only binds
+            # (saga_id, patron_id), not the underlying ledger row).
+            stored_patron = (saga.request_payload or {}).get("patron") or {}
+            if signing_key and stored_patron.get("patron_id") != patron_id:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="request not found",
+                )
+
             raw = saga.request_payload or {}
 
             ledger = SagaLedger(session)

@@ -19,10 +19,10 @@ import respx
 from httpx import Response
 from lxml import etree
 
+from agora.clients._xml import SAFE_XML_PARSER as _XML_PARSER
 from agora.clients.ncip import (
     _NS,
     _VERSION_ATTR,
-    _XML_PARSER,
     HttpNcipClient,
     NcipError,
     NcipResult,

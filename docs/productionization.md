@@ -6,8 +6,9 @@
 > to "consortium runs it for real patrons in 2027." It is *not* a
 > claim that Agora is production-ready today. Read it as a punch list.
 >
-> **Last reviewed against code:** 2026-05-07 (post PRs #133–#139,
-> master at `5e77360`, 503 tests, 99% coverage).
+> **Last reviewed against code:** 2026-05-09 (post audit-remediation
+> sprint, master at `a6eb6fa`, 553 tests collected / 542 pass + 11
+> skipped, 18 ADRs, 36 of 42 audit findings closed).
 >
 > **Audiences.** This doc serves two readers:
 > - **Leadership** (Library Director, CIO, consortium board, funder
@@ -24,8 +25,12 @@ wraps existing FOLIO/ReShare standards plumbing (ISO 18626, NCIP,
 SRU) with intelligent routing, advisory agents, and a saga-based
 ledger that records every state change with paired forward +
 compensator (rollback) operations. Humans approve every transition;
-agents recommend, never decide. Codebase: 503 tests, 99% coverage,
-17 ADRs.
+agents recommend, never decide. Codebase: 553 tests collected / 542
+pass + 11 skipped, 18 ADRs, post-audit-remediation hardening (Basic
+auth on all endpoints + tenant-scoping stopgap, patron-portal HMAC,
+proactive Okapi token refresh, prompt-injection guard, CSRF + rate
+limit + HTTPS + security headers, SecretStr credentials, XML XXE
+guard).
 
 **What "production" means here.** One consortium, single-tenant,
 on-prem or single-tenant cloud. Real patrons placing real ILL
@@ -55,9 +60,13 @@ calendar: ≈ 18 months from "go" to "GA on a single consortium."
    require destruction-on-completion; Agora retains indefinitely
    today. Pre-Phase-1 ADR + scrub job. Mitigation: ADR-0019, ~1-week
    eng work, library-counsel review.
-3. **No production authentication** (gap G-01). Console + API have
-   no auth today. Pre-Phase-1 OIDC SSO behind a feature flag.
-   Mitigation: well-trodden FastAPI integration; ~2-week eng work.
+3. **Multi-principal authentication** (gap G-01). Single-principal
+   Basic auth + tenant-scoping stopgap landed in the 2026-05-09
+   audit-remediation sprint ([ADR-0018](adr/0018-tenant-scoping-stopgap.md));
+   real per-staff identity needs OIDC SSO with library-symbol claim
+   per principal. Pre-Phase-1: replace the `ConsolePrincipal`
+   dependency seam with the SSO integration. Mitigation: well-trodden
+   FastAPI integration; ~2-week eng work.
 
 **What leadership signs off on, by phase.**
 
@@ -139,7 +148,7 @@ gap IDs. Don't skip; don't blur boundaries.
 
 **Status:** This is master today.
 **Goal:** Demo + tests + docs are credible enough to commit pilot resources.
-**Evidence:** 503 tests, 99% coverage, 17 ADRs, mod-rs 2.19 sandbox probed (#56 → CLAUDE.md), routing-LLM eval top-1 0.95.
+**Evidence:** 553 tests collected (542 pass + 11 skipped), 18 ADRs, mod-rs 2.19 sandbox probed (#56 → CLAUDE.md), routing-LLM eval top-1 0.95, 36 of 42 audit findings closed in the 2026-05-09 remediation sprint (`docs/security-audits/2026-05-09.md`, `docs/SECURITY_MODEL.md` § 7).
 **Exit criteria** (all true to enter Phase 1):
 - [ ] Two-tenant ReShare probe complete (G-03).
 - [ ] Live mod-ncip probe against pilot consortium's primary ILS (G-04).

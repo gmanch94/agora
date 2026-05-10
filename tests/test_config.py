@@ -13,6 +13,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from pydantic import SecretStr
+
 from agora.config import Settings
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -167,10 +169,12 @@ def _coerce_env_string(raw: str, annotation: type) -> object:
     """Parse an env-style string into the typed value pydantic-settings would.
 
     Mirrors pydantic-settings's coercion rules for the four types Agora
-    uses (``str``, ``int``, ``float``, ``bool``). The bool coercion
-    accepts the same truthy strings pydantic does so a doc-side
-    ``true`` / ``1`` / ``yes`` survives the comparison without
-    flagging a false mismatch.
+    uses (``str``, ``int``, ``float``, ``bool``, plus ``SecretStr``).
+    The bool coercion accepts the same truthy strings pydantic does so a
+    doc-side ``true`` / ``1`` / ``yes`` survives the comparison without
+    flagging a false mismatch. ``SecretStr`` (audit 2026-05-09 #10)
+    wraps the string so equality against the ``Settings`` default
+    succeeds despite the masked repr.
     """
     if annotation is bool:
         return raw.strip().lower() in ("1", "true", "yes", "on")
@@ -182,7 +186,9 @@ def _coerce_env_string(raw: str, annotation: type) -> object:
     # (env-file convention is unquoted values).
     stripped = raw.strip()
     if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in ('"', "'"):
-        return stripped[1:-1]
+        stripped = stripped[1:-1]
+    if annotation is SecretStr:
+        return SecretStr(stripped)
     return stripped
 
 
@@ -231,6 +237,38 @@ def test_runbook_env_table_lists_every_settings_alias() -> None:
         f"``docs/runbook.md`` § 1.2 with the default + a one-line "
         f"description of the toggle's effect."
     )
+
+
+def test_db_url_uses_dev_default_property() -> None:
+    """Audit #25: ``db_url_uses_dev_default`` flags the unmodified default."""
+    s_default = Settings()
+    assert s_default.db_url_uses_dev_default is True
+
+    s_override = Settings(AGORA_DB_URL="postgresql+asyncpg://prod:realpw@db:5432/p")
+    assert s_override.db_url_uses_dev_default is False
+
+
+def test_create_app_refuses_dev_db_in_non_dev_env(monkeypatch: object) -> None:
+    """Audit #25: refuse to boot with ``:agora@`` creds when env != 'dev'.
+
+    The default ``postgresql+asyncpg://agora:agora@localhost:5433/agora``  # pragma: allowlist secret
+    is fine for offline laptop work; shipping it to staging/prod is a
+    credential leak. ``create_app`` raises RuntimeError so the operator
+    sees a clean refuse-to-start instead of a silently-running service.
+    """
+    import pytest
+
+    from agora import config as config_mod
+    from agora.api import app as app_mod
+
+    assert hasattr(monkeypatch, "setenv")  # mypy narrowing for the param
+    monkeypatch.setenv("AGORA_ENV", "staging")
+    config_mod.get_settings.cache_clear()
+    try:
+        with pytest.raises(RuntimeError, match="development default"):
+            app_mod.create_app()
+    finally:
+        config_mod.get_settings.cache_clear()
 
 
 def test_runbook_env_table_default_values_match_settings_defaults() -> None:

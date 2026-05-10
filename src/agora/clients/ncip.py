@@ -87,6 +87,7 @@ from typing import Protocol, cast
 import httpx
 from lxml import etree
 
+from agora.clients._xml import SAFE_XML_PARSER as _XML_PARSER
 from agora.clients.errors import ClientError, RemoteUnavailableError
 from agora.clients.okapi_auth import OkapiAuth
 from agora.config import Settings, get_settings
@@ -98,8 +99,8 @@ log = get_logger(__name__)
 _NS = "http://www.niso.org/2008/ncip"
 _VERSION_ATTR = "http://www.niso.org/schemas/ncip/v2_0/ncip_v2_0.xsd"
 _NSMAP: dict[None, str] = {None: _NS}
-# Safe XML parser: no entity expansion, no network access (prevents XXE).
-_XML_PARSER = etree.XMLParser(resolve_entities=False, no_network=True)
+# _XML_PARSER imported above: shared, hardens XXE + huge-tree posture
+# across every client that calls etree.fromstring on peer-controlled bytes.
 
 
 class NcipError(ClientError):
@@ -330,17 +331,26 @@ class HttpNcipClient:
         self._tenant = s.reshare_tenant  # same FOLIO deployment
         auth: httpx.Auth | None
         if s.okapi_url:
+            # Same with-expiry endpoint as the ReShare client (audit #11).
             auth = OkapiAuth(
-                login_url=f"{s.okapi_url.rstrip('/')}/authn/login",
+                login_url=f"{s.okapi_url.rstrip('/')}/authn/login-with-expiry",
                 tenant=s.reshare_tenant,
                 username=s.reshare_user,
-                password=s.reshare_password,
+                password=s.reshare_password.get_secret_value(),
             )
         else:
             auth = None
+        # Keep a typed reference so ``aclose`` can call
+        # ``clear_token()`` (audit #11). httpx stashes ``auth`` on the
+        # client but doesn't expose it directly.
+        self._auth: httpx.Auth | None = auth
         self._client = httpx.AsyncClient(timeout=10.0, auth=auth)
 
     async def aclose(self) -> None:
+        # Drop cached Okapi credentials before tearing down the pool.
+        # Audit 2026-05-09 #11.
+        if isinstance(self._auth, OkapiAuth):
+            self._auth.clear_token()
         await self._client.aclose()
 
     def _headers(self, *, idempotency_key: str | None = None) -> dict[str, str]:

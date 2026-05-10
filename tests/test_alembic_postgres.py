@@ -66,7 +66,7 @@ _ALEMBIC_INI = _REPO_ROOT / "alembic.ini"
 _ALEMBIC_DIR = _REPO_ROOT / "alembic"
 
 _TEST_DB_URL = os.environ.get("AGORA_TEST_DB_URL")
-_HEAD_REVISION = "20260504_outbox_claimed_at"
+_HEAD_REVISION = "20260509_saga_patron_id_index"
 
 requires_pg = pytest.mark.skipif(
     _TEST_DB_URL is None,
@@ -168,6 +168,18 @@ async def test_alembic_round_trip(fresh_pg_engine: AsyncEngine) -> None:
     await _upgrade(_TEST_DB_URL)
 
 
+# Indexes the ORM metadata deliberately does NOT declare because they
+# are dialect-specific (Postgres-only GIN expression indexes whose
+# SQLAlchemy representation is awkward in portable __table_args__).
+# Alembic creates them via raw SQL in the migration; compare_metadata
+# would otherwise flag them as "remove_index" diffs against the ORM.
+_EXPECTED_DIALECT_ONLY_INDEXES: frozenset[str] = frozenset(
+    {
+        "ix_saga_patron_id",  # audit 2026-05-09 #37 (JSONB GIN)
+    }
+)
+
+
 def _filter_compare_diffs(diffs: Iterable[Any]) -> list[Any]:
     """Drop cosmetic diffs that compare_metadata reports on a correct schema.
 
@@ -175,7 +187,8 @@ def _filter_compare_diffs(diffs: Iterable[Any]) -> list[Any]:
       * ``add_table`` / ``remove_table``
       * ``add_column`` / ``remove_column``
       * ``add_constraint`` / ``remove_constraint`` (UNIQUE, FK, CHECK)
-      * ``add_index`` / ``remove_index``
+      * ``add_index`` / ``remove_index`` (except dialect-only indexes
+        in :data:`_EXPECTED_DIALECT_ONLY_INDEXES`)
 
     Dropped (cosmetic):
       * ``modify_default`` — server_default text-vs-FunctionElement
@@ -184,6 +197,9 @@ def _filter_compare_diffs(diffs: Iterable[Any]) -> list[Any]:
       * ``modify_type`` when the existing and new types stringify the
         same — dialect variants occasionally trip this on ``VARCHAR``
         round-trips.
+      * ``remove_index`` for dialect-only indexes — Postgres-specific
+        GIN / expression indexes that ORM metadata can't portably
+        declare without breaking SQLite ``create_all``.
     """
     kept: list[Any] = []
     for diff in diffs:
@@ -202,6 +218,12 @@ def _filter_compare_diffs(diffs: Iterable[Any]) -> list[Any]:
             existing = diff[5]
             new = diff[6]
             if str(existing) == str(new):
+                continue
+        if action == "remove_index":
+            # diff shape: ("remove_index", Index(...))
+            idx = diff[1] if len(diff) > 1 else None
+            idx_name = getattr(idx, "name", None)
+            if idx_name in _EXPECTED_DIALECT_ONLY_INDEXES:
                 continue
         kept.append(diff)
     return kept
