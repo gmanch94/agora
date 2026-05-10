@@ -1,11 +1,11 @@
 # Next session resume note
 
-**Last updated:** 2026-05-09 (audit-remediation sprint complete; master at 553 collected / 542 pass + 11 skipped).
+**Last updated:** 2026-05-09 (audit-remediation sprint + reviewer follow-ups complete; master at 556 collected / 545 pass + 11 skipped).
 
 ## Repo state
 
-- `master` at `a6eb6fa` (audit-remediation sprint final commit). Local-only — no PR opened yet; commits are NOT pushed.
-- Test count **553 collected** (542 pass + 11 skipped env-gated). 39 new tests this sprint.
+- `master` at `de94df1` (audit-remediation sprint + reviewer follow-ups). Local-only — no PR opened yet; commits are NOT pushed.
+- Test count **556 collected** (545 pass + 11 skipped env-gated). 44 new tests across the sprint + follow-ups.
 - ADR count: **18** (ADR-0018 documents the multi-principal auth follow-up after the tenant-scoping stopgap landed).
 - LLM routing baseline: **top-1 1.0000 / mean Spearman 1.0000** (40 scenarios, gemini-2.5-flash) — unchanged.
 - Security audit: **bandit 0 / pip-audit 0 / detect-secrets 0**. mypy `--strict` clean over `src/` and `tests/`. ruff clean.
@@ -23,6 +23,9 @@
 | `5b16277` | 6: LLM prompt injection guard | #16 |
 | `29c36fb` | 7: Tracking race + JSONB index + jitter + fail-fast renew | #27, #35, #37, #42 |
 | `a6eb6fa` | 8: Network-posture docs + SECURITY_MODEL fill + Jinja XSS guard | #24, #32, #39 |
+| `89ba48b` | follow-up: HTML form `actor=principal.actor` (audit #21 regression) + docs drift sweep | reviewer-flagged |
+| `625631e` | follow-up: scope guards on staff HTML detail / inbox / browser views (audit #3 follow-up) | reviewer-flagged |
+| `de94df1` | follow-up: audit-suite hygiene — `# nosec B311` for jitter, `pragma: allowlist secret` for docstrings | post-sprint cleanup |
 
 ### Substantive new behaviour to know about
 
