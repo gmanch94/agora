@@ -35,6 +35,8 @@ Endpoints exposed by the stack that we did NOT explicitly write:
 
 **Tenant scoping.** When `AGORA_CONSOLE_LIBRARY_SYMBOL` is set, every `/sagas/*` endpoint runs `_assert_saga_in_scope(saga, principal)` and refuses (403) on cross-library access. `/sagas` SQL-filters by JSONB-path so the listing also excludes other libraries' rows. `POST /requests` rejects out-of-scope `requesting_library`. Single-tenant by construction; multi-principal model is the ADR-0018 follow-up.
 
+**Role-based authorisation (G-02, ADR-0019).** `ConsolePrincipal.role` is one of `viewer < approver < admin`. Mutating endpoints (`POST /requests`, `/sagas/{id}/{approve,compensate,reject,override,discover,renew}`, all `/ui/sagas/{id}/*` form POSTs) gate on `Depends(_require_role(Role.APPROVER))` — `viewer` gets 403. Read endpoints (`GET /sagas`, `GET /sagas/{id}`, HTML inbox / browser / detail views) accept any authenticated role. Role assignment via `AGORA_CONSOLE_ROLES` (`alice:admin,bob:approver,charlie:viewer`). Empty roster falls back to `approver` (back-compat); unknown usernames in a non-empty roster get `viewer` (least-privilege). Single-user limit: Basic auth pins to one `AGORA_CONSOLE_USERNAME` — multi-user RBAC arrives with G-01 OIDC.
+
 ---
 
 ## 3. Sensitive operations

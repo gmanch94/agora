@@ -432,7 +432,7 @@ during the APPROVING window (supplier ack still pending) returns
 
 ### 7.5 Test strategy
 
-- 566 tests across unit, property (Hypothesis on compensator  symmetry), and end-to-end (FastAPI + ASGITransport + in-memory
+- 584 tests across unit, property (Hypothesis on compensator  symmetry), and end-to-end (FastAPI + ASGITransport + in-memory
   SQLite), plus 6 postgres-only tests gated behind
   `AGORA_TEST_DB_URL` / the `postgres-tests.yml` CI service container.
 - `pytest-asyncio` in `asyncio_mode = "auto"`.
@@ -542,7 +542,7 @@ All gaps are tracked in `CLAUDE.md`.
 - `docs/runbook.md` — operational reference (bring-up, gate workflow, outbox, dead-letter triage)
 - `docs/architecture.md` — Mermaid diagrams (layer cake, lifecycle state machine, idempotency model)
 - `docs/prd/00-overview.md` … `06-non-functional.md` — product requirements (7 docs)
-- `docs/adr/0001-…` … `0015-staff-console-htmx-jinja2.md` — architecture decisions (18 docs; latest: 0014 routing-LLM tie-breaker, 0015 staff console HTMX+Jinja2)
+- `docs/adr/0001-…` … `0015-staff-console-htmx-jinja2.md` — architecture decisions (19 docs; latest: 0014 routing-LLM tie-breaker, 0015 staff console HTMX+Jinja2)
 - `src/agora/api/app.py` — FastAPI factory + lifespan
 - `src/agora/saga/coordinator.py` — coordinator
 - `src/agora/saga/flows.py` — forward+compensator pairs

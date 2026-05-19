@@ -168,6 +168,16 @@ class Settings(BaseSettings):
         default="", alias="AGORA_CONSOLE_LIBRARY_SYMBOL"
     )
 
+    # RBAC roster (G-02 from docs/productionization.md). Comma-separated
+    # ``username:role`` pairs assigning a role to each console user.
+    # Roles: ``viewer`` (read-only) | ``approver`` (commit gates) |
+    # ``admin`` (approver + future admin endpoints). Empty default
+    # preserves pre-G-02 behaviour where the single console user gets
+    # ``approver`` (legacy). Unknown usernames in the roster fall back
+    # to ``viewer`` (read-only) — least-privilege on misconfiguration.
+    # Example: ``alice:admin,bob:approver,charlie:viewer``.
+    console_roles: str = Field(default="", alias="AGORA_CONSOLE_ROLES")
+
     # Patron portal HMAC signing key (audit 2026-05-09 #2). When set,
     # ``/portal/requests`` and ``/portal/requests/{saga_id}`` require a
     # ``token`` query parameter whose HMAC matches the patron-id (and

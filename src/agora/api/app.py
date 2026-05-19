@@ -23,6 +23,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from datetime import date as _date
+from enum import Enum
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -147,6 +148,73 @@ class _RateLimitState:
         return True, 0
 
 
+class Role(str, Enum):
+    """RBAC roles for the staff console (G-02 from productionization.md).
+
+    Ordered by privilege: ``VIEWER < APPROVER < ADMIN``. ``rank`` is
+    used by ``_require_role`` to compare a principal's role against
+    the endpoint's minimum-required role.
+    """
+
+    VIEWER = "viewer"
+    APPROVER = "approver"
+    ADMIN = "admin"
+
+    @property
+    def rank(self) -> int:
+        return _ROLE_RANK[self]
+
+
+_ROLE_RANK: dict[Role, int] = {Role.VIEWER: 0, Role.APPROVER: 1, Role.ADMIN: 2}
+
+
+def _parse_console_roles(spec: str) -> dict[str, Role]:
+    """Parse ``AGORA_CONSOLE_ROLES`` (``user:role,user2:role2``).
+
+    Whitespace tolerant. Unknown role tokens raise ``ValueError`` at
+    boot — fail-fast on misconfiguration so the deployment never goes
+    live with a typo'd role grant. Empty / whitespace-only entries
+    are skipped silently. Duplicate usernames raise — ambiguity
+    over which role wins is a bug, not a feature.
+    """
+    out: dict[str, Role] = {}
+    if not spec.strip():
+        return out
+    for pair in spec.split(","):
+        pair = pair.strip()
+        if not pair:
+            continue
+        if ":" not in pair:
+            raise ValueError(
+                f"AGORA_CONSOLE_ROLES entry {pair!r} missing ':' separator; "
+                "expected 'username:role'"
+            )
+        # Reviewer LOW: normalise username to lowercase so a roster of
+        # ``Alice:admin`` matches a Basic-auth login of ``alice`` —
+        # avoids the silent VIEWER-fallback footgun on casing mismatch.
+        user, _, role_token = pair.partition(":")
+        user = user.strip().lower()
+        role_token = role_token.strip().lower()
+        if not user:
+            raise ValueError(
+                f"AGORA_CONSOLE_ROLES entry {pair!r} has empty username"
+            )
+        try:
+            role = Role(role_token)
+        except ValueError as exc:
+            valid = ", ".join(r.value for r in Role)
+            raise ValueError(
+                f"AGORA_CONSOLE_ROLES entry {pair!r} has unknown role "
+                f"{role_token!r}; valid: {valid}"
+            ) from exc
+        if user in out:
+            raise ValueError(
+                f"AGORA_CONSOLE_ROLES duplicates username {user!r}"
+            )
+        out[user] = role
+    return out
+
+
 @dataclass(frozen=True)
 class ConsolePrincipal:
     """The authenticated identity behind a console / JSON-API request.
@@ -158,10 +226,17 @@ class ConsolePrincipal:
     principal is also tenant-scoped: every saga endpoint refuses
     operations on sagas with a different ``requesting_library``
     (audit #3 stopgap; multi-principal model is an ADR follow-up).
+
+    ``role`` (G-02) gates mutating endpoints. Default ``APPROVER``
+    preserves pre-G-02 single-principal behaviour where the lone
+    console user could approve / compensate / override. Production
+    deployments set ``AGORA_CONSOLE_ROLES`` to assign per-user roles;
+    unmapped users degrade to ``VIEWER`` (least-privilege).
     """
 
     username: str
     library_symbol: str | None
+    role: Role = Role.APPROVER
 
     @property
     def actor(self) -> str:
@@ -872,6 +947,29 @@ def create_app() -> FastAPI:
     # ``actor`` (audit #21) and assert tenant scoping (audit #3).
     _console_security = HTTPBasic(auto_error=False)
 
+    # Parse RBAC roster once at app boot — fail-fast on bad config
+    # (typo'd role token, duplicate username) rather than discovering
+    # the misconfiguration on a 403 during the first commit-gate.
+    _console_roles_map = _parse_console_roles(settings.console_roles)
+
+    def _resolve_role(username: str) -> Role:
+        """Look up the username in the configured RBAC roster.
+
+        Three cases:
+        - Empty roster (default) → APPROVER. Preserves pre-G-02
+          single-principal deployments where the lone console user
+          could commit gates. Documented in the env-var help text.
+        - Username present in roster → assigned role.
+        - Username absent from a non-empty roster → VIEWER
+          (least-privilege fallback). A typo'd username gets the
+          read-only role rather than silently elevating.
+        """
+        if not _console_roles_map:
+            return Role.APPROVER
+        # Lowercase the lookup key to match the normalisation done in
+        # ``_parse_console_roles`` (reviewer LOW).
+        return _console_roles_map.get(username.lower(), Role.VIEWER)
+
     def _require_console_auth(
         credentials: HTTPBasicCredentials | None = Depends(_console_security),
         settings: Any = Depends(get_settings),
@@ -884,9 +982,12 @@ def create_app() -> FastAPI:
             # honest even in dev. ``library_symbol`` flows through
             # whether or not a password is set — ops can scope-test
             # locally by setting ``AGORA_CONSOLE_LIBRARY_SYMBOL`` alone.
+            # Role is APPROVER in dev so endpoint-level RBAC tests
+            # against a live FastAPI client without forcing a roster.
             return ConsolePrincipal(
                 username=settings.console_username,
                 library_symbol=library,
+                role=_resolve_role(settings.console_username),
             )
         if credentials is None:
             raise HTTPException(
@@ -907,7 +1008,36 @@ def create_app() -> FastAPI:
         return ConsolePrincipal(
             username=credentials.username,
             library_symbol=library,
+            role=_resolve_role(credentials.username),
         )
+
+    def _require_role(
+        minimum: Role,
+    ) -> Any:
+        """FastAPI dependency factory — 403s when principal's role is
+        below ``minimum`` (G-02).
+
+        Returned dependency runs AFTER ``_require_console_auth`` (it
+        depends on a ``ConsolePrincipal``), so 401 takes precedence
+        over 403. ``actor`` of the rejecting principal is included in
+        the detail string for audit-log triage.
+        """
+
+        def _checker(
+            principal: ConsolePrincipal = Depends(_require_console_auth),
+        ) -> ConsolePrincipal:
+            if principal.role.rank < minimum.rank:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=(
+                        f"role {principal.role.value!r} cannot perform this "
+                        f"action; minimum {minimum.value!r} required "
+                        f"(principal={principal.actor!r})"
+                    ),
+                )
+            return principal
+
+        return _checker
 
     def _assert_saga_in_scope(saga: Saga, principal: ConsolePrincipal) -> None:
         """Refuse cross-library saga access when tenant scoping is on.
@@ -1166,7 +1296,7 @@ def create_app() -> FastAPI:
         saga_id: UUID,
         session: AsyncSession = Depends(_get_session),
         registry: StepRegistry = Depends(_get_registry),
-        principal: ConsolePrincipal = Depends(_require_console_auth),
+        principal: ConsolePrincipal = Depends(_require_role(Role.APPROVER)),
         step: str = Form(...),
         rationale: str = Form("Staff approved."),
         chosen_supplier: str = Form(""),
@@ -1223,7 +1353,7 @@ def create_app() -> FastAPI:
         saga_id: UUID,
         http_request: Request,
         session: AsyncSession = Depends(_get_session),
-        principal: ConsolePrincipal = Depends(_require_console_auth),
+        principal: ConsolePrincipal = Depends(_require_role(Role.APPROVER)),
     ) -> HTMLResponse:
         """HTMX partial: run DiscoveryAgent, return candidate list as HTML fragment.
 
@@ -1308,7 +1438,7 @@ def create_app() -> FastAPI:
     async def ui_saga_reject(
         saga_id: UUID,
         session: AsyncSession = Depends(_get_session),
-        principal: ConsolePrincipal = Depends(_require_console_auth),
+        principal: ConsolePrincipal = Depends(_require_role(Role.APPROVER)),
         step: str = Form(...),
         rationale: str = Form("Staff rejected."),
     ) -> RedirectResponse:
@@ -1362,7 +1492,7 @@ def create_app() -> FastAPI:
         saga_id: UUID,
         session: AsyncSession = Depends(_get_session),
         registry: StepRegistry = Depends(_get_registry),
-        principal: ConsolePrincipal = Depends(_require_console_auth),
+        principal: ConsolePrincipal = Depends(_require_role(Role.APPROVER)),
         step: str = Form(...),
         rationale: str = Form("Staff compensated."),
     ) -> RedirectResponse:
@@ -1408,7 +1538,7 @@ def create_app() -> FastAPI:
     async def ui_saga_override(
         saga_id: UUID,
         session: AsyncSession = Depends(_get_session),
-        principal: ConsolePrincipal = Depends(_require_console_auth),
+        principal: ConsolePrincipal = Depends(_require_role(Role.APPROVER)),
         target_state: str = Form(...),
         rationale: str = Form("Staff override."),
     ) -> RedirectResponse:
@@ -1473,7 +1603,7 @@ def create_app() -> FastAPI:
         saga_id: UUID,
         session: AsyncSession = Depends(_get_session),
         registry: StepRegistry = Depends(_get_registry),
-        principal: ConsolePrincipal = Depends(_require_console_auth),
+        principal: ConsolePrincipal = Depends(_require_role(Role.APPROVER)),
         extension_days: int = Form(28),
         rationale: str = Form("Staff approved renewal."),
     ) -> RedirectResponse:
@@ -1532,7 +1662,7 @@ def create_app() -> FastAPI:
     async def submit_request(
         request: IllRequest,
         session: AsyncSession = Depends(_get_session),
-        principal: ConsolePrincipal = Depends(_require_console_auth),
+        principal: ConsolePrincipal = Depends(_require_role(Role.APPROVER)),
     ) -> SubmitRequestResponse:
         # Audit #3 stopgap: when scoping is enabled, the request must
         # belong to the principal's library (caller can't submit
@@ -1631,7 +1761,7 @@ def create_app() -> FastAPI:
         body: ApprovalBody,
         session: AsyncSession = Depends(_get_session),
         registry: StepRegistry = Depends(_get_registry),
-        principal: ConsolePrincipal = Depends(_require_console_auth),
+        principal: ConsolePrincipal = Depends(_require_role(Role.APPROVER)),
     ) -> StepRunResponse:
         """Commit the gate for ``body.step`` and run the forward step.
 
@@ -1712,7 +1842,7 @@ def create_app() -> FastAPI:
         body: RenewBody,
         session: AsyncSession = Depends(_get_session),
         registry: StepRegistry = Depends(_get_registry),
-        principal: ConsolePrincipal = Depends(_require_console_auth),
+        principal: ConsolePrincipal = Depends(_require_role(Role.APPROVER)),
     ) -> StepRunResponse:
         """Commit a RENEW gate and run the forward step.
 
@@ -1785,7 +1915,7 @@ def create_app() -> FastAPI:
         http_request: Request,
         body: DiscoverBody | None = None,
         session: AsyncSession = Depends(_get_session),
-        principal: ConsolePrincipal = Depends(_require_console_auth),
+        principal: ConsolePrincipal = Depends(_require_role(Role.APPROVER)),
     ) -> DiscoverResponse:
         """Run DiscoveryAgent against the saga's stored request.
 
@@ -1869,7 +1999,7 @@ def create_app() -> FastAPI:
         saga_id: UUID,
         body: RejectionBody,
         session: AsyncSession = Depends(_get_session),
-        principal: ConsolePrincipal = Depends(_require_console_auth),
+        principal: ConsolePrincipal = Depends(_require_role(Role.APPROVER)),
     ) -> None:
         step = _parse_step(body.step)
         async with session.begin():
@@ -1926,7 +2056,7 @@ def create_app() -> FastAPI:
         body: CompensateBody,
         session: AsyncSession = Depends(_get_session),
         registry: StepRegistry = Depends(_get_registry),
-        principal: ConsolePrincipal = Depends(_require_console_auth),
+        principal: ConsolePrincipal = Depends(_require_role(Role.APPROVER)),
     ) -> StepRunResponse:
         """Run the compensator for ``body.step`` against its committed forward.
 
@@ -1984,7 +2114,7 @@ def create_app() -> FastAPI:
         saga_id: UUID,
         body: OverrideBody,
         session: AsyncSession = Depends(_get_session),
-        principal: ConsolePrincipal = Depends(_require_console_auth),
+        principal: ConsolePrincipal = Depends(_require_role(Role.APPROVER)),
     ) -> StepRunResponse:
         """Resolve a DISPUTED saga by force-setting it to CANCELLED or UNFILLED.
 
