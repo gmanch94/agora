@@ -118,7 +118,15 @@ outstanding local commits. Backlog below is the durable list — the
 - **`portal_requests` filters SQL-side via JSON path (post-#137).** `Saga.request_payload['patron']['patron_id'].astext == patron_id` compiles cross-DB via `_json_type` (`JSONB().with_variant(JSON(), "sqlite")`). Don't refactor back to "load 200, filter Python-side" — patrons with older sagas would silently disappear.
 - **`security_scan.py` baseline filter is path-normalised + skips the baseline file (post-#139).** detect-secrets reports OS-native separators; baseline is forward-slash. Don't break the `lookup_key.replace("\\\\", "/")` line or the baseline-file-skip without re-running on Windows + Linux to verify both.
 - **`SagaEvent` requires `id: int` and `iso_message_id: str | None`** when constructed directly in unit tests (PR #129).
-- **Always branch + PR, never commit directly to master.**
+- **Direct-to-master push policy active (2026-05-19).** Pre-launch
+  cost-saving per `~/.claude/rules/ci-optimization.md`. Local gate
+  (pytest + ruff + mypy + `make audit`) is the only gate. Use
+  `git revert` for recovery, never `--force-push`. Re-enable
+  branch protection + PR cycle when: first real user, first paid
+  transaction, first production deploy, or team grows past solo.
+  Master branch protection may still block — if `git push origin master`
+  refuses, disable protection via `gh api -X DELETE
+  repos/gmanch94/agora/branches/master/protection`.
 - **GCP ADC for LLM eval refresh:** needs all of `GOOGLE_GENAI_USE_VERTEXAI=true` + `GOOGLE_CLOUD_PROJECT` + `GOOGLE_CLOUD_LOCATION=us-central1` + `AGORA_ROUTING_LLM_ENABLED=1` + `AGORA_ROUTING_LLM_MODEL=gemini-2.5-flash` + `AGORA_ROUTING_LLM_TIMEOUT_SECS=30`. Without `GOOGLE_GENAI_USE_VERTEXAI=true` SDK silently falls back to API-key auth and 401s every call.
 
 ## Resume protocol
@@ -127,4 +135,9 @@ outstanding local commits. Backlog below is the durable list — the
 - `scripts/sync_doc_counts.py --fix` after test count changes.
 - GPG signing disabled (`commit.gpgsign=false`).
 - Python: `.venv/Scripts/python.exe`.
-- **Always branch + PR, never commit directly to master.**
+- **Direct-to-master push allowed pre-launch** (2026-05-19 onward).
+  Local gate (`pytest -q`, `ruff`, `mypy --strict`, `make audit`) is
+  the only gate. Security-sensitive changes (auth, RLS, DB triggers,
+  payment, webhook handlers) still get an independent reviewer
+  subagent locally pre-push. `git revert` for recovery, never
+  `--force-push master`.
