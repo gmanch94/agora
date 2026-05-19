@@ -9,9 +9,9 @@ that future PRs must beat.
 
 | File | What |
 | ---- | ---- |
-| `scenarios.json` | 40 routing situations with `expected_chosen` + `expected_ranking` ground truth. Authored by hand against PRD-02 routing semantics. |
-| `baseline-rules.json` | Committed **rules-only** scores (top-1 0.9250 / mean Spearman 0.8378, 40 scenarios). The CI floor at `.github/workflows/routing-eval-floor.yml` enforces these — any PR that drops below either metric on the rules path fails. |
-| `baseline.json`  | Committed **LLM-augmented** scores. After this PR: placeholder rules-only numbers (0.9250/0.8378); refresh with `make eval-routing --llm` (requires GCP ADC) to get the LLM-augmented baseline over 40 scenarios. Prior LLM baseline (20 scenarios): top-1 0.9500 / mean Spearman 0.8889 against `gemini-2.5-flash`. |
+| `scenarios.json` | 48 routing situations with `expected_chosen` + `expected_ranking` ground truth. Authored by hand against PRD-02 routing semantics. |
+| `baseline-rules.json` | Committed **rules-only** scores (top-1 0.9375 / mean Spearman 0.8667, 48 scenarios). The CI floor at `.github/workflows/routing-eval-floor.yml` enforces these — any PR that drops below either metric on the rules path fails. |
+| `baseline.json`  | Committed **LLM-augmented** scores. After this PR: placeholder rules-only numbers (0.9375/0.8667 over 48 scenarios); refresh with `make eval-routing --llm` (requires GCP ADC) to get the LLM-augmented baseline. Prior LLM baseline (40 scenarios): top-1 0.9500 / mean Spearman 0.8889 against `gemini-2.5-flash`. |
 
 ## Run it
 

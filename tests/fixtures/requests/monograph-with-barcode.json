@@ -1,0 +1,30 @@
+{
+  "request_id": "00000000-0000-4000-8000-000000000006",
+  "request_type": "loan",
+  "patron": {
+    "library_symbol": "US-NEC-006",
+    "patron_id": "patron-60843"
+  },
+  "requesting_library": {
+    "symbol": "US-NEC-006",
+    "name": "New England Consortium Library"
+  },
+  "item": {
+    "title": "Operating Systems: Three Easy Pieces",
+    "author": "Remzi H. Arpaci-Dusseau, Andrea C. Arpaci-Dusseau",
+    "isbn": "9781985086593",
+    "year": 2018,
+    "edition": "1.00",
+    "publisher": "Arpaci-Dusseau Books",
+    "item_kind": "book",
+    "item_barcode": "31234567890123"
+  },
+  "citation": {
+    "raw": "Arpaci-Dusseau, R. H., & Arpaci-Dusseau, A. C. (2018). Operating Systems: Three Easy Pieces. Arpaci-Dusseau Books.",
+    "parsed_from": "identifier",
+    "parsed_at": "2026-05-19T09:25:00Z"
+  },
+  "needed_by": "2026-06-10T17:00:00Z",
+  "notes": "Supplying library has pre-attached item barcode for NCIP check_out routing.",
+  "created_at": "2026-05-19T09:25:00Z"
+}

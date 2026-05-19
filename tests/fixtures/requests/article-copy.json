@@ -1,0 +1,30 @@
+{
+  "request_id": "00000000-0000-4000-8000-000000000002",
+  "request_type": "copy",
+  "patron": {
+    "library_symbol": "US-SBA-002",
+    "patron_id": "patron-20917"
+  },
+  "requesting_library": {
+    "symbol": "US-SBA-002",
+    "name": "South Bay Academic Library"
+  },
+  "item": {
+    "title": "Journal of the ACM",
+    "issn": "0004-5411",
+    "doi": "10.1145/3389391",
+    "year": 2020,
+    "publisher": "Association for Computing Machinery",
+    "article_title": "A Cookbook for Aging-Aware Resource Allocation in Cloud Systems",
+    "author": "Chen, L.; Park, S.; Iyer, R.",
+    "pages": "12:1-12:34",
+    "item_kind": "article"
+  },
+  "citation": {
+    "raw": "Chen et al. (2020). A Cookbook for Aging-Aware Resource Allocation in Cloud Systems. JACM 67(3), 12:1-12:34. doi:10.1145/3389391",
+    "parsed_from": "identifier",
+    "parsed_at": "2026-05-19T09:05:00Z"
+  },
+  "needed_by": "2026-05-26T17:00:00Z",
+  "created_at": "2026-05-19T09:05:00Z"
+}

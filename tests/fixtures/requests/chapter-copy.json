@@ -1,0 +1,31 @@
+{
+  "request_id": "00000000-0000-4000-8000-000000000003",
+  "request_type": "copy",
+  "patron": {
+    "library_symbol": "US-MID-003",
+    "patron_id": "patron-30551"
+  },
+  "requesting_library": {
+    "symbol": "US-MID-003",
+    "name": "Midwestern Regional Library"
+  },
+  "item": {
+    "title": "Handbook of Library Information Management",
+    "author": "Ed. Diana Hartley",
+    "isbn": "9780765637598",
+    "year": 2019,
+    "edition": "3rd",
+    "publisher": "Routledge",
+    "article_title": "Chapter 7: Interlibrary Loan in the Consortium Era",
+    "pages": "147-178",
+    "item_kind": "chapter"
+  },
+  "citation": {
+    "raw": "Hartley, D. (Ed.). (2019). Handbook of Library Information Management (3rd ed., pp. 147-178). Routledge.",
+    "parsed_from": "openurl",
+    "parsed_at": "2026-05-19T09:10:00Z"
+  },
+  "needed_by": "2026-06-02T17:00:00Z",
+  "notes": "Faculty request — chapter scan only, no need for the full volume.",
+  "created_at": "2026-05-19T09:10:00Z"
+}

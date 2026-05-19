@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Valid against tests/fixtures/iso18626/minimal.xsd. Exercises the
+  validator with a different well-formed body to ensure the harness is
+  not pattern-matching the original minimal-valid.xml byte-for-byte.
+-->
+<message xmlns="http://example.test/agora/minimal">
+  <header>
+    <id>msg-042-extended</id>
+    <timestamp>2026-05-19T08:30:00Z</timestamp>
+  </header>
+  <body>extended payload — same shape, different content</body>
+</message>

@@ -1,0 +1,29 @@
+{
+  "request_id": "00000000-0000-4000-8000-000000000001",
+  "request_type": "loan",
+  "patron": {
+    "library_symbol": "US-NLA-001",
+    "patron_id": "patron-10042"
+  },
+  "requesting_library": {
+    "symbol": "US-NLA-001",
+    "name": "North Lake Public Library"
+  },
+  "item": {
+    "title": "Designing Data-Intensive Applications",
+    "author": "Martin Kleppmann",
+    "isbn": "9781449373320",
+    "year": 2017,
+    "edition": "1st",
+    "publisher": "O'Reilly Media",
+    "item_kind": "book"
+  },
+  "citation": {
+    "raw": "Kleppmann, M. (2017). Designing Data-Intensive Applications. O'Reilly Media.",
+    "parsed_from": "freetext",
+    "parsed_at": "2026-05-19T09:00:00Z"
+  },
+  "needed_by": "2026-06-15T17:00:00Z",
+  "notes": "Required reading for the systems architecture seminar.",
+  "created_at": "2026-05-19T09:00:00Z"
+}

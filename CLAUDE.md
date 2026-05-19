@@ -16,7 +16,7 @@ Returned** with saga compensators paired to every forward step.
 .venv/Scripts/python.exe -m pip install -e ".[dev]"
 
 # Verify
-.venv/Scripts/python.exe -m pytest tests/ -q              # 556 tests (+6 postgres-only).venv/Scripts/python.exe -m ruff check src tests          # lint
+.venv/Scripts/python.exe -m pytest tests/ -q              # 566 tests (+6 postgres-only).venv/Scripts/python.exe -m ruff check src tests          # lint
 .venv/Scripts/python.exe -m mypy --strict                 # types
 make audit                                                # bandit + pip-audit + detect-secrets
 .venv/Scripts/python.exe -m agora.demos.happy_path        # end-to-end demo
@@ -57,7 +57,7 @@ agora/
 │   ├── saga/                    # ledger, coordinator, idempotency,
 │   │                            #   flows (forward+compensator pairs)
 │   ├── cli.py / config.py / logging.py
-├── tests/                       # 556 tests (unit + property + e2e)├── docker-compose.yml           # Postgres-only sandbox
+├── tests/                       # 566 tests (unit + property + e2e)├── docker-compose.yml           # Postgres-only sandbox
 ├── Makefile / pyproject.toml
 ```
 
