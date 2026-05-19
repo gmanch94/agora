@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Invalid against tests/fixtures/iso18626/minimal.xsd. Well-formed XML
+  in the WRONG namespace — exercises the "schema mismatch" failure
+  mode distinct from the structural failures in minimal-invalid.xml /
+  missing-timestamp-invalid.xml. lxml reports the root element is not
+  declared in the target namespace.
+-->
+<message xmlns="http://wrong.example.test/agora/other">
+  <header>
+    <id>msg-044</id>
+    <timestamp>2026-05-19T08:30:00Z</timestamp>
+  </header>
+  <body>wrong-namespace test fixture</body>
+</message>

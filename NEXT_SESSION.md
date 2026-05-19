@@ -1,11 +1,12 @@
 # Next session resume note
 
-**Last updated:** 2026-05-09 (audit-remediation sprint + reviewer follow-ups complete; master at 556 collected / 545 pass + 11 skipped).
+**Last updated:** 2026-05-09 EOD (audit-remediation sprint shipped via PRs #142/#143/#144; master clean).
 
 ## Repo state
 
-- `master` at `de94df1` (audit-remediation sprint + reviewer follow-ups). Local-only — no PR opened yet; commits are NOT pushed.
-- Test count **556 collected** (545 pass + 11 skipped env-gated). 44 new tests across the sprint + follow-ups.
+- `master` at `f0e2605` (#144 — `docs(security-model): bump test count 541 -> 556`). All audit-remediation work merged via PRs #142 (scaffold), #143 (36/42 findings closed), #144 (test-count drift fix).
+- No open branches locally. No outstanding PRs.
+- Test count **556 collected** (550 pass + 6 postgres-only skipped). Verified at session end via `pytest --collect-only`.
 - ADR count: **18** (ADR-0018 documents the multi-principal auth follow-up after the tenant-scoping stopgap landed).
 - LLM routing baseline: **top-1 1.0000 / mean Spearman 1.0000** (40 scenarios, gemini-2.5-flash) — unchanged.
 - Security audit: **bandit 0 / pip-audit 0 / detect-secrets 0**. mypy `--strict` clean over `src/` and `tests/`. ruff clean.
@@ -63,10 +64,9 @@ git checkout master && git pull
 .venv/Scripts/python.exe .claude/skills/security-audit/scripts/security_scan.py .  # 0 findings (bandit + pip-audit + detect-secrets)
 ```
 
-**The 8 audit-remediation commits are local-only.** If the user
-wants them pushed as a single PR (or split into per-batch PRs),
-that decision is theirs — the work is staged, lint+types+tests
-green, ready for review.
+**Audit-remediation sprint shipped.** PRs #142/#143/#144 merged. No
+outstanding local commits. Backlog below is the durable list — the
+"local-only commits" warning previously here is no longer applicable.
 
 ## Backlog (prioritised)
 

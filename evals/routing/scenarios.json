@@ -464,5 +464,105 @@
     "expected_chosen": "MEM-A",
     "expected_ranking": ["MEM-A", "MEM-B", "EXT"],
     "notes": "Scores: MEM-A 0.91, MEM-B 0.81, EXT 0.43. Even EXT's highest preferred_score can't overcome the 0.5 consortium weight gap. Within consortium, preferred_score sorts correctly."
+  },
+  {
+    "id": "routing-041",
+    "description": "Four consortium available — preferred_score sorts the whole list.",
+    "candidates": [
+      {"symbol": "MEM-A", "is_consortium_member": true, "status": "available", "preferred_score": 0.9},
+      {"symbol": "MEM-B", "is_consortium_member": true, "status": "available", "preferred_score": 0.7},
+      {"symbol": "MEM-C", "is_consortium_member": true, "status": "available", "preferred_score": 0.5},
+      {"symbol": "MEM-D", "is_consortium_member": true, "status": "available", "preferred_score": 0.3}
+    ],
+    "expected_chosen": "MEM-A",
+    "expected_ranking": ["MEM-A", "MEM-B", "MEM-C", "MEM-D"],
+    "notes": "Scores: MEM-A 0.93, MEM-B 0.89, MEM-C 0.85, MEM-D 0.81. Pure preferred_score sort within the consortium tier."
+  },
+  {
+    "id": "routing-042",
+    "description": "Three consortium all on_loan — best preferred_score wins among the stuck pool.",
+    "candidates": [
+      {"symbol": "MEM-A", "is_consortium_member": true, "status": "on_loan", "preferred_score": 0.9},
+      {"symbol": "MEM-B", "is_consortium_member": true, "status": "on_loan", "preferred_score": 0.5},
+      {"symbol": "MEM-C", "is_consortium_member": true, "status": "on_loan", "preferred_score": 0.1}
+    ],
+    "expected_chosen": "MEM-A",
+    "expected_ranking": ["MEM-A", "MEM-B", "MEM-C"],
+    "notes": "Scores: MEM-A 0.77, MEM-B 0.69, MEM-C 0.61. Everyone shares the on_loan status penalty (0.04) so preferred_score is the only differentiator."
+  },
+  {
+    "id": "routing-043",
+    "description": "Four consortium, identical preferred_score, full status hierarchy demo.",
+    "candidates": [
+      {"symbol": "MEM-AVAIL", "is_consortium_member": true, "status": "available", "preferred_score": 0.5},
+      {"symbol": "MEM-UNK", "is_consortium_member": true, "status": "unknown", "preferred_score": 0.5},
+      {"symbol": "MEM-LOAN", "is_consortium_member": true, "status": "on_loan", "preferred_score": 0.5},
+      {"symbol": "MEM-REF", "is_consortium_member": true, "status": "reference_only", "preferred_score": 0.5}
+    ],
+    "expected_chosen": "MEM-AVAIL",
+    "expected_ranking": ["MEM-AVAIL", "MEM-UNK", "MEM-LOAN", "MEM-REF"],
+    "notes": "Scores: 0.85 / 0.75 / 0.69 / 0.65. Status weight (0.2) sorts the hierarchy: available(1.0) > unknown(0.5) > on_loan(0.2) > reference_only(0.0)."
+  },
+  {
+    "id": "routing-044",
+    "description": "Consortium reference_only vs external on_loan with max preferred_score — consortium still wins.",
+    "candidates": [
+      {"symbol": "MEM-REF", "is_consortium_member": true, "status": "reference_only", "preferred_score": 0.5},
+      {"symbol": "EXT-LOAN", "is_consortium_member": false, "status": "on_loan", "preferred_score": 1.0}
+    ],
+    "expected_chosen": "MEM-REF",
+    "expected_ranking": ["MEM-REF", "EXT-LOAN"],
+    "notes": "Scores: MEM-REF 0.65, EXT-LOAN 0.29. The 0.5 consortium weight is unreachable for any non-consortium candidate regardless of preferred_score. Extension of routing-010 / routing-033 quirk."
+  },
+  {
+    "id": "routing-045",
+    "description": "Six externals, all available, preferred_score sorts whole list — no consortium present.",
+    "candidates": [
+      {"symbol": "EXT-A", "is_consortium_member": false, "status": "available", "preferred_score": 0.9},
+      {"symbol": "EXT-B", "is_consortium_member": false, "status": "available", "preferred_score": 0.8},
+      {"symbol": "EXT-C", "is_consortium_member": false, "status": "available", "preferred_score": 0.7},
+      {"symbol": "EXT-D", "is_consortium_member": false, "status": "available", "preferred_score": 0.6},
+      {"symbol": "EXT-E", "is_consortium_member": false, "status": "available", "preferred_score": 0.5},
+      {"symbol": "EXT-F", "is_consortium_member": false, "status": "available", "preferred_score": 0.4}
+    ],
+    "expected_chosen": "EXT-A",
+    "expected_ranking": ["EXT-A", "EXT-B", "EXT-C", "EXT-D", "EXT-E", "EXT-F"],
+    "notes": "Scores: 0.43 / 0.41 / 0.39 / 0.37 / 0.35 / 0.33. All-external pool; preferred_score (0.2 weight) is the only differentiator since status, consortium, proximity are tied."
+  },
+  {
+    "id": "routing-046",
+    "description": "Consortium unknown vs external available with high preferred_score — consortium wins.",
+    "candidates": [
+      {"symbol": "MEM-UNK", "is_consortium_member": true, "status": "unknown", "preferred_score": 0.5},
+      {"symbol": "EXT-AVAIL", "is_consortium_member": false, "status": "available", "preferred_score": 0.9}
+    ],
+    "expected_chosen": "MEM-UNK",
+    "expected_ranking": ["MEM-UNK", "EXT-AVAIL"],
+    "notes": "Scores: MEM-UNK 0.75, EXT-AVAIL 0.43. Consortium 0.5 dwarfs the 0.18 preferred_score + 0.10 status advantage the external has."
+  },
+  {
+    "id": "routing-047",
+    "description": "Both reference_only — consortium one still preferred over external one.",
+    "candidates": [
+      {"symbol": "MEM-REF", "is_consortium_member": true, "status": "reference_only", "preferred_score": 0.5},
+      {"symbol": "EXT-REF", "is_consortium_member": false, "status": "reference_only", "preferred_score": 0.5}
+    ],
+    "expected_chosen": "MEM-REF",
+    "expected_ranking": ["MEM-REF", "EXT-REF"],
+    "notes": "Scores: MEM-REF 0.65, EXT-REF 0.15. Identical status / preferred / unknown distance — the entire gap is the consortium weight."
+  },
+  {
+    "id": "routing-048",
+    "description": "Mixed pool: 2 consortium + 3 external — consortium block sweeps even when externals have higher preferred_score.",
+    "candidates": [
+      {"symbol": "MEM-A", "is_consortium_member": true, "status": "available", "preferred_score": 0.5},
+      {"symbol": "MEM-B", "is_consortium_member": true, "status": "on_loan", "preferred_score": 0.9},
+      {"symbol": "EXT-A", "is_consortium_member": false, "status": "available", "preferred_score": 1.0},
+      {"symbol": "EXT-B", "is_consortium_member": false, "status": "available", "preferred_score": 0.8},
+      {"symbol": "EXT-C", "is_consortium_member": false, "status": "unknown", "preferred_score": 0.9}
+    ],
+    "expected_chosen": "MEM-A",
+    "expected_ranking": ["MEM-A", "MEM-B", "EXT-A", "EXT-B", "EXT-C"],
+    "notes": "Scores: MEM-A 0.85, MEM-B 0.77, EXT-A 0.45, EXT-B 0.41, EXT-C 0.33. Consortium tier always above external tier; within consortium MEM-A wins on status; within external EXT-A wins on preferred_score."
   }
 ]

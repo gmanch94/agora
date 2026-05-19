@@ -41,6 +41,9 @@ _REAL_XSD = _REPO_ROOT / "docs" / "standards" / "iso18626" / "iso18626-v1_3.xsd"
 _MINIMAL_XSD = _FIXTURES / "minimal.xsd"
 _MINIMAL_VALID = _FIXTURES / "minimal-valid.xml"
 _MINIMAL_INVALID = _FIXTURES / "minimal-invalid.xml"
+_EXTENDED_VALID = _FIXTURES / "extended-valid.xml"
+_MISSING_TIMESTAMP_INVALID = _FIXTURES / "missing-timestamp-invalid.xml"
+_WRONG_NAMESPACE_INVALID = _FIXTURES / "wrong-namespace-invalid.xml"
 
 
 # --- Self-test layer (always runs) -----------------------------------------
@@ -100,6 +103,37 @@ def test_validator_rejects_a_malformed_payload() -> None:
     assert all("line " in e and "col " in e for e in errors), (
         f"errors should carry line/col markers; got: {errors}"
     )
+
+
+def test_validator_passes_an_extended_valid_payload() -> None:
+    """Extended-valid fixture (different content, same shape) must pass.
+
+    Belt-and-suspenders against accidental byte-pattern matching in
+    the validator — proves the schema-level pass is content-agnostic.
+    """
+    validate = _import_validate()
+    ok, errors = validate(_MINIMAL_XSD, _EXTENDED_VALID)
+    assert ok, f"expected pass, got errors: {errors}"
+    assert errors == []
+
+
+def test_validator_rejects_payload_missing_required_element() -> None:
+    """A header missing the required <timestamp> child fails with line/col."""
+    validate = _import_validate()
+    ok, errors = validate(_MINIMAL_XSD, _MISSING_TIMESTAMP_INVALID)
+    assert not ok, "expected fail, got pass"
+    assert errors, "expected at least one validation error"
+    assert all("line " in e and "col " in e for e in errors), (
+        f"errors should carry line/col markers; got: {errors}"
+    )
+
+
+def test_validator_rejects_payload_in_wrong_namespace() -> None:
+    """Well-formed XML in the wrong target namespace is a schema mismatch."""
+    validate = _import_validate()
+    ok, errors = validate(_MINIMAL_XSD, _WRONG_NAMESPACE_INVALID)
+    assert not ok, "expected fail, got pass"
+    assert errors, "expected at least one validation error"
 
 
 def test_validator_reports_missing_xsd() -> None:

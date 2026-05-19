@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Invalid against tests/fixtures/iso18626/minimal.xsd. The <header>
+  element is missing its required <timestamp> child — XSD declares both
+  <id> and <timestamp> as required elements in sequence. lxml reports a
+  schema validation error pointing at the <body> line (the first element
+  that violates the expected sequence).
+-->
+<message xmlns="http://example.test/agora/minimal">
+  <header>
+    <id>msg-043</id>
+  </header>
+  <body>missing-timestamp test fixture</body>
+</message>
