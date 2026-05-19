@@ -178,6 +178,22 @@ class Settings(BaseSettings):
     # Example: ``alice:admin,bob:approver,charlie:viewer``.
     console_roles: str = Field(default="", alias="AGORA_CONSOLE_ROLES")
 
+    # Patron PII retention (G-07, ADR-0020). Background scanner sweeps
+    # terminal sagas past the retention window and scrubs borrower
+    # fields in place. Disabled by default in dev so local tests don't
+    # see surprise mutations to fixture sagas.
+    retention_enabled: bool = Field(default=False, alias="AGORA_RETENTION_ENABLED")
+    retention_days: int = Field(default=90, alias="AGORA_RETENTION_DAYS")
+    retention_scan_interval_secs: float = Field(
+        default=3600.0, alias="AGORA_RETENTION_SCAN_INTERVAL_SECS"
+    )
+    # HMAC salt for the scrub fingerprint. Production deployments MUST
+    # rotate a 32-byte secret (`python -c 'import secrets; print(secrets.token_hex(32))'`).
+    # Empty value fails the scrubber closed — see RetentionConfigError.
+    pii_scrub_salt: SecretStr = Field(
+        default=SecretStr(""), alias="AGORA_PII_SCRUB_SALT"
+    )
+
     # Patron portal HMAC signing key (audit 2026-05-09 #2). When set,
     # ``/portal/requests`` and ``/portal/requests/{saga_id}`` require a
     # ``token`` query parameter whose HMAC matches the patron-id (and

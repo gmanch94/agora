@@ -39,6 +39,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agora import __version__
 from agora.agents.discovery import DiscoveryAgent
+from agora.agents.retention import (
+    MIN_SCRUB_SALT_LEN,
+    SCRUB_ELIGIBLE_STATES,
+    SCRUBBED_PREFIX,
+    PatronScrubber,
+    RetentionScanner,
+    fingerprint_patron,
+)
 from agora.agents.tracking import OverdueScanner
 from agora.agents.transaction import TransactionAgent
 from agora.api.schemas import (
@@ -696,6 +704,7 @@ def create_app() -> FastAPI:
         """
         worker_task: asyncio.Task[None] | None = None
         scanner_task: asyncio.Task[None] | None = None
+        retention_task: asyncio.Task[None] | None = None
 
         if settings.outbox_worker_enabled:
             worker = _build_outbox_worker(
@@ -745,6 +754,46 @@ def create_app() -> FastAPI:
             app.state.tracking_scanner_task = None
             log.info("api.tracking_scanner.disabled")
 
+        if settings.retention_enabled:
+            # Reviewer MEDIUM: validate salt at boot rather than letting
+            # the background loop spin on RetentionConfigError forever.
+            # Operators see the failure once, loudly, at startup — not
+            # as a silent log fountain after the daemon is "running".
+            boot_salt = settings.pii_scrub_salt.get_secret_value()
+            if len(boot_salt) < MIN_SCRUB_SALT_LEN:
+                raise RuntimeError(
+                    "AGORA_RETENTION_ENABLED=true requires "
+                    f"AGORA_PII_SCRUB_SALT to be at least "
+                    f"{MIN_SCRUB_SALT_LEN} chars of high-entropy secret. "
+                    "Generate with `python -c 'import secrets; "
+                    "print(secrets.token_hex(32))'`."
+                )
+            retention_scrubber = PatronScrubber(salt=boot_salt)
+            retention_scanner = RetentionScanner(
+                sessionmaker=get_sessionmaker(),
+                scrubber=retention_scrubber,
+                retention_days=settings.retention_days,
+                interval_secs=settings.retention_scan_interval_secs,
+            )
+            retention_task = asyncio.create_task(
+                retention_scanner.run_forever(),
+                name="agora.retention.scanner",
+            )
+            retention_task.add_done_callback(_log_background_task_exit)
+            app.state.retention_scanner = retention_scanner
+            app.state.retention_scrubber = retention_scrubber
+            app.state.retention_scanner_task = retention_task
+            log.info(
+                "api.retention_scanner.started",
+                retention_days=settings.retention_days,
+                interval_secs=settings.retention_scan_interval_secs,
+            )
+        else:
+            app.state.retention_scanner = None
+            app.state.retention_scrubber = None
+            app.state.retention_scanner_task = None
+            log.info("api.retention_scanner.disabled")
+
         try:
             yield
         finally:
@@ -758,6 +807,11 @@ def create_app() -> FastAPI:
                 with contextlib.suppress(asyncio.CancelledError):
                     await scanner_task
                 log.info("api.tracking_scanner.stopped")
+            if retention_task is not None:
+                retention_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await retention_task
+                log.info("api.retention_scanner.stopped")
             # Release the ReShare client's connection pool. ``aclose``
             # is a no-op on the mock; on ``HttpReShareClient`` it
             # closes the underlying ``httpx.AsyncClient``.
@@ -2401,7 +2455,151 @@ def create_app() -> FastAPI:
             },
         )
 
+    # -----------------------------------------------------------------
+    # Admin / DSAR endpoints (G-07, ADR-0020). ADMIN-role-gated.
+    # First production user of the ADMIN tier reserved in ADR-0019.
+    # -----------------------------------------------------------------
+
+    def _require_scrub_salt(settings: Any = Depends(get_settings)) -> str:
+        """Surface ``RetentionConfigError`` as a 503 before the handler runs.
+
+        Anonymising with an empty salt would defeat the whole policy
+        (the fingerprint becomes deterministic across deployments).
+        Returning 503 makes the misconfiguration obvious to the
+        operator and prevents the DSAR endpoints from silently doing
+        the wrong thing.
+        """
+        salt: str = settings.pii_scrub_salt.get_secret_value()
+        if len(salt) < MIN_SCRUB_SALT_LEN:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    "Retention scrubber is unconfigured — "
+                    "AGORA_PII_SCRUB_SALT must be at least "
+                    f"{MIN_SCRUB_SALT_LEN} chars of high-entropy secret. "
+                    "Rotate via `python -c 'import secrets; "
+                    "print(secrets.token_hex(32))'` before enabling "
+                    "DSAR endpoints."
+                ),
+            )
+        return salt
+
+    def _patron_id_query(patron_id: str, salt: str) -> Any:
+        """JSON-path SQL filter matching the cleartext OR the scrubbed form.
+
+        The scrub mutates ``request_payload.patron.patron_id`` in
+        place; a DSAR query against a patron who has already been
+        through the retention scanner must find their scrubbed rows
+        too. We compute the deterministic fingerprint client-side and
+        match against either form.
+        """
+        scrubbed = fingerprint_patron(patron_id, salt)
+        cleartext_filter = (
+            Saga.request_payload["patron"]["patron_id"].astext == patron_id
+        )
+        scrubbed_filter = (
+            Saga.request_payload["patron"]["patron_id"].astext == scrubbed
+        )
+        return cleartext_filter | scrubbed_filter
+
+    @app.get("/admin/patrons/{patron_id}/sagas", include_in_schema=False)
+    async def admin_list_patron_sagas(
+        patron_id: str,
+        session: AsyncSession = Depends(_get_session),
+        salt: str = Depends(_require_scrub_salt),
+        principal: ConsolePrincipal = Depends(_require_role(Role.ADMIN)),
+    ) -> dict[str, Any]:
+        """DSAR list — every saga this patron has touched.
+
+        Returns the cleartext-payload rows and the scrubbed rows whose
+        HMAC fingerprint matches. ``scrubbed`` flag tells staff which
+        records still carry borrower data and which have already gone
+        through the retention scanner.
+        """
+        async with session.begin():
+            # Reviewer LOW: bound the response. A patron with thousands
+            # of sagas should paginate, not return one giant document.
+            # Hard cap chosen >> realistic ILL volume per patron;
+            # pagination cursor is a future enhancement.
+            stmt = (
+                select(Saga)
+                .where(_patron_id_query(patron_id, salt))
+                .limit(1000)
+            )
+            rows = (await session.execute(stmt)).scalars().all()
+            return {
+                "patron_id_query": patron_id,
+                "actor": principal.actor,
+                "total": len(rows),
+                "sagas": [
+                    {
+                        "saga_id": str(s.id),
+                        "current_state": s.current_state,
+                        "scrubbed": is_scrubbed_payload(s),
+                        "updated_at": s.updated_at.isoformat()
+                        if s.updated_at
+                        else None,
+                    }
+                    for s in rows
+                ],
+            }
+
+    @app.post("/admin/patrons/{patron_id}/forget", include_in_schema=False)
+    async def admin_forget_patron(
+        patron_id: str,
+        session: AsyncSession = Depends(_get_session),
+        salt: str = Depends(_require_scrub_salt),
+        principal: ConsolePrincipal = Depends(_require_role(Role.ADMIN)),
+    ) -> dict[str, Any]:
+        """DSAR forget — scrub matching sagas immediately, regardless of age.
+
+        Only terminal-state sagas in ``SCRUB_ELIGIBLE_STATES`` are
+        eligible. Active sagas (in-flight, DISPUTED) are returned in
+        ``skipped_active`` so the operator sees what couldn't be
+        scrubbed without re-running the query. Already-scrubbed sagas
+        are no-ops (idempotency-key collision returns the prior event).
+        """
+        scrubber = PatronScrubber(salt=salt)
+        scrubbed_ids: list[str] = []
+        skipped_active: list[str] = []
+        already: list[str] = []
+        eligible_states = {s.value for s in SCRUB_ELIGIBLE_STATES}
+        async with session.begin():
+            stmt = select(Saga).where(_patron_id_query(patron_id, salt))
+            rows = (await session.execute(stmt)).scalars().all()
+            for saga in rows:
+                if saga.current_state not in eligible_states:
+                    skipped_active.append(str(saga.id))
+                    continue
+                res = await scrubber.scrub(session, saga)
+                if res.scrubbed:
+                    scrubbed_ids.append(str(saga.id))
+                else:
+                    already.append(str(saga.id))
+        log.info(
+            "admin.forget_patron",
+            actor=principal.actor,
+            scrubbed=len(scrubbed_ids),
+            already=len(already),
+            skipped_active=len(skipped_active),
+        )
+        return {
+            "patron_id_query": patron_id,
+            "actor": principal.actor,
+            "scrubbed": scrubbed_ids,
+            "already_scrubbed": already,
+            "skipped_active": skipped_active,
+        }
+
     return app
+
+
+def is_scrubbed_payload(saga: Saga) -> bool:
+    """Module-level helper — was this saga's borrower data scrubbed?"""
+    payload = saga.request_payload or {}
+    patron = payload.get("patron") or {}
+    pid = patron.get("patron_id")
+    return isinstance(pid, str) and pid.startswith(SCRUBBED_PREFIX)
 
 
 # Module-level instance for ``uvicorn agora.api.app:app``.
