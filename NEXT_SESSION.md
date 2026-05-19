@@ -1,13 +1,14 @@
 # Next session resume note
 
-**Last updated:** 2026-05-09 EOD (audit-remediation sprint shipped via PRs #142/#143/#144; master clean).
+**Last updated:** 2026-05-19 EOD (productionization sprint: G-02 RBAC + G-07 PII retention shipped direct-to-master; #145 synthetic-data also landed earlier today).
 
 ## Repo state
 
-- `master` at `f0e2605` (#144 — `docs(security-model): bump test count 541 -> 556`). All audit-remediation work merged via PRs #142 (scaffold), #143 (36/42 findings closed), #144 (test-count drift fix).
+- `master` at `e1fabaf` (G-07 PII retention scrub + DSAR endpoints). Recent direct-to-master commits: G-07 (e1fabaf), G-02 RBAC (27356b0 area), #145 synthetic-data PR merged.
 - No open branches locally. No outstanding PRs.
-- Test count **556 collected** (550 pass + 6 postgres-only skipped). Verified at session end via `pytest --collect-only`.
-- ADR count: **18** (ADR-0018 documents the multi-principal auth follow-up after the tenant-scoping stopgap landed).
+- Test count **610 collected** (~599 pass + 11 skipped env-gated). Includes 26 retention + 8 DSAR + 16 RBAC + synthetic-data tests from today.
+- ADR count: **20** (ADR-0019 RBAC, ADR-0020 PII retention added today).
+- Direct-push policy ACTIVE (user explicit override): commit straight to master, no PR, per `~/.claude/rules/ci-optimization.md` pre-launch policy. Branch protection off.
 - LLM routing baseline: **top-1 1.0000 / mean Spearman 1.0000** (40 scenarios, gemini-2.5-flash) — unchanged.
 - Security audit: **bandit 0 / pip-audit 0 / detect-secrets 0**. mypy `--strict` clean over `src/` and `tests/`. ruff clean.
 - Latest audit: `docs/security-audits/2026-05-09.md`. 36 of 42 findings closed in code; 6 documented as operator-side or scoped-out (see SECURITY_MODEL.md § 6).
@@ -64,9 +65,36 @@ git checkout master && git pull
 .venv/Scripts/python.exe .claude/skills/security-audit/scripts/security_scan.py .  # 0 findings (bandit + pip-audit + detect-secrets)
 ```
 
-**Audit-remediation sprint shipped.** PRs #142/#143/#144 merged. No
-outstanding local commits. Backlog below is the durable list — the
-"local-only commits" warning previously here is no longer applicable.
+**Audit-remediation sprint shipped.** PRs #142/#143/#144 merged.
+
+**Productionization sprint (2026-05-19) shipped direct-to-master:**
+
+- **G-02 RBAC (ADR-0019).** `Role` enum (viewer/approver/admin) +
+  `_require_role(...)` dependency factory; `AGORA_CONSOLE_ROLES`
+  env-var roster; APPROVER+ gates all 13 mutating endpoints; ADMIN
+  reserved for future admin-only ops. 16 RBAC tests
+  (`tests/test_authz.py`). Independent reviewer passed.
+- **G-07 PII retention (ADR-0020).** `PatronScrubber` +
+  `RetentionScanner`; HMAC-SHA256 anonymisation w/ 32-char min
+  salt; 3-layer fail-closed; deep-walks `saga.request_payload`,
+  `saga_event.payload`, `outbox.payload`. Two ADMIN-gated DSAR
+  endpoints (`/admin/patrons/{id}/sagas`, `/forget`). 26 retention +
+  8 DSAR tests. Independent reviewer FIX-BEFORE-MERGE addressed:
+  HIGH (event+outbox scrub coverage), MEDIUM×2 (salt strength,
+  boot fail), LOW (DSAR list cap).
+
+New env vars (5): `AGORA_CONSOLE_ROLES`, `AGORA_RETENTION_ENABLED`,
+`AGORA_RETENTION_DAYS`, `AGORA_RETENTION_SCAN_INTERVAL_SECS`,
+`AGORA_PII_SCRUB_SALT`. All in `.env.example` + runbook §1.2.
+
+**Phase-1 entry blockers remaining:**
+
+- **G-01 OIDC** — IdP needed (external).
+- **G-03 ReShare two-tenant probe** — sandbox tenants needed (external).
+- **G-04 NCIP live probe** — live mod-ncip needed (external).
+- **G-08 audit log sink** — code-actionable next.
+- **G-11 backup/DR** — code+ops.
+- **G-13 CI/CD pipelines** — target env needed.
 
 ## Backlog (prioritised)
 
