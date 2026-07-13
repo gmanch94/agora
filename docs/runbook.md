@@ -705,11 +705,13 @@ The DSAR endpoints (`GET /admin/patrons/{patron_id}/sagas`,
 `POST /admin/patrons/{patron_id}/forget`) are ADMIN-role-gated and
 carry three additional protections operators should know about:
 
-1. **CSRF header on mutating admin routes.** `POST .../forget` (an
-   irreversible PII scrub) requires the request header
-   `X-Agora-Admin: 1` and returns 403 without it. HTML forms cannot
-   set custom headers, so a forged form POST riding cached Basic-auth
-   credentials cannot reach the scrub. Script callers add the header:
+1. **CSRF header on no-body mutating JSON routes.** `POST .../forget`
+   (an irreversible PII scrub) and `POST /sagas/{id}/discover` (writes
+   an OBSERVATION event and triggers outbound SRU/CrossRef calls)
+   require the request header `X-Agora-Admin: 1` and return 403
+   without it. HTML forms cannot set custom headers, so a forged form
+   POST riding cached Basic-auth credentials cannot reach them.
+   Script callers add the header:
 
    ```bash
    curl -u admin:pw -X POST -H "X-Agora-Admin: 1" \

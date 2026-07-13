@@ -68,6 +68,10 @@ async def client(app: FastAPI) -> AsyncIterator[AsyncClient]:
         yield c
 
 
+# CSRF guard header for no-body JSON POSTs (mirrors test_admin_dsar.py).
+_ADMIN_WRITE_HEADER = {"X-Agora-Admin": "1"}
+
+
 def _request_payload() -> dict[str, Any]:
     """Minimal valid IllRequest body that satisfies pydantic."""
     return {
@@ -681,7 +685,7 @@ async def test_discover_writes_observation_with_candidates(
         "saga_id"
     ]
 
-    r = await client.post(f"/sagas/{saga_id}/discover")
+    r = await client.post(f"/sagas/{saga_id}/discover", headers=_ADMIN_WRITE_HEADER)
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["saga_id"] == saga_id
@@ -709,7 +713,7 @@ async def test_discover_with_no_holders_returns_empty_with_diagnostic(
         "saga_id"
     ]
 
-    r = await client.post(f"/sagas/{saga_id}/discover")
+    r = await client.post(f"/sagas/{saga_id}/discover", headers=_ADMIN_WRITE_HEADER)
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["candidates"] == []
@@ -722,8 +726,8 @@ async def test_discover_is_rerunnable_each_call_new_event(client: AsyncClient) -
         "saga_id"
     ]
 
-    first = await client.post(f"/sagas/{saga_id}/discover")
-    second = await client.post(f"/sagas/{saga_id}/discover")
+    first = await client.post(f"/sagas/{saga_id}/discover", headers=_ADMIN_WRITE_HEADER)
+    second = await client.post(f"/sagas/{saga_id}/discover", headers=_ADMIN_WRITE_HEADER)
     assert first.status_code == 200
     assert second.status_code == 200
     assert first.json()["event"]["idempotency_key"] != second.json()["event"]["idempotency_key"]
@@ -734,8 +738,28 @@ async def test_discover_is_rerunnable_each_call_new_event(client: AsyncClient) -
 
 
 async def test_discover_unknown_saga_returns_404(client: AsyncClient) -> None:
-    r = await client.post(f"/sagas/{uuid4()}/discover")
+    r = await client.post(f"/sagas/{uuid4()}/discover", headers=_ADMIN_WRITE_HEADER)
     assert r.status_code == 404
+
+
+async def test_discover_without_csrf_header_returns_403(client: AsyncClient) -> None:
+    """No-body JSON POST is CSRF-forgeable; the header guard closes it.
+
+    Same class as the DSAR /forget guard (see runbook § 9.5): a plain
+    HTML form POST rides cached Basic-auth creds but cannot set the
+    custom header.
+    """
+    saga_id = (await client.post("/requests", json=_request_payload())).json()[
+        "saga_id"
+    ]
+    r = await client.post(f"/sagas/{saga_id}/discover")
+    assert r.status_code == 403
+    assert "X-Agora-Admin" in r.json()["detail"]
+    # Wrong value is rejected too — the guard is exact-match.
+    r = await client.post(
+        f"/sagas/{saga_id}/discover", headers={"X-Agora-Admin": "true"}
+    )
+    assert r.status_code == 403
 
 
 async def test_discover_on_terminal_saga_returns_409(
@@ -776,7 +800,7 @@ async def test_discover_on_terminal_saga_returns_409(
             )
         )
 
-    r = await client.post(f"/sagas/{saga_id}/discover")
+    r = await client.post(f"/sagas/{saga_id}/discover", headers=_ADMIN_WRITE_HEADER)
     assert r.status_code == 409
     assert "terminal" in r.json()["detail"]
 

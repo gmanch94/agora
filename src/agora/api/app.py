@@ -2019,6 +2019,32 @@ def create_app() -> FastAPI:
         except CoordinatorError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+    def _require_admin_write_header(
+        x_agora_admin: str | None = Header(default=None, alias="X-Agora-Admin"),
+    ) -> None:
+        """CSRF guard for state-mutating JSON routes with no required body.
+
+        Reviewer HIGH: a JSON POST that parses with no body (DSAR
+        ``.../forget``, ``.../discover``) is a *simple request* — a
+        plain HTML ``<form>`` POST from an attacker page rides the
+        browser's cached Basic-auth credentials straight into it,
+        and the CSRF middleware only guards ``/ui/*``. HTML forms
+        cannot set custom headers (and a cross-origin ``fetch``/XHR
+        with one triggers a CORS preflight this app never answers),
+        so requiring ``X-Agora-Admin: 1`` closes the simple-request
+        forgery path without session machinery. Documented in
+        runbook § 9.5.
+        """
+        if x_agora_admin != "1":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "mutating JSON endpoints without a required body "
+                    "need the 'X-Agora-Admin: 1' request header "
+                    "(CSRF guard; see runbook § 9.5)"
+                ),
+            )
+
     @app.post(
         "/sagas/{saga_id}/discover",
         response_model=DiscoverResponse,
@@ -2030,6 +2056,7 @@ def create_app() -> FastAPI:
         body: DiscoverBody | None = None,
         session: AsyncSession = Depends(_get_session),
         principal: ConsolePrincipal = Depends(_require_role(Role.APPROVER)),
+        _csrf_guard: None = Depends(_require_admin_write_header),
     ) -> DiscoverResponse:
         """Run DiscoveryAgent against the saga's stored request.
 
@@ -2588,31 +2615,6 @@ def create_app() -> FastAPI:
                 == principal.library_symbol
             )
         return stmt
-
-    def _require_admin_write_header(
-        x_agora_admin: str | None = Header(default=None, alias="X-Agora-Admin"),
-    ) -> None:
-        """CSRF guard for state-mutating /admin/* JSON routes.
-
-        Reviewer HIGH: ``POST .../forget`` takes no body, so a plain
-        HTML ``<form>`` POST from an attacker page rides the browser's
-        cached Basic-auth credentials straight into an irreversible
-        PII scrub — the CSRF middleware only guards ``/ui/*``. HTML
-        forms cannot set custom headers (and a cross-origin
-        ``fetch``/XHR with one triggers a CORS preflight this app
-        never answers), so requiring ``X-Agora-Admin: 1`` closes the
-        simple-request forgery path without session machinery.
-        Documented in runbook § 9.5.
-        """
-        if x_agora_admin != "1":
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=(
-                    "mutating admin endpoints require the "
-                    "'X-Agora-Admin: 1' request header (CSRF guard; "
-                    "see runbook § 9.5)"
-                ),
-            )
 
     # Shared path-param validation for the DSAR routes — same shape
     # bound as the portal ``patron_id`` query param (audit #17): no
