@@ -90,6 +90,24 @@ from agora.logging import get_logger
 log = get_logger(__name__)
 
 
+class ConnectionFailedError(RemoteUnavailableError):
+    """Connection was never established — the request provably did not
+    reach mod-rs, so an automatic retry cannot create a duplicate.
+
+    mod-rs does **not** honour the ``Idempotency-Key`` header (see
+    module docstring note 1), so retrying a POST whose request *may*
+    have been processed (``ReadTimeout``, 5xx) risks creating duplicate
+    supplier-side PatronRequests that the saga ledger cannot dedupe.
+    Only ``httpx.ConnectError`` / ``httpx.ConnectTimeout`` map here;
+    every other transport failure and all 5xx surface immediately as
+    plain :class:`RemoteUnavailableError` so the outbox worker — which
+    owns replay with staff visibility — decides whether to retry.
+
+    Subclasses ``RemoteUnavailableError`` so callers catching the
+    existing family keep working unchanged.
+    """
+
+
 @dataclass(slots=True)
 class ReShareSendResult:
     """Result of a successful send_request to ReShare."""
@@ -225,8 +243,13 @@ class HttpReShareClient:
             h["Idempotency-Key"] = idempotency_key
         return h
 
+    # Retry ONLY connection-establishment failures. A ReadTimeout or a
+    # 5xx means the request may already have been processed server-side;
+    # mod-rs ignores Idempotency-Key, so an automatic retry there could
+    # create a duplicate PatronRequest the ledger can't dedupe. Those
+    # surface immediately to the outbox worker, which owns replay.
     @retry(
-        retry=retry_if_exception_type(RemoteUnavailableError),
+        retry=retry_if_exception_type(ConnectionFailedError),
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=0.5, min=0.5, max=4.0),
         reraise=True,
@@ -239,7 +262,12 @@ class HttpReShareClient:
             resp = await self._client.post(
                 url, json=json, headers=self._headers(idempotency_key=idempotency_key)
             )
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            # Connection never opened — request provably not processed.
+            raise ConnectionFailedError(str(exc)) from exc
         except httpx.RequestError as exc:
+            # ReadTimeout / ReadError / etc: the request MAY have been
+            # processed. Not retryable here (duplicate-create risk).
             raise RemoteUnavailableError(str(exc)) from exc
 
         if resp.status_code == 404:

@@ -29,7 +29,8 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, status
+from fastapi import Depends, FastAPI, Form, Header, HTTPException, Query, Request, status
+from fastapi import Path as PathParam
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
@@ -87,6 +88,7 @@ from agora.saga.coordinator import (
     Coordinator,
     CoordinatorError,
     GateRequiredError,
+    IllegalTransitionError,
 )
 from agora.saga.db import Saga, get_sessionmaker
 from agora.saga.flows import build_registry
@@ -221,6 +223,31 @@ def _parse_console_roles(spec: str) -> dict[str, Role]:
             )
         out[user] = role
     return out
+
+
+def _roster_lockout_hint(
+    roles_map: dict[str, Role], console_username: str
+) -> str | None:
+    """Warn-worthy misconfiguration: roster set but the console user absent.
+
+    HTTP Basic pins authentication to the single
+    ``AGORA_CONSOLE_USERNAME``; a non-empty roster that doesn't
+    include it demotes the only login-capable principal to VIEWER, so
+    every mutating endpoint 403s — a full write-lockout footgun.
+    Returns the warning text (caller logs it), ``None`` when the
+    config is fine. Deliberately a warning, not a boot refusal: a
+    read-only deployment is a legitimate, if unusual, choice.
+    """
+    if roles_map and console_username.lower() not in roles_map:
+        return (
+            f"AGORA_CONSOLE_ROLES is set but does not include the "
+            f"configured AGORA_CONSOLE_USERNAME {console_username!r}. "
+            "That user falls back to the read-only 'viewer' role, so "
+            "every mutating endpoint will return 403. Add "
+            f"'{console_username.lower()}:<role>' to the roster if "
+            "this is not intentional."
+        )
+    return None
 
 
 @dataclass(frozen=True)
@@ -663,6 +690,24 @@ def create_app() -> FastAPI:
             "with leaked credentials. Set AGORA_DB_URL explicitly."
         )
 
+    # G-07 reviewer HIGH: an empty console password disables the auth
+    # gate on EVERY mutating endpoint — including the irreversible
+    # ``POST /admin/patrons/{id}/forget`` PII scrub. The documented
+    # posture (CLAUDE.md, ADR-0018/0019, runbook § 1.2) has always
+    # been "set both AGORA_CONSOLE_USERNAME + AGORA_CONSOLE_PASSWORD
+    # outside dev"; this guard enforces it at boot rather than
+    # trusting operators to remember. Tighter than the roster-grants-
+    # admin variant on purpose: an unauthenticated APPROVER surface is
+    # nearly as bad as an unauthenticated ADMIN one.
+    if settings.env != "dev" and not settings.console_password.get_secret_value():
+        raise RuntimeError(
+            "AGORA_CONSOLE_PASSWORD is empty in a non-dev environment. "
+            "An empty password disables authentication on every console "
+            "and admin endpoint (including the irreversible DSAR forget). "
+            "Set AGORA_CONSOLE_USERNAME + AGORA_CONSOLE_PASSWORD, or run "
+            "with AGORA_ENV=dev for local work."
+        )
+
     # Wire saga step registry. ``get_reshare_client`` honours
     # ``settings.reshare_enabled`` and returns ``HttpReShareClient``
     # in production / ``MockReShareClient`` for offline dev + tests.
@@ -1005,6 +1050,16 @@ def create_app() -> FastAPI:
     # (typo'd role token, duplicate username) rather than discovering
     # the misconfiguration on a 403 during the first commit-gate.
     _console_roles_map = _parse_console_roles(settings.console_roles)
+
+    # G-02 reviewer LOW: boot-time warning (not refusal) when the roster
+    # is non-empty but the lone Basic-auth username isn't in it — the
+    # only login-capable principal degrades to VIEWER and every
+    # mutating endpoint 403s.
+    _lockout_hint = _roster_lockout_hint(
+        _console_roles_map, settings.console_username
+    )
+    if _lockout_hint is not None:
+        log.warning("api.console_roles.lockout_risk", hint=_lockout_hint)
 
     def _resolve_role(username: str) -> Role:
         """Look up the username in the configured RBAC roster.
@@ -1395,7 +1450,12 @@ def create_app() -> FastAPI:
                     ),
                     step=step_name,
                 )
-        except (SagaNotFoundError, GateRequiredError, TerminalStateError) as exc:
+        except (
+            SagaNotFoundError,
+            GateRequiredError,
+            TerminalStateError,
+            IllegalTransitionError,
+        ) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except (CoordinatorError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1878,7 +1938,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except GateRequiredError as exc:  # defensive: we just committed it
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except TerminalStateError as exc:
+        except (TerminalStateError, IllegalTransitionError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
             # Most common: forward step missing a required ``extras`` key.
@@ -1952,7 +2012,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except GateRequiredError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except TerminalStateError as exc:
+        except (TerminalStateError, IllegalTransitionError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -2316,6 +2376,16 @@ def create_app() -> FastAPI:
                 is_terminal = LifecycleState(state) in TERMINAL_STATES
             except ValueError:
                 is_terminal = False
+            # Reviewer LOW: with signing enabled, the detail route
+            # requires an HMAC over (saga_id, patron_id) — mint one per
+            # row so the listing's "Details" links actually resolve.
+            # Same helper the detail route verifies with. Empty string
+            # when signing is off (template omits the param).
+            detail_token = (
+                mint_portal_token(signing_key, str(saga.id), patron_id)
+                if signing_key
+                else ""
+            )
             patron_rows.append(
                 {
                     "saga_id": str(saga.id),
@@ -2324,6 +2394,7 @@ def create_app() -> FastAPI:
                     "is_terminal": is_terminal,
                     "requesting_library": str(requesting.get("symbol") or ""),
                     "submitted_at": saga.created_at.strftime("%Y-%m-%d") if saga.created_at else "",
+                    "detail_token": detail_token,
                 }
             )
 
@@ -2502,30 +2573,84 @@ def create_app() -> FastAPI:
         )
         return cleartext_filter | scrubbed_filter
 
+    def _scope_to_principal(stmt: Any, principal: ConsolePrincipal) -> Any:
+        """Tenant-scope a saga SELECT (reviewer HIGH — DSAR IDOR).
+
+        Patron-id namespaces are per-library; without this filter a
+        library-A-scoped admin could enumerate — and irreversibly
+        scrub — library B's patron records. Mirrors the ``GET /sagas``
+        listing filter (audit #3, ADR-0018). No-op when scoping is
+        off (``AGORA_CONSOLE_LIBRARY_SYMBOL`` unset).
+        """
+        if principal.library_symbol is not None:
+            stmt = stmt.where(
+                Saga.request_payload["requesting_library"]["symbol"].astext
+                == principal.library_symbol
+            )
+        return stmt
+
+    def _require_admin_write_header(
+        x_agora_admin: str | None = Header(default=None, alias="X-Agora-Admin"),
+    ) -> None:
+        """CSRF guard for state-mutating /admin/* JSON routes.
+
+        Reviewer HIGH: ``POST .../forget`` takes no body, so a plain
+        HTML ``<form>`` POST from an attacker page rides the browser's
+        cached Basic-auth credentials straight into an irreversible
+        PII scrub — the CSRF middleware only guards ``/ui/*``. HTML
+        forms cannot set custom headers (and a cross-origin
+        ``fetch``/XHR with one triggers a CORS preflight this app
+        never answers), so requiring ``X-Agora-Admin: 1`` closes the
+        simple-request forgery path without session machinery.
+        Documented in runbook § 9.5.
+        """
+        if x_agora_admin != "1":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "mutating admin endpoints require the "
+                    "'X-Agora-Admin: 1' request header (CSRF guard; "
+                    "see runbook § 9.5)"
+                ),
+            )
+
+    # Shared path-param validation for the DSAR routes — same shape
+    # bound as the portal ``patron_id`` query param (audit #17): no
+    # control characters into JSONB-path / logging surfaces.
+    _dsar_patron_id = PathParam(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9_.@\-]+$",
+    )
+
     @app.get("/admin/patrons/{patron_id}/sagas", include_in_schema=False)
     async def admin_list_patron_sagas(
-        patron_id: str,
-        session: AsyncSession = Depends(_get_session),
-        salt: str = Depends(_require_scrub_salt),
+        patron_id: str = _dsar_patron_id,
+        # Dependency order is load-bearing (reviewer LOW): auth/role
+        # resolve BEFORE the scrub-salt precondition so an
+        # unauthenticated caller sees 401/403, not a 503 that leaks
+        # deployment configuration state.
         principal: ConsolePrincipal = Depends(_require_role(Role.ADMIN)),
+        salt: str = Depends(_require_scrub_salt),
+        session: AsyncSession = Depends(_get_session),
     ) -> dict[str, Any]:
         """DSAR list — every saga this patron has touched.
 
         Returns the cleartext-payload rows and the scrubbed rows whose
         HMAC fingerprint matches. ``scrubbed`` flag tells staff which
         records still carry borrower data and which have already gone
-        through the retention scanner.
+        through the retention scanner. Library-scoped principals see
+        only their own library's sagas.
         """
         async with session.begin():
             # Reviewer LOW: bound the response. A patron with thousands
             # of sagas should paginate, not return one giant document.
             # Hard cap chosen >> realistic ILL volume per patron;
             # pagination cursor is a future enhancement.
-            stmt = (
-                select(Saga)
-                .where(_patron_id_query(patron_id, salt))
-                .limit(1000)
-            )
+            stmt = _scope_to_principal(
+                select(Saga).where(_patron_id_query(patron_id, salt)),
+                principal,
+            ).limit(1000)
             rows = (await session.execute(stmt)).scalars().all()
             return {
                 "patron_id_query": patron_id,
@@ -2546,36 +2671,63 @@ def create_app() -> FastAPI:
 
     @app.post("/admin/patrons/{patron_id}/forget", include_in_schema=False)
     async def admin_forget_patron(
-        patron_id: str,
-        session: AsyncSession = Depends(_get_session),
-        salt: str = Depends(_require_scrub_salt),
+        patron_id: str = _dsar_patron_id,
+        # Auth/role first (reviewer LOW — no 503 config-leak to anon),
+        # then the CSRF header guard, then the salt precondition.
         principal: ConsolePrincipal = Depends(_require_role(Role.ADMIN)),
+        _csrf_guard: None = Depends(_require_admin_write_header),
+        salt: str = Depends(_require_scrub_salt),
+        session: AsyncSession = Depends(_get_session),
     ) -> dict[str, Any]:
         """DSAR forget — scrub matching sagas immediately, regardless of age.
+
+        Requires the ``X-Agora-Admin: 1`` header (CSRF guard — see
+        ``_require_admin_write_header``). Library-scoped principals
+        can only scrub their own library's sagas.
 
         Only terminal-state sagas in ``SCRUB_ELIGIBLE_STATES`` are
         eligible. Active sagas (in-flight, DISPUTED) are returned in
         ``skipped_active`` so the operator sees what couldn't be
         scrubbed without re-running the query. Already-scrubbed sagas
         are no-ops (idempotency-key collision returns the prior event).
+
+        Reviewer MED: the select is batched (500 rows per query,
+        matching the retention scanner's per-tick bound) and drained
+        to completion inside one transaction — a bounded query per
+        batch instead of one unbounded ``SELECT``, while the forget
+        stays a single logical operation. Already-seen ids are
+        excluded per batch so scrubbed rows (which still match the
+        fingerprint form of ``_patron_id_query``) can't loop forever.
         """
         scrubber = PatronScrubber(salt=salt)
         scrubbed_ids: list[str] = []
         skipped_active: list[str] = []
         already: list[str] = []
         eligible_states = {s.value for s in SCRUB_ELIGIBLE_STATES}
+        batch_size = 500
+        seen: set[UUID] = set()
         async with session.begin():
-            stmt = select(Saga).where(_patron_id_query(patron_id, salt))
-            rows = (await session.execute(stmt)).scalars().all()
-            for saga in rows:
-                if saga.current_state not in eligible_states:
-                    skipped_active.append(str(saga.id))
-                    continue
-                res = await scrubber.scrub(session, saga)
-                if res.scrubbed:
-                    scrubbed_ids.append(str(saga.id))
-                else:
-                    already.append(str(saga.id))
+            while True:
+                stmt = _scope_to_principal(
+                    select(Saga).where(_patron_id_query(patron_id, salt)),
+                    principal,
+                )
+                if seen:
+                    stmt = stmt.where(Saga.id.not_in(seen))
+                stmt = stmt.order_by(Saga.id).limit(batch_size)
+                rows = (await session.execute(stmt)).scalars().all()
+                if not rows:
+                    break
+                for saga in rows:
+                    seen.add(saga.id)
+                    if saga.current_state not in eligible_states:
+                        skipped_active.append(str(saga.id))
+                        continue
+                    res = await scrubber.scrub(session, saga)
+                    if res.scrubbed:
+                        scrubbed_ids.append(str(saga.id))
+                    else:
+                        already.append(str(saga.id))
         log.info(
             "admin.forget_patron",
             actor=principal.actor,

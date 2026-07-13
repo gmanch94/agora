@@ -17,6 +17,7 @@ from httpx import Response
 
 from agora.clients.errors import ClientError, NotFoundError, RemoteUnavailableError
 from agora.clients.reshare import (
+    ConnectionFailedError,
     HttpReShareClient,
     MockReShareClient,
     ReShareSendResult,
@@ -151,12 +152,15 @@ async def test_post_4xx_redacts_response_body_in_error() -> None:
 
 
 @respx.mock
-async def test_post_raises_remote_unavailable_on_5xx() -> None:
-    """_post raises RemoteUnavailableError on 5xx response (line 232).
+async def test_post_raises_remote_unavailable_on_5xx_without_retry() -> None:
+    """_post raises RemoteUnavailableError on 5xx after exactly ONE attempt.
 
-    The retry decorator fires up to 3 times; respx returns 503 on all attempts.
+    A 5xx means the request reached mod-rs and MAY have been processed;
+    mod-rs ignores Idempotency-Key, so an automatic retry could create
+    a duplicate supplier-side PatronRequest. Replay belongs to the
+    outbox worker (staff-visible), not the transport layer.
     """
-    respx.post(f"{_BASE_URL}/rs/patronrequests").mock(return_value=Response(503))
+    route = respx.post(f"{_BASE_URL}/rs/patronrequests").mock(return_value=Response(503))
     client = _client()
     try:
         with pytest.raises(RemoteUnavailableError, match="503"):
@@ -167,20 +171,43 @@ async def test_post_raises_remote_unavailable_on_5xx() -> None:
             )
     finally:
         await client.aclose()
+    assert route.call_count == 1
 
 
 @respx.mock
-async def test_post_raises_remote_unavailable_on_network_error() -> None:
-    """_post raises RemoteUnavailableError on ConnectError (lines 226-227).
+async def test_post_read_timeout_single_attempt_no_retry() -> None:
+    """ReadTimeout: the request was sent and MAY have been processed —
+    exactly one attempt, surfaced as RemoteUnavailableError (NOT the
+    retryable ConnectionFailedError subclass)."""
+    route = respx.post(f"{_BASE_URL}/rs/patronrequests").mock(
+        side_effect=httpx.ReadTimeout("read timed out")
+    )
+    client = _client()
+    try:
+        with pytest.raises(RemoteUnavailableError) as excinfo:
+            await client.send_request(
+                idempotency_key="k-rt",
+                request_payload={"title": "T"},
+                supplier_symbol="LIB-A",
+            )
+    finally:
+        await client.aclose()
+    assert route.call_count == 1
+    assert not isinstance(excinfo.value, ConnectionFailedError)
 
-    The retry decorator fires up to 3 times; respx raises ConnectError each time.
-    """
-    respx.post(f"{_BASE_URL}/rs/patronrequests").mock(
+
+@respx.mock
+async def test_post_retries_connect_error() -> None:
+    """ConnectError (connection never established — request provably
+    never reached the server) IS retried: 3 attempts, then
+    ConnectionFailedError (a RemoteUnavailableError subclass, so the
+    caller-facing contract is unchanged)."""
+    route = respx.post(f"{_BASE_URL}/rs/patronrequests").mock(
         side_effect=httpx.ConnectError("refused")
     )
     client = _client()
     try:
-        with pytest.raises(RemoteUnavailableError):
+        with pytest.raises(ConnectionFailedError):
             await client.send_request(
                 idempotency_key="k4",
                 request_payload={"title": "T"},
@@ -188,6 +215,7 @@ async def test_post_raises_remote_unavailable_on_network_error() -> None:
             )
     finally:
         await client.aclose()
+    assert route.call_count == 3
 
 
 # ---------------------------------------------------------------------------

@@ -43,7 +43,11 @@ class PatronRef(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     library_symbol: str = Field(max_length=32)
-    patron_id: str = Field(max_length=64)
+    # Pattern mirrors the DSAR path-param validation in api/app.py so
+    # every accepted patron_id is reachable by /admin/patrons/{id}/*
+    # erasure, and a creation-time "scrubbed:"-prefixed id (invisible
+    # to both the retention scanner and PatronScrubber) is rejected.
+    patron_id: str = Field(max_length=64, pattern=r"^[A-Za-z0-9_.@\-]+$")
 
 
 class LibraryRef(BaseModel):

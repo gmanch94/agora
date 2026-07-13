@@ -204,6 +204,40 @@ async def test_search_title_with_author_appends_creator() -> None:
 
 
 @respx.mock
+async def test_search_title_escapes_quotes_in_cql() -> None:
+    """A patron title containing double-quotes (or backslashes) must be
+    CQL-escaped — otherwise the quote terminates the term early and the
+    remainder injects arbitrary CQL clauses."""
+    route = respx.get(_BASE_URL).mock(
+        return_value=Response(200, text=_wrap_marcxml(_marc_record()))
+    )
+    client = HttpSruClient(base_url=_BASE_URL, timeout=5.0)
+    try:
+        await client.search_title('The "Best" Book\\', author='O"Brien')
+    finally:
+        await client.aclose()
+
+    params = dict(route.calls.last.request.url.params)
+    assert params["query"] == (
+        'dc.title="The \\"Best\\" Book\\\\" and dc.creator="O\\"Brien"'
+    )
+
+
+@respx.mock
+async def test_client_error_4xx_raises_remote_unavailable() -> None:
+    """4xx must stay inside the agora.clients.errors hierarchy — a raw
+    httpx.HTTPStatusError would escape DiscoveryAgent's error handling
+    and 500 the whole /discover run."""
+    respx.get(_BASE_URL).mock(return_value=Response(400))
+    client = HttpSruClient(base_url=_BASE_URL, timeout=5.0)
+    try:
+        with pytest.raises(RemoteUnavailableError, match="SRU 400"):
+            await client.search_isbn("9780000000001")
+    finally:
+        await client.aclose()
+
+
+@respx.mock
 async def test_server_error_raises_remote_unavailable() -> None:
     respx.get(_BASE_URL).mock(return_value=Response(503))
     client = HttpSruClient(base_url=_BASE_URL, timeout=5.0)

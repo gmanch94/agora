@@ -1085,6 +1085,127 @@ async def test_outbox_claim_still_ours_false_when_pending(
     assert ours is False
 
 
+async def test_mark_failed_with_verify_claim_noops_on_delivered_row(
+    sm: async_sessionmaker[AsyncSession],
+) -> None:
+    """Fix 3 (2026-07-13 review): a stalled worker's failure report must
+    NOT flip a row a peer has since delivered back to ``pending`` —
+    that re-queues an already-delivered dispatch onto the wire.
+    """
+    from agora.saga.idempotency import outbox_mark_delivered, outbox_mark_failed
+
+    row_id = await _enqueue(
+        sm, target="t1", payload={}, idempotency_key="idem-stale-fail"
+    )
+
+    # Worker A claims the row and snapshots claimed_at.
+    async with sm() as s, s.begin():
+        rows = await outbox_claim(s, limit=10)
+        assert len(rows) == 1
+        stale_claim_ts = rows[0].claimed_at
+    assert stale_claim_ts is not None
+
+    # Peer worker B (post lease-expiry reclaim) delivers the row.
+    async with sm() as s, s.begin():
+        await outbox_mark_delivered(s, row_id)
+
+    # Worker A's handler finally errors out and reports the failure
+    # with its stale claim token. The guard must refuse the mutation.
+    async with sm() as s, s.begin():
+        mutated = await outbox_mark_failed(
+            s,
+            row_id,
+            error="stale worker reporting in",
+            verify_claim=True,
+            expected_claimed_at=stale_claim_ts,
+        )
+    assert mutated is False
+
+    row = await _row(sm, row_id)
+    assert row.status == "delivered", (
+        "delivered row must stay delivered — no pending flip, no "
+        "duplicate wire delivery"
+    )
+    assert row.attempts == 0
+    assert row.last_error is None
+
+
+async def test_mark_failed_with_verify_claim_noops_on_reclaimed_row(
+    sm: async_sessionmaker[AsyncSession],
+) -> None:
+    """Ownership mismatch (peer re-claimed with fresh claimed_at) also
+    drops the stale failure report."""
+    from agora.saga.idempotency import outbox_mark_failed
+
+    row_id = await _enqueue(
+        sm, target="t1", payload={}, idempotency_key="idem-reclaimed-fail"
+    )
+    async with sm() as s, s.begin():
+        rows = await outbox_claim(s, limit=10)
+        assert len(rows) == 1
+        stale_claim_ts = rows[0].claimed_at
+    assert stale_claim_ts is not None
+
+    # Peer reclaim: same in_flight status, fresh claimed_at.
+    peer_ts = datetime.now(UTC) + timedelta(seconds=5)
+    async with sm() as s, s.begin():
+        row = (
+            await s.execute(select(OutboxRow).where(OutboxRow.id == row_id))
+        ).scalar_one()
+        row.claimed_at = peer_ts
+
+    async with sm() as s, s.begin():
+        mutated = await outbox_mark_failed(
+            s,
+            row_id,
+            error="stale",
+            verify_claim=True,
+            expected_claimed_at=stale_claim_ts,
+        )
+    assert mutated is False
+
+    row = await _row(sm, row_id)
+    assert row.status == "in_flight"  # peer still owns it
+    assert row.attempts == 0
+
+
+async def test_worker_handler_failure_after_claim_lost_counts_claim_lost(
+    sm: async_sessionmaker[AsyncSession],
+) -> None:
+    """End-to-end: the drain loop's handler-failure path passes the
+    claim guard through; a mid-handler peer reclaim yields
+    ``claim_lost`` instead of a bogus failure write."""
+    peer_ts = datetime.now(UTC) + timedelta(seconds=30)
+
+    async def boom_after_peer_reclaim(payload: dict[str, Any], idem: str) -> None:
+        # Simulate a peer's orphan-recovery reclaim while our handler
+        # is still running, then fail.
+        async with sm() as s, s.begin():
+            row = (
+                await s.execute(
+                    select(OutboxRow).where(OutboxRow.idempotency_key == idem)
+                )
+            ).scalar_one()
+            row.claimed_at = peer_ts
+        raise RuntimeError("handler failed after losing the claim")
+
+    row_id = await _enqueue(
+        sm, target="t1", payload={}, idempotency_key="idem-lost-mid-handler"
+    )
+    worker = OutboxWorker(sm, {"t1": boom_after_peer_reclaim}, base_backoff_secs=0)
+    stats = await worker.drain_once()
+
+    assert stats.claim_lost == 1
+    assert stats.failed == 0
+    assert stats.dead_letter == 0
+
+    row = await _row(sm, row_id)
+    # Row untouched by the stale worker: still the peer's claim.
+    assert row.status == "in_flight"
+    assert row.attempts == 0
+    assert row.last_error is None
+
+
 async def test_renew_request_dead_letters_after_one_attempt(
     sm: async_sessionmaker[AsyncSession],
 ) -> None:

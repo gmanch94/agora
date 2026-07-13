@@ -32,6 +32,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from pydantic import ValidationError
+
 from agora.clients.crossref import CrossrefClient, CrossrefRecord
 from agora.clients.errors import RemoteUnavailableError
 from agora.clients.sru import SruClient, SruRecord
@@ -115,7 +117,7 @@ class DiscoveryAgent:
             )
 
         # --- Step 4: dedupe holders into candidates. ------------------
-        candidates = self._records_to_candidates(records)
+        candidates = self._records_to_candidates(records, diagnostics)
 
         if not candidates:
             diagnostics.append("zero holders matched; saga will be Unfilled")
@@ -194,7 +196,9 @@ class DiscoveryAgent:
                                    # let the patron's hint stand.
         )
 
-    def _records_to_candidates(self, records: list[SruRecord]) -> list[HolderCandidate]:
+    def _records_to_candidates(
+        self, records: list[SruRecord], diagnostics: list[str]
+    ) -> list[HolderCandidate]:
         """Deduplicate MARC 852 holders into ``HolderCandidate`` objects.
 
         When SRU records carry no 852 holdings (bibliographic-only catalogs)
@@ -204,8 +208,14 @@ class DiscoveryAgent:
         configured consortium even without live holdings data — WorldCat or a
         freely accessible union catalog would supply verified coverage in
         production.
+
+        A symbol that fails ``HolderCandidate`` validation (852$a with
+        spaces / colons / >64 chars from a quirky or hostile SRU peer)
+        is skipped rather than failing the whole discovery run; the
+        drop count is surfaced as a diagnostic.
         """
         seen: dict[str, HolderCandidate] = {}
+        dropped = 0
         for rec in records:
             for symbol in rec.holdings:
                 clean = symbol.strip()
@@ -213,13 +223,23 @@ class DiscoveryAgent:
                     continue
                 if clean in seen:
                     continue
-                seen[clean] = HolderCandidate(
-                    symbol=clean,
-                    status="unknown",
-                    is_consortium_member=clean in self._members,
-                    preferred_score=1.0 if clean in self._members else 0.5,
-                    raw={"src": "sru"},
-                )
+                try:
+                    seen[clean] = HolderCandidate(
+                        symbol=clean,
+                        status="unknown",
+                        is_consortium_member=clean in self._members,
+                        preferred_score=1.0 if clean in self._members else 0.5,
+                        raw={"src": "sru"},
+                    )
+                except ValidationError:
+                    # One malformed 852$a from a peer must not 500 the
+                    # whole /discover — drop it, keep the rest.
+                    dropped += 1
+
+        if dropped:
+            diagnostics.append(
+                f"dropped {dropped} malformed holder symbol(s) from SRU 852"
+            )
 
         if seen:
             return list(seen.values())

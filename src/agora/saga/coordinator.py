@@ -21,6 +21,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from agora.logging import get_logger
 from agora.models.events import NewSagaEvent, SagaEvent
 from agora.models.lifecycle import (
+    COMPENSATOR_ALLOWED_STATES,
+    FORWARD_STEP_ALLOWED_STATES,
     EventKind,
     LifecycleState,
     StepName,
@@ -28,7 +30,7 @@ from agora.models.lifecycle import (
 )
 from agora.saga.context import SagaContext
 from agora.saga.idempotency import new_idempotency_key, outbox_enqueue
-from agora.saga.ledger import SagaLedger
+from agora.saga.ledger import IdempotencyConflictError, SagaLedger
 from agora.saga.steps import StepRegistry, StepResult, get_global_registry
 
 log = get_logger(__name__)
@@ -40,6 +42,42 @@ class CoordinatorError(Exception):
 
 class GateRequiredError(CoordinatorError):
     """Raised when a forward step is requested before its gate is committed."""
+
+
+class IllegalTransitionError(CoordinatorError):
+    """Raised when a step is requested from a state it cannot legally run in.
+
+    Carries ``step`` and ``current_state`` so callers (the API layer)
+    can render a precise conflict message. Guards both directions:
+
+    * forward steps — e.g. a second ``POST /approve`` while the saga is
+      already APPROVING/APPROVED would create a second supplier
+      request; approving ``step=receive`` at APPROVED would skip SHIP.
+    * compensators — e.g. ``compensate step=submit`` at SHIPPED would
+      terminal-cancel the saga with zero outbox intents, stranding the
+      supplier-side loan.
+    """
+
+    def __init__(
+        self,
+        *,
+        step: StepName,
+        current_state: LifecycleState,
+        kind: str,
+        allowed: frozenset[LifecycleState] | None = None,
+    ) -> None:
+        self.step = step
+        self.current_state = current_state
+        self.kind = kind
+        self.allowed = allowed
+        allowed_txt = (
+            ", ".join(sorted(s.value for s in allowed)) if allowed else "none"
+        )
+        super().__init__(
+            f"illegal {kind} transition: step {step.value!r} cannot run "
+            f"while saga is in state {current_state.value!r} "
+            f"(allowed: {allowed_txt})"
+        )
 
 
 class Coordinator:
@@ -125,8 +163,32 @@ class Coordinator:
 
         Returns the persisted ``SagaEvent`` (with ``seq`` and ``ts``
         populated). On forward failure, a ``FAILED`` event is recorded
-        and the original exception re-raised.
+        (under the derived key ``{idempotency_key}:failed`` so a retry
+        with the original key stays possible) and the original
+        exception re-raised.
+
+        State-machine enforcement: the saga's *persisted*
+        ``current_state`` must be in ``FORWARD_STEP_ALLOWED_STATES``
+        for ``step``; otherwise raises ``IllegalTransitionError``.
+        Steps absent from the table are fail-closed. A benign replay
+        (same idempotency key as an already-committed forward) short-
+        circuits before the state/gate checks and returns the existing
+        event — replay-safety is unchanged.
         """
+        existing = await self._replay_short_circuit(
+            ctx=ctx, step=step, kind=EventKind.FORWARD
+        )
+        if existing is not None:
+            return existing
+
+        saga = await self._ledger.get_saga(ctx.saga_id)
+        current = LifecycleState(saga.current_state)
+        allowed = FORWARD_STEP_ALLOWED_STATES.get(step)
+        if allowed is None or current not in allowed:
+            raise IllegalTransitionError(
+                step=step, current_state=current, kind="forward", allowed=allowed
+            )
+
         if require_gate and not await self._gate_is_committed(ctx.saga_id, step):
             raise GateRequiredError(
                 f"step {step.value} requires committed gate before running"
@@ -175,6 +237,14 @@ class Coordinator:
             )
             return persisted
         except Exception as exc:
+            # The FAILED event is recorded under a *derived* key so the
+            # original key stays free for a successful retry. Without
+            # the suffix, a retry's COMMITTED append would collide with
+            # the persisted FAILED row and (with ``outcome`` now part
+            # of the ledger's identity check) raise
+            # ``IdempotencyConflictError`` — and before that check
+            # existed, the FAILED row masqueraded as committed and
+            # still enqueued outbox intents.
             failed = NewSagaEvent(
                 saga_id=ctx.saga_id,
                 kind=EventKind.FORWARD,
@@ -182,7 +252,7 @@ class Coordinator:
                 state_before=ctx.current_state,
                 state_after=ctx.current_state,
                 actor=ctx.actor,
-                idempotency_key=ctx.idempotency_key,
+                idempotency_key=f"{ctx.idempotency_key}:failed",
                 payload={"error": str(exc)},
                 outcome=StepOutcome.FAILED,
                 rationale=f"forward failed: {exc!s}",
@@ -206,7 +276,35 @@ class Coordinator:
 
         Returns the persisted ``SagaEvent`` (with ``seq`` and ``ts``
         populated).
+
+        State-machine enforcement: the saga's *persisted*
+        ``current_state`` must be in ``COMPENSATOR_ALLOWED_STATES`` for
+        ``step`` — compensating a historically-committed step from a
+        much later state (e.g. ``compensate step=submit`` at SHIPPED)
+        raises ``IllegalTransitionError`` instead of silently
+        terminal-cancelling the saga with zero outbox intents. A benign
+        replay (same idempotency key as an already-recorded compensator
+        — the API uses the deterministic ``comp-{step}-{saga_id}`` key)
+        short-circuits before the state check and returns the existing
+        event.
         """
+        existing = await self._replay_short_circuit(
+            ctx=ctx, step=step, kind=EventKind.COMPENSATOR
+        )
+        if existing is not None:
+            return existing
+
+        saga = await self._ledger.get_saga(ctx.saga_id)
+        current = LifecycleState(saga.current_state)
+        allowed = COMPENSATOR_ALLOWED_STATES.get(step)
+        if allowed is None or current not in allowed:
+            raise IllegalTransitionError(
+                step=step,
+                current_state=current,
+                kind="compensator",
+                allowed=allowed,
+            )
+
         forward_event = await self._ledger.find_committed_forward(ctx.saga_id, step.value)
         if forward_event is None:
             raise CoordinatorError(
@@ -323,11 +421,72 @@ class Coordinator:
             )
         )
 
+    async def _replay_short_circuit(
+        self,
+        *,
+        ctx: SagaContext,
+        step: StepName,
+        kind: EventKind,
+    ) -> SagaEvent | None:
+        """Return the existing event for ``ctx.idempotency_key``, if any.
+
+        Benign replay contract: re-invoking a forward/compensator with
+        the key of an already-persisted event returns that event
+        without re-running the step function, re-enqueuing outbox
+        intents, or tripping the state-transition guard (the saga has
+        already advanced). A key that points at a *different* event
+        (other saga / step / kind, or a non-committed outcome) raises
+        ``IdempotencyConflictError`` — that is key reuse, not replay.
+        """
+        existing = await self._ledger.find_by_idempotency(ctx.idempotency_key)
+        if existing is None:
+            return None
+        if (
+            existing.saga_id != ctx.saga_id
+            or existing.step != step
+            or existing.kind != kind
+            or existing.outcome != StepOutcome.COMMITTED
+        ):
+            raise IdempotencyConflictError(
+                f"idempotency key {ctx.idempotency_key!r} already used by a "
+                f"different event: existing (saga={existing.saga_id}, "
+                f"step={existing.step.value}, kind={existing.kind.value}, "
+                f"outcome={existing.outcome.value}) vs requested "
+                f"(saga={ctx.saga_id}, step={step.value}, kind={kind.value})"
+            )
+        log.info(
+            "saga.replay_short_circuit",
+            saga_id=str(ctx.saga_id),
+            step=step.value,
+            kind=kind.value,
+            idempotency_key=ctx.idempotency_key,
+            seq=existing.seq,
+        )
+        return existing
+
     async def _gate_is_committed(self, saga_id: UUID, step: StepName) -> bool:
-        """Return True if the most-recent gate for ``step`` is committed."""
+        """Return True if the most-recent gate for ``step`` is committed
+        AND not yet consumed.
+
+        Gates are single-use: once any FORWARD event for the step exists
+        with ``seq`` greater than the gate's, the gate is spent —
+        re-running the forward requires a fresh staff-committed gate.
+        (A FAILED forward also consumes its gate: retrying after a
+        failure is a new decision staff must re-approve; default-deny
+        per ADR-0005.)
+        """
         events = await self._ledger.events_for(saga_id)
         latest_gate = None
         for ev in events:
             if ev.kind == EventKind.GATE and ev.step == step:
                 latest_gate = ev
-        return latest_gate is not None and latest_gate.outcome == StepOutcome.COMMITTED
+        if latest_gate is None or latest_gate.outcome != StepOutcome.COMMITTED:
+            return False
+        for ev in events:
+            if (
+                ev.kind == EventKind.FORWARD
+                and ev.step == step
+                and ev.seq > latest_gate.seq
+            ):
+                return False  # gate already consumed by this forward
+        return True

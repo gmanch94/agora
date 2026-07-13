@@ -128,7 +128,12 @@ class PolicyAgent:
         if not request.item.issn or not request.item.year:
             return False
         current_year = datetime.now(UTC).year
-        recent_cutoff = current_year - self._window_years
+        # CONTU restricts materials published within five years of the
+        # request date. At year granularity the window is the current
+        # year plus the (window - 1) preceding years — 5 publication
+        # years total. The former ``current_year - window`` cutoff
+        # silently included a 6th year.
+        recent_cutoff = current_year - self._window_years + 1
         if request.item.year < recent_cutoff:
             return False  # older than recent window — no CONTU constraint
 

@@ -1197,6 +1197,7 @@ async def test_approve_forward_missing_supplier_raises(session: AsyncSession) ->
             saga_id=saga_id,
             request_id=request.request_id,
             request_payload=request.model_dump(mode="json"),
+            initial_state=LifecycleState.ROUTED,  # APPROVE requires ROUTED
         )
 
     async with session.begin():
@@ -1225,6 +1226,7 @@ async def test_ship_forward_missing_reshare_id_raises(session: AsyncSession) -> 
             saga_id=saga_id,
             request_id=request.request_id,
             request_payload=request.model_dump(mode="json"),
+            initial_state=LifecycleState.APPROVED,  # SHIP requires APPROVED
         )
 
     async with session.begin():
@@ -1253,6 +1255,7 @@ async def test_receive_forward_missing_reshare_id_raises(session: AsyncSession) 
             saga_id=saga_id,
             request_id=request.request_id,
             request_payload=request.model_dump(mode="json"),
+            initial_state=LifecycleState.SHIPPED,  # RECEIVE requires SHIPPED
         )
 
     async with session.begin():
@@ -1281,6 +1284,7 @@ async def test_return_forward_missing_reshare_id_raises(session: AsyncSession) -
             saga_id=saga_id,
             request_id=request.request_id,
             request_payload=request.model_dump(mode="json"),
+            initial_state=LifecycleState.RECEIVED,  # RETURN requires RECEIVED
         )
 
     async with session.begin():

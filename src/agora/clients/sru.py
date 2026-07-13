@@ -21,6 +21,18 @@ from agora.logging import get_logger
 log = get_logger(__name__)
 
 
+def _cql_quote(term: str) -> str:
+    """Quote a patron-supplied term for interpolation into CQL.
+
+    CQL escapes ``"`` inside a double-quoted term with a backslash.
+    Escape the backslash first, then the double-quote — otherwise a
+    title like ``He said "hi"`` breaks out of the quoted term and
+    injects arbitrary CQL clauses into the query.
+    """
+    escaped = term.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
 @dataclass(slots=True)
 class SruRecord:
     """A single record returned by an SRU search."""
@@ -69,9 +81,12 @@ class HttpSruClient:
         except httpx.RequestError as exc:
             raise RemoteUnavailableError(str(exc)) from exc
 
-        if resp.status_code >= 500:
+        if resp.status_code >= 400:
+            # 4xx as well as 5xx: keep every error inside the
+            # agora.clients.errors hierarchy. A raw
+            # httpx.HTTPStatusError would escape DiscoveryAgent's
+            # error handling and 500 the whole /discover run.
             raise RemoteUnavailableError(f"SRU {resp.status_code}")
-        resp.raise_for_status()
         return _parse_sru_response(resp.text)
 
     async def search_isbn(self, isbn: str) -> list[SruRecord]:
@@ -81,9 +96,9 @@ class HttpSruClient:
         return await self._search(f"bath.issn={issn}")
 
     async def search_title(self, title: str, author: str | None = None) -> list[SruRecord]:
-        cql = f'dc.title="{title}"'
+        cql = f"dc.title={_cql_quote(title)}"
         if author:
-            cql += f' and dc.creator="{author}"'
+            cql += f" and dc.creator={_cql_quote(author)}"
         return await self._search(cql)
 
 

@@ -16,7 +16,7 @@ Returned** with saga compensators paired to every forward step.
 .venv/Scripts/python.exe -m pip install -e ".[dev]"
 
 # Verify
-.venv/Scripts/python.exe -m pytest tests/ -q              # 610 tests (+6 postgres-only).venv/Scripts/python.exe -m ruff check src tests          # lint
+.venv/Scripts/python.exe -m pytest tests/ -q              # 664 tests (+6 postgres-only).venv/Scripts/python.exe -m ruff check src tests          # lint
 .venv/Scripts/python.exe -m mypy --strict                 # types
 make audit                                                # bandit + pip-audit + detect-secrets
 .venv/Scripts/python.exe -m agora.demos.happy_path        # end-to-end demo
@@ -57,7 +57,7 @@ agora/
 │   ├── saga/                    # ledger, coordinator, idempotency,
 │   │                            #   flows (forward+compensator pairs)
 │   ├── cli.py / config.py / logging.py
-├── tests/                       # 610 tests (unit + property + e2e)├── docker-compose.yml           # Postgres-only sandbox
+├── tests/                       # 664 tests (unit + property + e2e)├── docker-compose.yml           # Postgres-only sandbox
 ├── Makefile / pyproject.toml
 ```
 
@@ -72,6 +72,17 @@ the caller's outer transaction — only the savepoint.
 
 **Forward step requires a committed gate event.** `Coordinator.run_forward`
 raises `GateRequiredError` if no committed gate exists for the step.
+
+**Transitions are validated and gates are single-use** (review
+2026-07-13). `FORWARD_STEP_ALLOWED_STATES` / `COMPENSATOR_ALLOWED_STATES`
+in `models/lifecycle.py` encode the legal state machine;
+`Coordinator.run_forward` / `run_compensator` raise
+`IllegalTransitionError` (API maps to 409) when the persisted
+`current_state` is not legal for the step. A gate is consumed by any
+later FORWARD event for its step — re-running requires re-approval.
+Steps absent from the tables fail closed. Terminal sagas refuse ANY
+state-changing event regardless of kind (sole carve-out: RESOLVE
+OBSERVATION moving DISPUTED to CANCELLED/UNFILLED for `/override`).
 
 **Idempotency keys are ULIDs** with semantic prefix
 (`route_01HXY...`). UNIQUE constraint on `saga_event.idempotency_key`

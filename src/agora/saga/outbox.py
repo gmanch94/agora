@@ -273,15 +273,32 @@ class OutboxWorker:
                 async with self._sessionmaker() as fail_session:
                     new_attempts = attempts + 1
                     backoff = self._base_backoff_secs * (2**attempts)
-                    await outbox_mark_failed(
+                    # Claim-ownership guard: only record the failure if
+                    # the row is still ``in_flight`` under OUR claim.
+                    # A stalled worker whose lease expired must not
+                    # flip a row a peer has since delivered back to
+                    # ``pending`` (duplicate wire delivery would
+                    # follow). ``claim_ts`` None → treat as lost.
+                    marked = claim_ts is not None and await outbox_mark_failed(
                         fail_session,
                         row_id,
                         error=str(exc),
                         requeue_after_secs=backoff,
                         max_attempts=effective_cap,
+                        verify_claim=True,
+                        expected_claimed_at=claim_ts,
                     )
                     await fail_session.commit()
-                if new_attempts >= effective_cap:
+                if not marked:
+                    stats.claim_lost += 1
+                    log.warning(
+                        "outbox.claim_lost",
+                        row_id=row_id,
+                        target=target,
+                        idempotency_key=idem_key,
+                        phase="handler_failure",
+                    )
+                elif new_attempts >= effective_cap:
                     stats.dead_letter += 1
                     log.error(
                         "outbox.dead_letter",
@@ -354,15 +371,28 @@ class OutboxWorker:
                 async with self._sessionmaker() as fail_session:
                     new_attempts = attempts + 1
                     backoff = self._base_backoff_secs * (2**attempts)
-                    await outbox_mark_failed(
+                    # Same claim-ownership guard as the handler-failure
+                    # path above: never mutate a row we no longer own.
+                    marked = claim_ts is not None and await outbox_mark_failed(
                         fail_session,
                         row_id,
                         error=f"projection failed: {exc!s}",
                         requeue_after_secs=backoff,
                         max_attempts=self._max_attempts,
+                        verify_claim=True,
+                        expected_claimed_at=claim_ts,
                     )
                     await fail_session.commit()
-                if new_attempts >= self._max_attempts:
+                if not marked:
+                    stats.claim_lost += 1
+                    log.warning(
+                        "outbox.claim_lost",
+                        row_id=row_id,
+                        target=target,
+                        idempotency_key=idem_key,
+                        phase="projection_failure",
+                    )
+                elif new_attempts >= self._max_attempts:
                     stats.dead_letter += 1
                     log.error(
                         "outbox.projection.dead_letter",

@@ -720,6 +720,8 @@ async def test_docs_endpoints_hidden_in_prod(
     monkeypatch.setenv(
         "AGORA_DB_URL", "sqlite+aiosqlite:///:memory:"
     )  # bypass #25 dev-default refusal
+    # bypass the G-07 empty-console-password boot refusal
+    monkeypatch.setenv("AGORA_CONSOLE_PASSWORD", "staging-pw")
     get_settings.cache_clear()
     try:
         app = create_app()
@@ -731,3 +733,124 @@ async def test_docs_endpoints_hidden_in_prod(
             assert r.status_code == 404
     finally:
         get_settings.cache_clear()
+
+
+# ---------------------------------------------------------------------
+# G-07 hardening: boot guard on empty console password outside dev
+# ---------------------------------------------------------------------
+
+
+async def test_create_app_refuses_empty_console_password_outside_dev(
+    engine: AsyncEngine, monkeypatch: Any
+) -> None:
+    """env != dev + empty AGORA_CONSOLE_PASSWORD → refuse to boot.
+
+    An empty password disables auth on every mutating endpoint,
+    including the irreversible DSAR forget — that must never ship to
+    a non-dev environment silently.
+    """
+    import pytest
+
+    monkeypatch.setenv("AGORA_ENV", "staging")
+    monkeypatch.setenv("AGORA_DB_URL", "sqlite+aiosqlite:///:memory:")
+    monkeypatch.delenv("AGORA_CONSOLE_PASSWORD", raising=False)
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(RuntimeError, match="AGORA_CONSOLE_PASSWORD"):
+            create_app()
+    finally:
+        get_settings.cache_clear()
+
+
+async def test_create_app_boots_outside_dev_with_console_password(
+    engine: AsyncEngine, monkeypatch: Any
+) -> None:
+    """Non-dev env with a real password boots normally."""
+    monkeypatch.setenv("AGORA_ENV", "staging")
+    monkeypatch.setenv("AGORA_DB_URL", "sqlite+aiosqlite:///:memory:")
+    monkeypatch.setenv("AGORA_CONSOLE_PASSWORD", "staging-pw")
+    get_settings.cache_clear()
+    try:
+        app = create_app()
+        assert app is not None
+    finally:
+        get_settings.cache_clear()
+
+
+# ---------------------------------------------------------------------
+# G-02 roster lockout warning helper
+# ---------------------------------------------------------------------
+
+
+def test_roster_lockout_hint_fires_when_console_user_absent() -> None:
+    from agora.api.app import Role, _roster_lockout_hint
+
+    hint = _roster_lockout_hint({"bob": Role.ADMIN}, "staff")
+    assert hint is not None
+    assert "staff" in hint
+    assert "viewer" in hint
+
+
+def test_roster_lockout_hint_silent_when_user_in_roster() -> None:
+    from agora.api.app import Role, _roster_lockout_hint
+
+    # Case-insensitive match — roster keys are normalised lowercase.
+    assert _roster_lockout_hint({"alice": Role.ADMIN}, "Alice") is None
+
+
+def test_roster_lockout_hint_silent_on_empty_roster() -> None:
+    from agora.api.app import _roster_lockout_hint
+
+    assert _roster_lockout_hint({}, "staff") is None
+
+
+# ---------------------------------------------------------------------
+# Portal list → detail links carry a valid token when signing is on
+# ---------------------------------------------------------------------
+
+
+async def test_portal_list_detail_links_resolve_with_signing_enabled(
+    portal_client: AsyncClient,
+) -> None:
+    """Pre-fix, the listing linked detail WITHOUT a token — every
+    'Details' click 404'd whenever AGORA_PORTAL_SIGNING_KEY was set.
+    The handler now mints a per-saga (saga_id, patron_id) token with
+    the same helper the detail route verifies."""
+    import re
+    from uuid import uuid4
+
+    from agora.models.lifecycle import LifecycleState
+    from agora.models.request import IllRequest
+    from agora.saga.db import get_sessionmaker
+    from agora.saga.ledger import SagaLedger
+
+    saga_id = uuid4()
+    sm = get_sessionmaker()
+    async with sm() as session, session.begin():
+        ledger = SagaLedger(session)
+        req = IllRequest.model_validate(_request_payload(patron_id="alice"))
+        await ledger.create_saga(
+            saga_id=saga_id,
+            request_id=req.request_id,
+            request_payload=req.model_dump(mode="json"),
+            initial_state=LifecycleState.SUBMITTED,
+        )
+
+    key = "k" * 64
+    list_token = mint_portal_token(key, "alice")
+    r = await portal_client.get(
+        "/portal/requests",
+        params={"patron_id": "alice", "token": list_token},
+    )
+    assert r.status_code == 200, r.text
+
+    # Extract the detail link for our saga and follow it verbatim.
+    match = re.search(
+        rf'href="(/portal/requests/{saga_id}\?[^"]+)"', r.text
+    )
+    assert match is not None, "detail link missing from listing"
+    detail_href = match.group(1).replace("&amp;", "&")
+    assert "token=" in detail_href
+
+    detail = await portal_client.get(detail_href)
+    assert detail.status_code == 200, detail.text

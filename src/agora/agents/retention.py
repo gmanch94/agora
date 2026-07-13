@@ -57,12 +57,12 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm.attributes import flag_modified
 
 from agora.logging import get_logger
-from agora.models.lifecycle import LifecycleState, StepName
+from agora.models.lifecycle import LifecycleState, StepName, StepOutcome
 from agora.saga.coordinator import Coordinator
 from agora.saga.db import OutboxRow, Saga, SagaEventRow
 
@@ -151,7 +151,10 @@ def is_scrubbed(patron_id: str | None) -> bool:
 # patron-id key (when value matches cleartext) and nulling
 # item_barcode / patron_email regardless of value.
 def _deep_scrub_json(
-    obj: Any, cleartext_patron_id: str, scrubbed_patron_id: str
+    obj: Any,
+    cleartext_patron_id: str,
+    scrubbed_patron_id: str,
+    cleartext_barcode: str | None = None,
 ) -> Any:
     """Recursively replace borrower fields inside a JSON-shaped tree.
 
@@ -165,6 +168,13 @@ def _deep_scrub_json(
                               already-scrubbed values untouched.
     - key ``item_barcode`` → null any non-null string value.
     - key ``patron_email`` → null any non-null string value.
+    - key ``item_id``      → null when the value equals
+                              ``cleartext_barcode``. NCIP intents
+                              (``saga/flows.py`` RECEIVE / RETURN)
+                              store the ILS barcode under ``item_id``;
+                              the equality guard preserves rows where
+                              ``item_id`` fell back to ``reshare_id``
+                              (a supplier-side UUID, not borrower PII).
 
     Other keys / shapes pass through unchanged. Non-dict / non-list
     leaves are returned as-is.
@@ -173,13 +183,24 @@ def _deep_scrub_json(
         for k, v in list(obj.items()):
             if k == "patron_id" and isinstance(v, str) and v == cleartext_patron_id:
                 obj[k] = scrubbed_patron_id
-            elif k in {"item_barcode", "patron_email"} and v is not None:
+            elif (k in {"item_barcode", "patron_email"} and v is not None) or (
+                k == "item_id"
+                and cleartext_barcode is not None
+                and v == cleartext_barcode
+            ):
                 obj[k] = None
             else:
-                obj[k] = _deep_scrub_json(v, cleartext_patron_id, scrubbed_patron_id)
+                obj[k] = _deep_scrub_json(
+                    v, cleartext_patron_id, scrubbed_patron_id, cleartext_barcode
+                )
         return obj
     if isinstance(obj, list):
-        return [_deep_scrub_json(item, cleartext_patron_id, scrubbed_patron_id) for item in obj]
+        return [
+            _deep_scrub_json(
+                item, cleartext_patron_id, scrubbed_patron_id, cleartext_barcode
+            )
+            for item in obj
+        ]
     return obj
 
 
@@ -234,6 +255,12 @@ class PatronScrubber:
         payload["patron"] = patron
 
         item = dict(payload.get("item") or {})
+        # Capture the cleartext barcode BEFORE nulling — the deep scrub
+        # below needs it to match NCIP ``item_id`` values (flows.py
+        # stores ``item_barcode`` under that key in check_out/check_in
+        # payloads; the reshare_id fallback must survive).
+        raw_barcode = item.get("item_barcode")
+        cleartext_barcode = raw_barcode if isinstance(raw_barcode, str) else None
         if item.get("item_barcode"):
             item["item_barcode"] = None
             payload["item"] = item
@@ -251,7 +278,7 @@ class PatronScrubber:
         events = (await session.execute(event_stmt)).scalars().all()
         for ev in events:
             new_payload = _deep_scrub_json(
-                dict(ev.payload or {}), existing_id, scrubbed_id
+                dict(ev.payload or {}), existing_id, scrubbed_id, cleartext_barcode
             )
             ev.payload = new_payload
             # Plain JSON columns don't auto-track nested mutations;
@@ -263,7 +290,7 @@ class PatronScrubber:
         rows = (await session.execute(outbox_stmt)).scalars().all()
         for row in rows:
             new_payload = _deep_scrub_json(
-                dict(row.payload or {}), existing_id, scrubbed_id
+                dict(row.payload or {}), existing_id, scrubbed_id, cleartext_barcode
             )
             row.payload = new_payload
             flag_modified(row, "payload")
@@ -305,31 +332,73 @@ class RetentionScanner:
         retention_days: int,
         interval_secs: float,
         jitter_secs: float = 30.0,
+        batch_size: int = 500,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         if retention_days < 0:
             raise ValueError("retention_days must be >= 0")
         if interval_secs <= 0:
             raise ValueError("interval_secs must be > 0")
+        if batch_size <= 0:
+            raise ValueError("batch_size must be > 0")
         self._sm = sessionmaker
         self._scrubber = scrubber
         self._retention_days = retention_days
         self._interval = interval_secs
         self._jitter = max(jitter_secs, 0.0)
+        self._batch_size = batch_size
         self._now = clock
 
     async def scan(self) -> list[ScrubResult]:
-        """Run one sweep. Returns the per-saga results."""
+        """Run one sweep. Returns the per-saga results.
+
+        Selection predicate (reviewer HIGH — starvation fix):
+
+        - Already-scrubbed sagas are excluded IN SQL via the
+          ``scrubbed:`` prefix on ``request_payload.patron.patron_id``
+          (same JSON path as the ``ix_saga_patron_id`` expression
+          index). Pre-fix, scrubbed rows re-entered the bounded window
+          forever (``scrub`` early-returns without bumping
+          ``updated_at``), so a backlog larger than the batch size
+          could starve never-scrubbed sagas indefinitely.
+        - Sagas with no string ``patron_id`` are excluded via
+          ``IS NOT NULL`` — they carry nothing to scrub and would
+          otherwise re-select forever for the same reason.
+        - Eligibility keys off the ts of the earliest COMMITTED event
+          whose ``state_after`` equals the saga's current terminal
+          state — NOT ``updated_at``, which bumps on any row touch
+          (late OBSERVATIONs, tracking refreshes) and would restart
+          the retention clock past the statutory deadline. Sagas with
+          no such event (fixtures, hand-seeded rows) fall back to
+          ``updated_at`` via COALESCE.
+        - ``ORDER BY updated_at ASC`` makes the bounded window
+          deterministic, oldest first.
+        """
         cutoff = self._now() - timedelta(days=self._retention_days)
         states = [s.value for s in SCRUB_ELIGIBLE_STATES]
+        patron_id_expr = Saga.request_payload["patron"]["patron_id"].astext
+        terminal_ts = (
+            select(func.min(SagaEventRow.ts))
+            .where(
+                SagaEventRow.saga_id == Saga.id,
+                SagaEventRow.state_after == Saga.current_state,
+                SagaEventRow.outcome == StepOutcome.COMMITTED.value,
+            )
+            .correlate(Saga)
+            .scalar_subquery()
+        )
         async with self._sm() as session, session.begin():
             stmt = (
                 select(Saga)
                 .where(
                     Saga.current_state.in_(states),
-                    Saga.updated_at < cutoff,
+                    patron_id_expr.is_not(None),
+                    patron_id_expr.not_like(f"{SCRUBBED_PREFIX}%"),
+                    func.coalesce(terminal_ts, Saga.updated_at) < cutoff,
                 )
-                .limit(500)  # bounded per-tick to keep transactions short.
+                .order_by(Saga.updated_at.asc())
+                # bounded per-tick to keep transactions short.
+                .limit(self._batch_size)
             )
             rows = (await session.execute(stmt)).scalars().all()
             results: list[ScrubResult] = []

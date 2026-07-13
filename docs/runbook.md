@@ -95,7 +95,7 @@ the process env. Defaults target local dev (Postgres on `localhost:5433`).
 | `AGORA_ROUTING_LLM_TIMEOUT_SECS`    | `30.0`                                                 | Per-call timeout. Raised from 5s (too tight for Gemini 2.5 cold-start) to 30s to match the eval harness recommendation. Stuck LLM raises; the seam catches and falls back to the rules pick + diagnostic. |
 | `AGORA_ROUTING_LLM_LOCATION`        | `us-central1`                                          | Vertex AI region for the `LlmAgent` runtime.               |
 | `AGORA_CONSOLE_USERNAME`            | `staff`                                                | HTTP Basic username for the staff console HTML routes. Ignored when `AGORA_CONSOLE_PASSWORD` is empty. |
-| `AGORA_CONSOLE_PASSWORD`            | `""`                                                   | HTTP Basic password. Empty (default) disables auth entirely — no credentials required in local dev. Set a non-empty value to enable. **Audit 2026-05-09 #1:** JSON API routes now also require Basic auth (previously HTML-only). |
+| `AGORA_CONSOLE_PASSWORD`            | `""`                                                   | HTTP Basic password. Empty (default) disables auth entirely — no credentials required in local dev. Set a non-empty value to enable. **Audit 2026-05-09 #1:** JSON API routes now also require Basic auth (previously HTML-only). **Boot guard (G-07):** `create_app` refuses to start when `AGORA_ENV != dev` and this is empty — see § 9.5. |
 | `AGORA_CONSOLE_LIBRARY_SYMBOL`      | `""`                                                   | Tenant-scoping stopgap (audit #3, ADR-0018). When set, the authenticated principal carries this library symbol and every saga endpoint refuses operations on sagas with a different `requesting_library`. Single-tenant by construction. Empty default = no scoping (dev only). |
 | `AGORA_CONSOLE_ROLES`               | `""`                                                   | RBAC roster (G-02, ADR-0019). Comma-separated `username:role` pairs. Roles: `viewer` (read-only) / `approver` (commit gates) / `admin` (approver + future admin endpoints). Empty default = APPROVER for the lone console user (back-compat). Unknown usernames in a non-empty roster fall back to `viewer` (least-privilege). Example: `alice:admin,bob:approver,charlie:viewer`. Single-user limit: HTTP Basic still pins to one `AGORA_CONSOLE_USERNAME` — multi-user RBAC arrives with OIDC (G-01). |
 | `AGORA_RETENTION_ENABLED`           | `false`                                                | Patron PII retention scanner toggle (G-07, ADR-0020). When true, the background scanner sweeps terminal sagas past `AGORA_RETENTION_DAYS` and scrubs borrower fields in place. Default off in dev. |
@@ -694,6 +694,44 @@ rate-limiting at the load balancer / reverse proxy because the
 in-process counter is per-replica and won't catch an attacker
 distributing requests across workers. Treat the in-process limiter
 as defense in depth, not the primary defense.
+
+**Production checklist:** set `AGORA_RATE_LIMIT_ENABLED=true` in
+staging / prod (the code default is `false` for dev / test
+convenience) *and* configure the load-balancer limit.
+
+### 9.5 Admin DSAR endpoints (G-07, ADR-0020)
+
+The DSAR endpoints (`GET /admin/patrons/{patron_id}/sagas`,
+`POST /admin/patrons/{patron_id}/forget`) are ADMIN-role-gated and
+carry three additional protections operators should know about:
+
+1. **CSRF header on mutating admin routes.** `POST .../forget` (an
+   irreversible PII scrub) requires the request header
+   `X-Agora-Admin: 1` and returns 403 without it. HTML forms cannot
+   set custom headers, so a forged form POST riding cached Basic-auth
+   credentials cannot reach the scrub. Script callers add the header:
+
+   ```bash
+   curl -u admin:pw -X POST -H "X-Agora-Admin: 1" \
+     https://agora.example/admin/patrons/p-123/forget
+   ```
+
+2. **Tenant scoping.** When `AGORA_CONSOLE_LIBRARY_SYMBOL` is set,
+   both DSAR endpoints filter to sagas whose
+   `requesting_library.symbol` matches the principal's library —
+   patron-id namespaces are per-library, so a library-A admin can
+   neither enumerate nor scrub library B's records.
+
+3. **Boot guard on empty console password.** `create_app` refuses to
+   boot when `AGORA_ENV != dev` and `AGORA_CONSOLE_PASSWORD` is
+   empty — an empty password disables auth on every mutating
+   endpoint including the DSAR forget. Set both
+   `AGORA_CONSOLE_USERNAME` and `AGORA_CONSOLE_PASSWORD` in any
+   non-dev environment.
+
+The forget scrub is batched internally (500-row selects, drained to
+completion in one transaction) so a patron with a large history
+cannot produce an unbounded single query.
 
 ---
 

@@ -14,7 +14,10 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from ulid import ULID
 
+from agora.logging import get_logger
 from agora.saga.db import InboxRow, OutboxRow
+
+log = get_logger(__name__)
 
 
 def new_idempotency_key(prefix: str | None = None) -> str:
@@ -206,6 +209,24 @@ def _normalize_dt_for_compare(dt: datetime | None) -> datetime | None:
     return dt.astimezone(UTC).replace(tzinfo=None)
 
 
+async def _get_outbox_row_locked(
+    session: AsyncSession, row_id: int
+) -> OutboxRow | None:
+    """Fetch an outbox row, ``FOR UPDATE`` on Postgres.
+
+    Row-locks the record so a claim-ownership check and the subsequent
+    status mutation (``mark_delivered`` / ``mark_failed``) in the same
+    session are atomic against a concurrent worker — mirrors how
+    ``outbox_claim`` gates the locking hint on the dialect. SQLite
+    ignores the hint (its driver serializes writers), so the same code
+    path works in tests.
+    """
+    dialect = session.bind.dialect.name if session.bind is not None else "sqlite"
+    if dialect == "postgresql":
+        return await session.get(OutboxRow, row_id, with_for_update=True)
+    return await session.get(OutboxRow, row_id)
+
+
 async def outbox_claim_still_ours(
     session: AsyncSession, row_id: int, expected_claimed_at: datetime
 ) -> bool:
@@ -227,8 +248,14 @@ async def outbox_claim_still_ours(
     ledger don't double-write.
 
     Audit 2026-05-09 #12.
+
+    The read takes ``FOR UPDATE`` on Postgres (via
+    :func:`_get_outbox_row_locked`) so the check is atomic with the
+    ``mark_delivered`` that follows in the same session — without the
+    lock, a peer could reclaim the row between this read and the
+    delivered write.
     """
-    row = await session.get(OutboxRow, row_id)
+    row = await _get_outbox_row_locked(session, row_id)
     if row is None:
         return False
     if row.status != "in_flight":
@@ -276,7 +303,9 @@ async def outbox_mark_failed(
     error: str,
     requeue_after_secs: int | None = None,
     max_attempts: int = 10,
-) -> None:
+    verify_claim: bool = False,
+    expected_claimed_at: datetime | None = None,
+) -> bool:
     """Increment attempts; release the claim (in_flight → pending or dead_letter).
 
     The row enters this function in ``status='in_flight'`` (claimed by
@@ -284,10 +313,38 @@ async def outbox_mark_failed(
     to ``pending`` and clear ``claimed_at`` so the next drain pass can
     re-claim it. On terminal failure we flip to ``dead_letter`` and
     also clear ``claimed_at`` (no further claims expected).
+
+    Claim-ownership guard (mirror of :func:`outbox_claim_still_ours`):
+    with ``verify_claim=True`` the row is mutated only when it is still
+    ``in_flight`` AND its ``claimed_at`` matches
+    ``expected_claimed_at``. Otherwise the failure report is dropped
+    with a ``claim_lost`` log and ``False`` is returned. Without the
+    guard, a stalled worker whose lease expired could flip a row a peer
+    had since *delivered* back to ``pending`` — re-queuing an already-
+    delivered dispatch onto the wire. Callers that hold a claim (the
+    outbox worker) must pass the guard; direct administrative callers
+    may omit it (legacy behaviour, status-agnostic).
+
+    Returns ``True`` when the row was mutated, ``False`` on no-op
+    (missing row or lost claim).
     """
-    row = await session.get(OutboxRow, row_id)
+    row = await _get_outbox_row_locked(session, row_id)
     if row is None:
-        return
+        return False
+    if verify_claim:
+        still_ours = (
+            row.status == "in_flight"
+            and expected_claimed_at is not None
+            and _normalize_dt_for_compare(row.claimed_at)
+            == _normalize_dt_for_compare(expected_claimed_at)
+        )
+        if not still_ours:
+            log.warning(
+                "outbox.mark_failed.claim_lost",
+                row_id=row_id,
+                status=row.status,
+            )
+            return False
     row.attempts += 1
     row.last_error = error[:2048]
     if row.attempts >= max_attempts:
@@ -299,3 +356,4 @@ async def outbox_mark_failed(
         if requeue_after_secs is not None:
             row.scheduled_for = datetime.now(UTC) + timedelta(seconds=requeue_after_secs)
     await session.flush()
+    return True

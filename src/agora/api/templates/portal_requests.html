@@ -33,7 +33,7 @@
         <td>{{ req.requesting_library }}</td>
         <td class="saga-id">{{ req.submitted_at }}</td>
         <td>
-          <a href="/portal/requests/{{ req.saga_id }}?patron_id={{ patron_id }}" class="breadcrumb__link">
+          <a href="/portal/requests/{{ req.saga_id }}?patron_id={{ patron_id }}{% if req.detail_token %}&amp;token={{ req.detail_token }}{% endif %}" class="breadcrumb__link">
             Details &rarr;
           </a>
         </td>

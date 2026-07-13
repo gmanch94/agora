@@ -13,7 +13,23 @@ an ADR.
 
 ## Saga / ledger
 
-### 2026-05-07 — Last-write-wins event projections rot when compensators arrive
+### 2026-07-13 — Event-level invariants are not transition-level invariants
+The 2026-07-13 implementation review found the saga layer enforced every
+*event-level* invariant (gates, idempotency keys, terminal guard,
+savepoints) yet nothing anywhere encoded the legal state machine itself.
+Consequences traced in code: a double-clicked `/approve` created two
+supplier-side PatronRequests (fresh ULID key per call, gate re-checkable
+forever), `approve step=receive` at APPROVED skipped SHIP entirely, and
+`compensate step=submit` at SHIPPED terminal-cancelled the saga with
+zero outbox intents — stranding the supplier loan. Fix: transition
+tables in `models/lifecycle.py` checked in `Coordinator.run_forward` /
+`run_compensator` + single-use gates (consumed by any later FORWARD for
+the step). Lesson: when each guard is local to an event write, audit for
+the invariant that only exists *between* events — one transition table
+closed three findings for every caller at once. Same review also caught
+`outbox_mark_failed` lacking the claim guard the success path got in
+audit #12 — when hardening one side of a success/failure pair, grep for
+the mirror path.
 `_portal_due_date` walked committed events last-write-wins, seeded by
 `forward.ship.due_at` and overridden by `forward.renew.new_due_at`. The
 RENEW compensator's payload carries `reverted_new_due_at` — a *different*

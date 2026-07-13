@@ -25,7 +25,7 @@ from agora.config import get_settings
 # depth alongside SecretStr typing. If a future field is named (e.g.)
 # ``api_key`` and someone forgets to type it as SecretStr, the CLI
 # still redacts the printed value.
-_CREDENTIAL_KEY_FRAGMENTS = ("password", "token", "secret", "key", "credential")
+_CREDENTIAL_KEY_FRAGMENTS = ("password", "token", "secret", "key", "credential", "salt")
 
 
 def _redact(key: str, value: object) -> str:

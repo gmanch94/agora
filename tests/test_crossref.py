@@ -264,6 +264,65 @@ async def test_lookup_doi_raises_on_5xx() -> None:
 
 
 @pytest.mark.asyncio
+async def test_lookup_doi_raises_remote_unavailable_on_429() -> None:
+    """429 is routine on the CrossRef public pool. It must map into the
+    agora.clients.errors hierarchy (RemoteUnavailableError) — a raw
+    httpx.HTTPStatusError would escape DiscoveryAgent's catch and 500
+    the whole /discover run."""
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, text="rate limited")
+
+    client = _make_client(handler)
+    try:
+        with pytest.raises(RemoteUnavailableError, match="429"):
+            await client.lookup_doi("10.1145/361002.361007")
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [400, 403])
+async def test_lookup_doi_raises_remote_unavailable_on_other_4xx(status: int) -> None:
+    """Non-404 4xx statuses stay inside the errors hierarchy too."""
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status)
+
+    client = _make_client(handler)
+    try:
+        with pytest.raises(RemoteUnavailableError, match=str(status)):
+            await client.lookup_doi("10.1145/361002.361007")
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_lookup_doi_url_encodes_reserved_characters() -> None:
+    """A DOI containing ``#`` or ``?`` (both legal in DOIs) must be
+    percent-encoded before path interpolation — unencoded they would
+    truncate the URL as fragment / query and mis-resolve."""
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(404)
+
+    client = _make_client(handler)
+    try:
+        await client.lookup_doi("10.1000/abc#frag")
+        await client.lookup_doi("10.1000/abc?x=y")
+    finally:
+        await client.aclose()
+
+    assert len(seen) == 2
+    # '#' was encoded — nothing became a URL fragment.
+    assert seen[0].url.fragment == ""
+    assert "%23" in seen[0].url.raw_path.decode()
+    # '?' was encoded — nothing became a query string.
+    assert not seen[1].url.query
+    assert "%3F" in seen[1].url.raw_path.decode()
+
+
+@pytest.mark.asyncio
 async def test_lookup_doi_raises_on_network_failure() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("dns failure", request=request)

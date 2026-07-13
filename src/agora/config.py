@@ -211,9 +211,9 @@ class Settings(BaseSettings):
     # ceiling over a sliding window. Defense in depth — production
     # MUST also rate-limit at the load balancer / reverse proxy
     # because this in-process counter is per-worker (not shared
-    # across uvicorn replicas). Set ``rate_limit_enabled=False`` in
-    # tests; default ``True`` so a freshly-deployed instance gets
-    # protection out of the box.
+    # across uvicorn replicas). Default ``False`` for dev / test
+    # convenience; staging and prod deployments MUST set
+    # ``AGORA_RATE_LIMIT_ENABLED=true`` (runbook § 9.4).
     rate_limit_enabled: bool = Field(
         default=False, alias="AGORA_RATE_LIMIT_ENABLED"
     )

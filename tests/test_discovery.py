@@ -270,6 +270,54 @@ async def test_crossref_unavailable_does_not_propagate() -> None:
     assert rec.has_candidates
 
 
+# --- 4b. CrossRef 429 (real HTTP client) → discovery run continues ---------
+
+
+@pytest.mark.asyncio
+async def test_crossref_429_does_not_break_discovery() -> None:
+    """429 is routine on the CrossRef public pool. End-to-end through
+    HttpCrossrefClient: the 429 maps to RemoteUnavailableError inside
+    the client, DiscoveryAgent downgrades it to a diagnostic, and the
+    SRU fallback still produces candidates (no raw httpx error escapes
+    to 500 the /discover run)."""
+    import httpx
+
+    from agora.clients.crossref import HttpCrossrefClient
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, text="rate limited")
+
+    crossref = HttpCrossrefClient(
+        base_url="https://api.crossref.test",
+        timeout=1.0,
+        mailto="",
+        transport=httpx.MockTransport(handler),
+    )
+    sru = _SpySruClient(
+        records=[
+            SruRecord(
+                title="Test",
+                authors=[],
+                isbn="9780000000001",
+                issn=None,
+                holdings=["MEMBER1"],
+                raw_marcxml="",
+            )
+        ]
+    )
+    agent = DiscoveryAgent(sru, crossref=crossref)
+    try:
+        rec = await agent.run(
+            _request(title="Test", doi="10.0/x", isbn="9780000000001")
+        )
+    finally:
+        await crossref.aclose()
+
+    assert sru.calls == [("isbn", "9780000000001")]  # SRU fallback ran
+    assert any("crossref unavailable" in d for d in rec.diagnostics)
+    assert rec.has_candidates
+
+
 # --- 5. DOI present but agent built without CrossRef → backward-compat ----
 
 
@@ -563,6 +611,34 @@ async def test_discovery_skips_empty_symbol_in_holdings() -> None:
     symbols = [c.symbol for c in rec.candidates]
     assert "MEMBER1" in symbols
     assert "" not in symbols
+
+
+@pytest.mark.asyncio
+async def test_discovery_skips_malformed_symbol_keeps_good_ones() -> None:
+    """One bad 852$a from a quirky/hostile SRU peer (spaces, colons,
+    >64 chars all fail the HolderCandidate symbol regex) must NOT 500
+    the whole /discover — the malformed symbol is dropped, the good one
+    survives, and the drop is surfaced as a diagnostic."""
+    sru = MockSruClient(
+        records=[
+            SruRecord(
+                title="Test book",
+                authors=[],
+                isbn="9780000000001",
+                issn=None,
+                holdings=["BAD SYMBOL: not@an!isil", "GOOD-LIB"],
+                raw_marcxml="",
+            )
+        ]
+    )
+    agent = DiscoveryAgent(sru, consortium_members={"GOOD-LIB"})
+    rec = await agent.run(_request(title="Test book", isbn="9780000000001"))
+
+    symbols = [c.symbol for c in rec.candidates]
+    assert symbols == ["GOOD-LIB"]  # good one survives, bad one dropped
+    assert any(
+        "dropped 1 malformed holder symbol" in d for d in rec.diagnostics
+    )
 
 
 @pytest.mark.asyncio

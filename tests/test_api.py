@@ -354,7 +354,10 @@ async def test_compensate_without_committed_forward_returns_409(
         json={"step": "route", "actor": "staff:test", "rationale": "nothing to undo"},
     )
     assert r.status_code == 409
-    assert "no committed forward" in r.json()["detail"]
+    detail = r.json()["detail"]
+    # Transition guard fires before the committed-forward lookup; either
+    # message is a correct 409 for "nothing to undo".
+    assert "no committed forward" in detail or "illegal compensator transition" in detail
 
 
 # ---------------------------------------------------------------------

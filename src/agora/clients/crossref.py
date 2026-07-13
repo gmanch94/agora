@@ -31,7 +31,8 @@ CrossRef envelope::
     }
 
 A 404 from the works endpoint means "DOI not registered with
-CrossRef" — handled as ``None`` rather than an exception. A 5xx or
+CrossRef" — handled as ``None`` rather than an exception. Any other
+error status (5xx, and 4xx such as the routine public-pool 429) or a
 network failure raises ``RemoteUnavailableError`` so the caller can
 fall back to SRU. Polite-pool ``User-Agent`` is opt-in via
 ``CROSSREF_MAILTO``: when set, the client sends
@@ -48,6 +49,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from typing import Any, Protocol
+from urllib.parse import quote
 
 import httpx
 
@@ -161,7 +163,11 @@ class HttpCrossrefClient:
         bare = _normalise_doi(doi)
         if not bare or "/" not in bare:
             return None
-        url = f"{self._base_url}/works/{bare}"
+        # URL-encode the DOI before path interpolation (the
+        # _normalise_doi docstring makes this the caller's job). DOIs
+        # may legally contain ``?``/``#`` — unencoded they'd truncate
+        # the path as query/fragment — and ``../`` would walk the path.
+        url = f"{self._base_url}/works/{quote(bare, safe='/')}"
         try:
             resp = await self._client.get(url)
         except httpx.RequestError as exc:
@@ -169,9 +175,14 @@ class HttpCrossrefClient:
 
         if resp.status_code == 404:
             return None
-        if resp.status_code >= 500:
+        if resp.status_code >= 400:
+            # 5xx AND remaining 4xx (429 is routine on the CrossRef
+            # public pool; 400/403 occasionally appear) all map into
+            # the agora.clients.errors hierarchy so DiscoveryAgent's
+            # RemoteUnavailableError catch downgrades the failure to a
+            # diagnostic and the SRU fallback still runs. A raw
+            # httpx.HTTPStatusError here would 500 the whole /discover.
             raise RemoteUnavailableError(f"crossref {resp.status_code}")
-        resp.raise_for_status()
 
         try:
             data = resp.json()

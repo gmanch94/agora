@@ -23,6 +23,7 @@ from agora.models.lifecycle import (
     TERMINAL_STATES,
     EventKind,
     LifecycleState,
+    StepName,
     StepOutcome,
 )
 from agora.saga.db import Saga, SagaEventRow
@@ -113,15 +114,33 @@ class SagaLedger:
         saga = await self.get_saga(event.saga_id)
         current = LifecycleState(saga.current_state)
 
-        if (
-            current in TERMINAL_STATES
-            and event.kind != EventKind.OBSERVATION
-            and event.state_after != current
-        ):
-            raise TerminalStateError(
-                f"saga {event.saga_id} is terminal ({current.value}); "
-                f"refusing event step={event.step.value} kind={event.kind.value}"
+        # Terminal stays terminal — for ANY event kind whose
+        # ``state_after`` differs from the current state. The old guard
+        # exempted OBSERVATION events entirely, which (combined with
+        # the promotion block below) let a state-changing OBSERVATION
+        # move a terminal saga back to a live state. State-changing
+        # OBSERVATIONs on non-terminal sagas remain legal (the outbox
+        # worker's APPROVING -> APPROVED projection relies on this).
+        #
+        # Single carve-out: the staff override endpoint resolves a
+        # DISPUTED saga to CANCELLED / UNFILLED via a ``RESOLVE``
+        # OBSERVATION — a deliberate terminal -> terminal move. That
+        # exact shape (DISPUTED origin, RESOLVE step, terminal target)
+        # stays allowed; everything else is refused.
+        if current in TERMINAL_STATES and event.state_after != current:
+            is_staff_resolution = (
+                current == LifecycleState.DISPUTED
+                and event.step == StepName.RESOLVE
+                and event.kind == EventKind.OBSERVATION
+                and event.state_after in TERMINAL_STATES
             )
+            if not is_staff_resolution:
+                raise TerminalStateError(
+                    f"saga {event.saga_id} is terminal ({current.value}); "
+                    f"refusing state-changing event step={event.step.value} "
+                    f"kind={event.kind.value} "
+                    f"state_after={event.state_after.value}"
+                )
 
         next_seq = await self._next_seq(event.saga_id)
 
@@ -158,18 +177,26 @@ class SagaLedger:
             # an engineering bug or attacker-induced reuse raises hard.
             existing = await self._find_by_idempotency(event.idempotency_key)
             if existing is not None:
+                # ``outcome`` is part of the event's identity: a
+                # persisted FAILED forward replayed with the same key
+                # must NOT masquerade as a committed one (it would lie
+                # to the caller and let outbox intents ride on a step
+                # that never succeeded).
                 if (
                     existing.saga_id != event.saga_id
                     or existing.step != event.step
                     or existing.kind != event.kind
+                    or existing.outcome != event.outcome
                 ):
                     raise IdempotencyConflictError(
                         f"idempotency key {event.idempotency_key!r} reused for "
                         f"different event: existing "
                         f"(saga={existing.saga_id}, step={existing.step.value}, "
-                        f"kind={existing.kind.value}) vs new "
+                        f"kind={existing.kind.value}, "
+                        f"outcome={existing.outcome.value}) vs new "
                         f"(saga={event.saga_id}, step={event.step.value}, "
-                        f"kind={event.kind.value})"
+                        f"kind={event.kind.value}, "
+                        f"outcome={event.outcome.value})"
                     ) from None
                 return existing
             raise
@@ -212,6 +239,17 @@ class SagaLedger:
         result = await self._session.execute(stmt)
         row = result.scalar_one_or_none()
         return _to_pydantic(row) if row is not None else None
+
+    async def find_by_idempotency(self, key: str) -> SagaEvent | None:
+        """Public lookup of an event by its idempotency key.
+
+        Used by the coordinator's replay short-circuit: a forward /
+        compensator invoked with a key that already produced an event
+        returns that event instead of re-running the step (and instead
+        of tripping the state-transition guard on the already-advanced
+        saga).
+        """
+        return await self._find_by_idempotency(key)
 
     async def _next_seq(self, saga_id: UUID) -> int:
         stmt = select(func.coalesce(func.max(SagaEventRow.seq), 0)).where(
