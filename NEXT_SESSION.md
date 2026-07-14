@@ -154,7 +154,7 @@ New env vars (5): `AGORA_CONSOLE_ROLES`, `AGORA_RETENTION_ENABLED`,
 - **Portal privacy posture (post-#134): saga UUID is the secret token.** `patron_id` query param is a UX label, not an access gate. Don't add patron-id 404s without also gating `/portal/requests` (which can't be gated without auth).
 - **`portal_requests` filters SQL-side via JSON path (post-#137).** `Saga.request_payload['patron']['patron_id'].astext == patron_id` compiles cross-DB via `_json_type` (`JSONB().with_variant(JSON(), "sqlite")`). Don't refactor back to "load 200, filter Python-side" — patrons with older sagas would silently disappear.
 - **`security_scan.py` baseline filter is path-normalised + skips the baseline file (post-#139).** detect-secrets reports OS-native separators; baseline is forward-slash. Don't break the `lookup_key.replace("\\\\", "/")` line or the baseline-file-skip without re-running on Windows + Linux to verify both.
-- **`SagaEvent` requires `id: int` and `iso_message_id: str | None`** when constructed directly in unit tests (PR #129).
+- **`SagaEvent` requires `id: int` and `iso_message_id` typed `str` or `None`** when constructed directly in unit tests (PR #129).
 - **Direct-to-master push policy active (2026-05-19).** Pre-launch
   cost-saving per `~/.claude/rules/ci-optimization.md`. Local gate
   (pytest + ruff + mypy + `make audit`) is the only gate. Use

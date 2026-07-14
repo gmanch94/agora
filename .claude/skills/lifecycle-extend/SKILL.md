@@ -69,8 +69,8 @@ checklist + scaffolder.
 
 ### 4. `docs/prd/01-lifecycle-and-states.md`
 
-- Add a row to the lifecycle ↔ ISO 18626 mapping table:
-  | User lifecycle | ISO 18626 state | Human gate | Saga compensator |
+- Add a row to the lifecycle ↔ ISO 18626 mapping table, with columns
+  `User lifecycle`, `ISO 18626 state`, `Human gate`, `Saga compensator`.
 - Update the state-diagram block so the new state appears with its
   in/out arrows.
 

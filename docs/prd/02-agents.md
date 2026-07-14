@@ -66,7 +66,7 @@ by `tests/test_agents.py::test_routing_picks_consortium_available_first`.
 
 **Tools (seam shipped — PR-2a):** the LLM tie-breaker integration
 point is in place but no LLM is wired yet. `RoutingAgent.__init__`
-takes an optional `llm_tiebreaker: LlmTiebreaker | None = None`
+takes an optional `llm_tiebreaker: Optional[LlmTiebreaker] = None`
 kwarg; when configured, the agent calls `llm_tiebreaker.resolve()`
 on near-ties (top-2 score gap ≤ ε, default 0.03 via
 `AGORA_ROUTING_TIEBREAK_EPSILON`; tightened from 0.05 in #51 / #7c

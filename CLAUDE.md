@@ -177,8 +177,8 @@ ISO 18626 message types — see table in `clients/reshare.py`.
     mitigation (microseconds), not full closure.
   * **CI-as-enforcement (audit #39):**
     `scripts/check_template_xss_guards.py` + `tests/test_template_xss_guards.py`
-    catch `|safe`, `|raw`, autoescape disables, inline `<script>`
-    interpolation, `on*=` attrs, `javascript:` URIs.
+    catch the `safe` and `raw` filters, autoescape disables, inline
+    `<script>` interpolation, `on*=` attrs, `javascript:` URIs.
 
   Remaining gaps (deferred or operator-side): #11/#13 live FOLIO
   probe, #24 TLS pinning beyond system bundle (runbook § 9.1), #26

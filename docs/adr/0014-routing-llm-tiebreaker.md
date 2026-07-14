@@ -216,7 +216,7 @@ Shipped:
   reciprocity balance, format affinity, on-time rate, distance) in
   rough priority order; user-prompt body lists each candidate with
   its `raw` metadata fields. Pydantic `TiebreakDecisionSchema`
-  carries the JSON-mode contract (`chosen_symbol: str | None`,
+  carries the JSON-mode contract (`chosen_symbol: str` or `None`,
   `rationale: str`); the field description on `rationale` requires
   ≤25 words, keeping the composed rationale ≤3 sentences.
 - **Factory** `agora.agents.factories.get_llm_tiebreaker()` mirrors
@@ -379,7 +379,7 @@ feature (delivery / format affinity) to close `015`."
   `c.raw["delivery"] == "electronic"`; `-0.3` when `physical_only`;
   `0.0` otherwise. Term is zero for book / other-shaped requests, so
   routing behaviour for the bulk of scenarios is unchanged.
-- `Scenario` gains an optional `item: ItemMetadata | None` field; the
+- `Scenario` gains an optional `item` field, typed `ItemMetadata` or `None`; the
   eval harness threads it to `agent.run(candidates, item=...)`.
 - `routing-015` scenario gains `"item": {"title": "...", "item_kind":
   "article"}`. Other scenarios stay item-less (request-shape-agnostic).

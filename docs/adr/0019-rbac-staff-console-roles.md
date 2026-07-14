@@ -83,8 +83,8 @@ FastAPI dependency layer.
 
    APPROVER-gated:
    - `POST /requests`
-   - `POST /sagas/{id}/approve|compensate|reject|override|discover|renew`
-   - `POST /ui/sagas/{id}/approve|compensate|reject|override|discover|renew`
+   - `POST /sagas/{id}/{approve,compensate,reject,override,discover,renew}`
+   - `POST /ui/sagas/{id}/{approve,compensate,reject,override,discover,renew}`
 
    No `ADMIN`-only endpoints today — reserved for future
    roster-mgmt, dead-letter purge, retention-purge override.

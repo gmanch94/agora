@@ -325,10 +325,15 @@ something stops needing one, *delete* it; don't add `# type: ignore[unused-ignor
 on top.
 *(PR #14 — `Extend mypy --strict to tests/`.)*
 
-### 2026-05-02 — `payload.get("kind")` returns `Any | None`; `sorted()` rejects it
+### 2026-05-02 — `payload.get("kind")` returns `Any` or `None`; `sorted()` rejects it
 `sorted(e.payload.get("kind") for e in events)` failed under
-`--strict` with `Value of type variable "SupportsRichComparisonT"
-cannot be "Any | None"`. Fix: cast at the source —
+`--strict` with:
+
+```
+Value of type variable "SupportsRichComparisonT" cannot be "Any | None"
+```
+
+Fix: cast at the source —
 `sorted(str(e.payload.get("kind", "")) for e in events)`. General
 rule: when reading from `dict[str, Any]` payloads in a type-strict
 context, narrow the value at the read site, not by pacifying mypy at
@@ -811,8 +816,9 @@ moves to a real ENUM, every state-add needs `ALTER TYPE ... ADD VALUE`.
 ### 2026-05-04 — `.secrets.baseline` filenames are platform-shaped; commit them in forward-slash
 The detect-secrets baseline persists filenames in whichever separator
 the generating OS uses. Generated on Windows: `docs\runbook.md`.
-Linux CI's `git ls-files | xargs detect-secrets-hook --baseline` then
-compares those Windows paths against the actual `docs/runbook.md`,
+Linux CI's `git ls-files` piped into `xargs detect-secrets-hook
+--baseline` then compares those Windows paths against the actual
+`docs/runbook.md`,
 fails to reconcile, treats every Windows-pathed file as a brand-new
 scan target, finds the same secrets again, and rewrites the baseline
 with forward-slash entries — exiting non-zero with "The baseline file
@@ -843,7 +849,7 @@ None: the IntegrityError branch returns the existing event row (see
 `tests/test_ledger.py::test_replay_returns_existing_event_not_none`).
 The nosec rationale was true; the `if persisted is not None:` guard
 9 lines above was dead code; the asserts never crashed. The real defect
-was API-contract drift — three layers (signature `-> SagaEvent | None`,
+was API-contract drift — three layers (signature `-> SagaEvent` or `None`,
 docstring "returns None on replay", impl returning the existing row)
 disagreed. Audit takeaway is unchanged and still load-bearing: **every
 audit pass should grep `nosec` and re-justify each annotation against
@@ -906,9 +912,9 @@ findings whose rationale is *the same everywhere they appear* (we
 don't have any of those today).
 *(PR #21 — `pyproject.toml::[tool.bandit]` keeps only `exclude_dirs`.)*
 
-### 2026-05-02 — `git ls-files | xargs` is space-fragile; use `-z | xargs -0`
-Both Makefile and CI workflow originally piped `git ls-files | xargs
-detect-secrets-hook`. Today the agora tree has no filenames with
+### 2026-05-02 — piping `git ls-files` into `xargs` is space-fragile; use `-z` with `xargs -0`
+Both Makefile and CI workflow originally piped `git ls-files` into
+`xargs detect-secrets-hook`. Today the agora tree has no filenames with
 spaces so it works — but the standard hardening is one character:
 `-z` on the producer, `-0` on xargs. Same applies to `$(shell git
 ls-files)` in make recipes (whitespace-splits). Cheap insurance;
@@ -1182,7 +1188,7 @@ explicit boundary.
 `src/agora/api/templates/_discover_panel.html`.)*
 
 ### 2026-05-04 — FastAPI 0.136.1 + `HTTPBasic(auto_error=False)` requires old-style `Optional[X] = Depends()`
-Using the new-style `Annotated[HTTPBasicCredentials | None, Depends(_security)]`
+Using the new-style `Annotated[Optional[HTTPBasicCredentials], Depends(_security)]`
 for an optional security dependency produces a 422 Unprocessable Entity
 on every request in FastAPI 0.136.1 — FastAPI incorrectly treats the
 `None`-able annotation as a mandatory body parameter. The correct form
@@ -1195,7 +1201,7 @@ credentials are provided, FastAPI injects `None` (not a 401); the
 dependency function then decides whether to gate (check the password
 setting) or pass through. Generalises: **for optional security
 dependencies in FastAPI, prefer the classic `= Depends()` form over
-`Annotated[X | None, Depends()]` until Annotated + optional security
+`Annotated[Optional[X], Depends()]` until Annotated + optional security
 handling is verified in the installed version.**
 *(PR #82 — see `src/agora/api/app.py::_console_security`,
 `_require_console_auth`, `tests/test_staff_console.py::test_console_auth_*`.)*

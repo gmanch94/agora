@@ -101,7 +101,7 @@ For target name `<X>` (e.g. `ncip`, `peer_webhook`):
    contract or a different idempotency story (e.g. NCIP's
    `RequestId` semantics), drop an ADR via the `adr-new` skill.
 8. **`docs/prd/03-saga-and-idempotency.md`** — extend the outbox
-   `target` enum list (`'reshare' | 'ncip' | …`).
+   `target` enum list (`'reshare'`, `'ncip'`, …).
 9. **`CLAUDE.md`** — update known-gaps if the new client is
    mock-only or has known unverified surface.
 

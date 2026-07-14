@@ -147,7 +147,7 @@ APPROVE-via-outbox).
 
 Also reverse-check ADR counts: `solution.md` and `prd/00-overview.md`
 quote a count (e.g. "(12 docs)") — diff against
-`ls docs/adr/ | wc -l`.
+`ls docs/adr/` piped to `wc -l`.
 
 **Past hit:** PRD-06 referenced ADR-0008 for FedRAMP; actually 0007.
 A pre-commit hook (`.claude/hooks/check_adr_refs.py`) catches new
@@ -212,9 +212,9 @@ must exist in the ORM model. Specifically check:
 - `outbox` columns (id, saga_id, target, idempotency_key, payload,
   status, attempts, last_error, scheduled_for, claimed_at,
   delivered_at)
-- `outbox.status` enum values (`pending | in_flight | delivered |
-  dead_letter`) — every doc that quotes the enum must list all four
-- `outbox.target` values (`reshare | ncip` today)
+- `outbox.status` enum values (`pending`, `in_flight`, `delivered`,
+  `dead_letter`) — every doc that quotes the enum must list all four
+- `outbox.target` values (`reshare`, `ncip` today)
 - `inbox` columns (message_id, source, received_at, response)
 
 **Past hits:**
@@ -262,8 +262,8 @@ Status field).
 ### 11. Status-narrative claims (README + CLAUDE.md prose)
 
 **Sources of truth:**
-- Test count: `pytest --collect-only -q | tail -1` (or count from
-  the latest CI run)
+- Test count: `pytest --collect-only -q` piped to `tail -1` (or count
+  from the latest CI run)
 - "Demo runnable?": existence of `src/agora/demos/happy_path.py` +
   the `make demo` target
 - "What's shipped vs planned": the latest CLAUDE.md "known gaps"
@@ -273,7 +273,7 @@ Phrases to grep for and verify:
 - `bootstrap phase`, `not yet runnable`, `not yet wired`,
   `not implemented` (in README; often outdated)
 - `\d+ tests` / `\d+ passed` (test counts go stale)
-- `(prototype|MVP) demo` claims
+- `prototype demo` / `MVP demo` claims
 - `Out of scope today` in runbook (re-check against shipped PRs)
 
 **Past hit:** README said "Bootstrap phase. End-to-end demo not yet
@@ -329,8 +329,8 @@ PRDs). For each:
   of category 1.)
 - Are all lifespan tasks shown? (Today: `OutboxWorker`,
   `OverdueScanner`.)
-- Is the outbox status enum complete (`pending | in_flight |
-  delivered | dead_letter`)?
+- Is the outbox status enum complete (`pending`, `in_flight`,
+  `delivered`, `dead_letter`)?
 
 **Past hit:** PR #32 layer cake added a `WORKERS` subgraph because
 the original diagram showed `TX → ReShare` directly, hiding the
@@ -352,8 +352,8 @@ vice-versa), file under `ci-claim`.
 
 ### 16. Test-count drift
 
-**Source of truth:** `pytest --collect-only -q | tail -1`, or the
-latest `triple-gate.yml` run.
+**Source of truth:** `pytest --collect-only -q` piped to `tail -1`, or
+the latest `triple-gate.yml` run.
 
 Grep CLAUDE.md, README, and solution.md for `\d+ tests` / `\d+
 passed`. Diff against actual count. Cheap to check, easy to forget.

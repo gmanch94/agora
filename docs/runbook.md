@@ -249,7 +249,7 @@ is intentional — the demo has to be deterministic.
 
 Outbox rows have `(target, idempotency_key, payload, status,
 attempts, scheduled_for, last_error, delivered_at, claimed_at)`.
-Status is one of `pending | in_flight | delivered | dead_letter`;
+Status is one of `pending`, `in_flight`, `delivered`, `dead_letter`;
 `claimed_at` carries the multi-worker lease (PR #25). The worker
 reads `status='pending' AND scheduled_for <= now()`, ordered by
 schedule time, in batches of 50, claiming each via

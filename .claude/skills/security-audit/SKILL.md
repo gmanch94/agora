@@ -26,7 +26,7 @@ time.
 ## Why a separate audit (vs the inline hook)
 
 `.claude/hooks/scan_secrets.py` catches obvious patterns at write
-time (PreToolUse on `Write|Edit`). It does **not** catch:
+time (PreToolUse on `Write` and `Edit`). It does **not** catch:
 - Secrets that leak via saga-event `payload` (audit log) or outbox
   rows
 - Vulnerable transitive deps (only pip-audit sees these)
