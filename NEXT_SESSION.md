@@ -1,21 +1,36 @@
 # Next session resume note
 
-**Last updated:** 2026-07-13 (full implementation review — 4 independent reviewers, 5 HIGH / 9 MED / 8 LOW findings fixed; **changes sit UNCOMMITTED in the working tree**, 33 files, awaiting user ship decision).
+**Last updated:** 2026-07-13 (implementation review + doc sweep — all SHIPPED direct-to-master, tree clean, pushed).
 
-## 2026-07-13 review sweep (uncommitted)
+## 2026-07-13 review sweep (SHIPPED — master at `e1ca97a`)
+
+Five commits landed this session, all pushed:
+
+- `5ff1cc9` fix(review): close 2026-07-13 implementation-review findings (5H/9M/8L)
+- `fe364ac` fix(api): CSRF header guard on `POST /sagas/{id}/discover`
+- `5b259d2` docs: refresh 9 files for the review (transition guards, /discover CSRF, counts) [skip ci]
+- `e1ca97a` docs: clear 32 stray-pipe phantom-table suspects across 12 md files [skip ci]
+
+Substance:
 
 - **Saga:** transition tables (`FORWARD_STEP_ALLOWED_STATES` / `COMPENSATOR_ALLOWED_STATES` in `models/lifecycle.py`), `IllegalTransitionError` → 409, single-use gates, `outbox_mark_failed` claim guard, FAILED-event key `:failed` suffix + outcome in ledger identity check, terminal guard on all state-changing kinds (RESOLVE carve-out).
-- **API/retention:** DSAR endpoints tenant-scoped + patron_id path validation + forget batching; `X-Agora-Admin: 1` header required on `/forget` (CSRF); boot refusal on `env != dev` + empty console password; retention scanner excludes scrubbed/NULL-patron rows + ORDER BY + eligibility keyed off terminal-event ts; barcode `item_id` scrubbed; portal list mints detail tokens; runbook § 9.5.
-- **Clients/agents:** ReShare retry narrowed to ConnectError/ConnectTimeout only (`ConnectionFailedError`); CrossRef/SRU 4xx → `RemoteUnavailableError`; CQL quote escaping; DOI percent-encoding; item metadata hardened in LLM tiebreak prompt; malformed SRU symbols skipped not fatal; CONTU window 6→5 years.
-- Gate: **654 passed / 11 skipped**, ruff clean, mypy `--strict` clean (92 files). Docs synced (test count 665 collected), lesson added to `docs/lessons.md` § Saga / ledger, CLAUDE.md invariants updated. Follow-up commit `fe364ac` added the `X-Agora-Admin` CSRF guard to `POST /sagas/{id}/discover`.
+- **API/retention:** DSAR endpoints tenant-scoped + patron_id path validation + forget batching; `X-Agora-Admin: 1` header required on `/forget` AND `/discover` (CSRF); boot refusal on `env != dev` + empty console password; retention scanner excludes scrubbed/NULL-patron rows + ORDER BY + eligibility keyed off terminal-event ts; barcode `item_id` scrubbed; portal list mints detail tokens; runbook § 9.5.
+- **Clients/agents:** ReShare retry narrowed to ConnectError/ConnectTimeout only (`ConnectionFailedError`); CrossRef/SRU 4xx → `RemoteUnavailableError`; CQL quote escaping; DOI percent-encoding; item metadata hardened in LLM tiebreak prompt; malformed SRU symbols skipped not fatal; CONTU window 6→5 years; `PatronRef.patron_id` charset pattern.
+- **Docs:** 9-file drift refresh + 32 stray-pipe phantom-table fixes (repo has NO GitHub Pages → in-repo GFM, so those were forward-compat only). check-md gate now 0.
+- Gate: **654 passed / 11 skipped**, ruff clean, mypy `--strict` clean (92 files), test-count 665 collected. Independent pre-push security review verdict: SHIP.
+
+### Open follow-ups (not blocking, flagged during review)
+
+- Boot guard is `AGORA_ENV`-opt-in (empty env defaults to `dev` → no protection); consistent with existing db_url guard, posture not bug.
+- ROUTE re-route now requires compensate-first (deliberate behavior change from the transition tables).
+- 32 stray-pipe fixes were forward-compat; if GitHub Pages is ever enabled, re-run the check-md gate on the live kramdown build.
 
 ## Previous session (2026-05-19): G-02 RBAC + G-07 PII retention shipped direct-to-master; #145 synthetic-data landed.
 
 ## Repo state
 
-- `master` at `e1fabaf` (G-07 PII retention scrub + DSAR endpoints). Recent direct-to-master commits: G-07 (e1fabaf), G-02 RBAC (27356b0 area), #145 synthetic-data PR merged.
-- No open branches locally. No outstanding PRs.
-- Test count **610 collected** (~599 pass + 11 skipped env-gated). Includes 26 retention + 8 DSAR + 16 RBAC + synthetic-data tests from today.
+- `master` at `e1ca97a` (2026-07-13 review + doc sweep, all pushed). Tree clean, no open branches, no outstanding PRs.
+- Test count **665 collected** (654 pass + 11 skipped env-gated).
 - ADR count: **20** (ADR-0019 RBAC, ADR-0020 PII retention added today).
 - Direct-push policy ACTIVE (user explicit override): commit straight to master, no PR, per `~/.claude/rules/ci-optimization.md` pre-launch policy. Branch protection off.
 - LLM routing baseline: **top-1 1.0000 / mean Spearman 1.0000** (40 scenarios, gemini-2.5-flash) — unchanged.
