@@ -113,7 +113,8 @@ top and stashes it on `app.state.discovery`; the lifespan calls
 synchronous staff-handler shape was chosen over a background
 lifespan task — `POST /sagas/{id}/discover` invokes the agent
 inline and writes a single ROUTE-anchored OBSERVATION (kind
-`"discovery"`) per call.
+`"discovery"`) per call. The endpoint requires the `X-Agora-Admin: 1`
+header (CSRF guard on the no-body JSON POST; review 2026-07-13).
 
 ## OpenURL parsing
 

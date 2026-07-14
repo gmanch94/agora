@@ -84,11 +84,31 @@ lifecycle. Map these to user lifecycle as follows:
 - A request can be in only one user-lifecycle state at a time, but may
   have multiple in-flight ISO 18626 messages (e.g. ship + recall race).
 
+## Transition legality & single-use gates (review 2026-07-13)
+
+The lifecycle above is enforced at the data layer, not just drawn:
+
+- **Legal-transition tables.** `FORWARD_STEP_ALLOWED_STATES` and
+  `COMPENSATOR_ALLOWED_STATES` (`models/lifecycle.py`) encode the
+  allowed *current* state for each step. `Coordinator.run_forward` /
+  `run_compensator` check the persisted `current_state` before running
+  and raise `IllegalTransitionError` (the API maps it to **409**) when
+  the step is illegal from that state. Steps absent from a table fail
+  closed. This blocks step-skipping (e.g. `receive` at `Approved`) and
+  compensator jumps (e.g. `compensate step=submit` at `Shipped`).
+- **Gates are single-use.** A committed gate is consumed by any later
+  FORWARD event for its step; re-running a step requires a fresh
+  approval. This blocks a double-clicked approve from dispatching two
+  supplier requests.
+
 ## Terminal states
 
 `Returned` (success), `Cancelled` (pre-approval **or** post-approval
 revoke — see compensator table above), `Unfilled` (no supplier
-fulfilled), `Disputed` (manual escalation). The ledger refuses any
-further state-changing event once a saga reaches a terminal state
-(`SagaLedger.append` raises `TerminalStateError`); benign
-OBSERVATION events are still allowed.
+fulfilled), `Disputed` (manual escalation). Once a saga reaches a
+terminal state, `SagaLedger.append` refuses **any** state-changing
+event regardless of kind (raises `TerminalStateError`) — including a
+state-changing OBSERVATION (review 2026-07-13). The sole carve-out is
+the `RESOLVE` OBSERVATION that moves `Disputed → Cancelled/Unfilled`
+for the `/override` endpoint. Non-state-changing OBSERVATION events
+(`state_before == state_after`) are still allowed.

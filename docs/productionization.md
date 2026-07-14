@@ -6,9 +6,11 @@
 > to "consortium runs it for real patrons in 2027." It is *not* a
 > claim that Agora is production-ready today. Read it as a punch list.
 >
-> **Last reviewed against code:** 2026-05-09 (post audit-remediation
-> sprint, master at `a6eb6fa`, 553 tests collected / 542 pass + 11
-> skipped, 18 ADRs, 36 of 42 audit findings closed).
+> **Last reviewed against code:** 2026-07-13 (post 2026-07-13
+> implementation-review remediation, master at `fe364ac`, 665 tests
+> collected / 654 pass + 11 skipped, 20 ADRs; the 2026-05-09 audit
+> sprint closed 36 of 42 findings, the 2026-07-13 review closed a
+> further 5H/9M/8L).
 >
 > **Audiences.** This doc serves two readers:
 > - **Leadership** (Library Director, CIO, consortium board, funder
@@ -25,8 +27,8 @@ wraps existing FOLIO/ReShare standards plumbing (ISO 18626, NCIP,
 SRU) with intelligent routing, advisory agents, and a saga-based
 ledger that records every state change with paired forward +
 compensator (rollback) operations. Humans approve every transition;
-agents recommend, never decide. Codebase: 553 tests collected / 542
-pass + 11 skipped, 18 ADRs, post-audit-remediation hardening (Basic
+agents recommend, never decide. Codebase: 665 tests collected / 654
+pass + 11 skipped, 20 ADRs, post-audit-remediation hardening (Basic
 auth on all endpoints + tenant-scoping stopgap, patron-portal HMAC,
 proactive Okapi token refresh, prompt-injection guard, CSRF + rate
 limit + HTTPS + security headers, SecretStr credentials, XML XXE
@@ -148,7 +150,7 @@ gap IDs. Don't skip; don't blur boundaries.
 
 **Status:** This is master today.
 **Goal:** Demo + tests + docs are credible enough to commit pilot resources.
-**Evidence:** 553 tests collected (542 pass + 11 skipped), 18 ADRs, mod-rs 2.19 sandbox probed (#56 → CLAUDE.md), routing-LLM eval top-1 0.95, 36 of 42 audit findings closed in the 2026-05-09 remediation sprint (`docs/security-audits/2026-05-09.md`, `docs/SECURITY_MODEL.md` § 7).
+**Evidence:** 665 tests collected (654 pass + 11 skipped), 20 ADRs, mod-rs 2.19 sandbox probed (#56 → CLAUDE.md), routing-LLM eval top-1 0.95, 36 of 42 audit findings closed in the 2026-05-09 remediation sprint plus the 2026-07-13 implementation review (5H/9M/8L) (`docs/security-audits/2026-05-09.md`, `docs/SECURITY_MODEL.md` § 7).
 **Exit criteria** (all true to enter Phase 1):
 - [ ] Two-tenant ReShare probe complete (G-03).
 - [ ] Live mod-ncip probe against pilot consortium's primary ILS (G-04).

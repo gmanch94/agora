@@ -184,7 +184,7 @@ commits the gate.
 | `POST /sagas/{id}/approve`       | Commit gate **and** run the forward step in one transaction.   |
 | `POST /sagas/{id}/reject`        | Mark a pending gate `failed` (no forward runs).                |
 | `POST /sagas/{id}/compensate`    | Run compensator for a previously committed forward.            |
-| `POST /sagas/{id}/discover`      | Run DiscoveryAgent against the saga's stored request; writes a ROUTE-anchored OBSERVATION (#53). Saga state unchanged. |
+| `POST /sagas/{id}/discover`      | Run DiscoveryAgent against the saga's stored request; writes a ROUTE-anchored OBSERVATION (#53). Saga state unchanged. Requires the `X-Agora-Admin: 1` header (CSRF guard on no-body JSON POST — see § 9.5). |
 | `POST /sagas/{id}/override`      | Resolve a DISPUTED saga → CANCELLED or UNFILLED (PR #90). Writes a ledger OBSERVATION (`step=resolve`, `outcome=committed`); no outbox dispatch. Open ILS loans must be settled out-of-band. |
 | `POST /sagas/{id}/renew`         | Commit RENEW gate + run forward (PR #116). Saga must be at RECEIVED; stays at RECEIVED. Records new `due_at` on the ledger event; emits `renew_request` outbox intent (sandbox-blocked on HTTP client per ADR-0017 — surfaces as `dead_letter`; mock succeeds). |
 | `GET /browser`                   | Saga browser — filter all sagas by state, library, date. Read-only staff console page (PR #93). |
@@ -216,7 +216,11 @@ Unknown saga → 404.
 forward for the named step (`SagaLedger.find_committed_forward`) and
 runs the paired compensator. Compensating a step that never ran
 returns **409** with `"no committed forward"` in `detail` (not 500 —
-the ledger refuses, the API translates).
+the ledger refuses, the API translates). A compensator that is legal
+by history but illegal from the saga's current state (e.g.
+`compensate step=submit` at SHIPPED) is rejected earlier with **409**
+`"illegal compensator transition"` by the `COMPENSATOR_ALLOWED_STATES`
+guard (review 2026-07-13) before the committed-forward lookup runs.
 
 Compensators may enqueue outbox work (e.g. APPROVE compensator
 enqueues `cancel_request`); see § 3.3.

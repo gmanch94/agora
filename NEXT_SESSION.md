@@ -7,7 +7,7 @@
 - **Saga:** transition tables (`FORWARD_STEP_ALLOWED_STATES` / `COMPENSATOR_ALLOWED_STATES` in `models/lifecycle.py`), `IllegalTransitionError` → 409, single-use gates, `outbox_mark_failed` claim guard, FAILED-event key `:failed` suffix + outcome in ledger identity check, terminal guard on all state-changing kinds (RESOLVE carve-out).
 - **API/retention:** DSAR endpoints tenant-scoped + patron_id path validation + forget batching; `X-Agora-Admin: 1` header required on `/forget` (CSRF); boot refusal on `env != dev` + empty console password; retention scanner excludes scrubbed/NULL-patron rows + ORDER BY + eligibility keyed off terminal-event ts; barcode `item_id` scrubbed; portal list mints detail tokens; runbook § 9.5.
 - **Clients/agents:** ReShare retry narrowed to ConnectError/ConnectTimeout only (`ConnectionFailedError`); CrossRef/SRU 4xx → `RemoteUnavailableError`; CQL quote escaping; DOI percent-encoding; item metadata hardened in LLM tiebreak prompt; malformed SRU symbols skipped not fatal; CONTU window 6→5 years.
-- Gate: **653 passed / 11 skipped**, ruff clean, mypy `--strict` clean (92 files). Docs synced (test count 664 collected), lesson added to `docs/lessons.md` § Saga / ledger, CLAUDE.md invariants updated.
+- Gate: **654 passed / 11 skipped**, ruff clean, mypy `--strict` clean (92 files). Docs synced (test count 665 collected), lesson added to `docs/lessons.md` § Saga / ledger, CLAUDE.md invariants updated. Follow-up commit `fe364ac` added the `X-Agora-Admin` CSRF guard to `POST /sagas/{id}/discover`.
 
 ## Previous session (2026-05-19): G-02 RBAC + G-07 PII retention shipped direct-to-master; #145 synthetic-data landed.
 

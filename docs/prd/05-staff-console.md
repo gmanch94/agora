@@ -104,7 +104,7 @@ GET    /sagas/{id}                     # full event timeline (JSON)
 POST   /sagas/{id}/approve             # commit gate AND run forward in one tx
 POST   /sagas/{id}/reject              # mark pending gate failed
 POST   /sagas/{id}/compensate          # run compensator for committed forward
-POST   /sagas/{id}/discover            # run DiscoveryAgent; ROUTE-anchored OBSERVATION (#53)
+POST   /sagas/{id}/discover            # run DiscoveryAgent; ROUTE-anchored OBSERVATION (#53); needs X-Agora-Admin:1 (CSRF)
 POST   /sagas/{id}/override            # resolve DISPUTED saga → CANCELLED or UNFILLED
 POST   /sagas/{id}/renew               # commit RENEW gate + run forward (RECEIVED → RECEIVED, PR #116)
 

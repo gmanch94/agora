@@ -140,7 +140,7 @@ overdue/recall/receipt-unconfirmed scanner). Endpoints:
 | `POST /sagas/{id}/approve`           | Commit gate **and** run forward in one transaction.        |
 | `POST /sagas/{id}/reject`            | Mark a pending gate `failed`; no forward runs.             |
 | `POST /sagas/{id}/compensate`        | Run compensator for a previously committed forward.        |
-| `POST /sagas/{id}/discover`          | Run DiscoveryAgent against the saga's stored request; writes a ROUTE-anchored OBSERVATION (#53). Saga state unchanged. |
+| `POST /sagas/{id}/discover`          | Run DiscoveryAgent against the saga's stored request; writes a ROUTE-anchored OBSERVATION (#53). Saga state unchanged. Requires the `X-Agora-Admin: 1` CSRF header (no-body JSON POST). |
 | `POST /sagas/{id}/override`          | Resolve DISPUTED saga → CANCELLED or UNFILLED. Writes OBSERVATION (`step=resolve`, `outcome=committed`); no outbox dispatch (#90). |
 | `POST /sagas/{id}/renew`             | Commit RENEW gate + run forward (#116). Saga must be at RECEIVED; stays at RECEIVED. Records new `due_at`; emits `renew_request` outbox intent (sandbox-blocked on HTTP client per ADR-0017 — surfaces as `dead_letter`; mock succeeds). |
 | `GET /browser`                       | Saga browser — filter all sagas by state, library, date. Read-only UI endpoint (#93). |
@@ -339,7 +339,9 @@ sequenceDiagram
 ### 5.2 Compensator path
 
 `POST /sagas/{id}/compensate {step}` →
-`Coordinator.run_compensator` → `find_committed_forward(step)` →
+`Coordinator.run_compensator` → `COMPENSATOR_ALLOWED_STATES` guard
+(**409** `IllegalTransitionError` if the step is illegal from the
+saga's current state) → `find_committed_forward(step)` →
 404 mapping to **409** if no committed forward exists → otherwise
 runs the registered compensator → appends a COMPENSATOR ledger event
 and any `OutboxIntent`s atomically.
